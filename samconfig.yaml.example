@@ -1,0 +1,58 @@
+version: 0.1
+integration-test:
+  deploy:
+    parameters:
+      stack_name: phebee-integration-test
+      capabilities:
+        - CAPABILITY_IAM
+        - CAPABILITY_NAMED_IAM
+      parameter_overrides:
+        - VpcId=
+        - SubnetId1=
+        - SubnetId2=
+        - S3AccessLogBucketName=
+      tags:
+        - app=phebee
+
+dev:
+  deploy:
+    parameters:
+      stack_name: phebee-dev
+      capabilities:
+        - CAPABILITY_IAM
+        - CAPABILITY_NAMED_IAM
+      parameter_overrides:
+        - VpcId=
+        - SubnetId1=
+        - SubnetId2=
+        - S3AccessLogBucketName=
+      tags:
+        - app=phebee
+
+staging:
+  deploy:
+    parameters:
+      stack_name: phebee-staging
+      capabilities:
+        - CAPABILITY_IAM
+        - CAPABILITY_NAMED_IAM
+      parameter_overrides:
+        - VpcId=
+        - SubnetId1=
+        - SubnetId2=
+      tags:
+        - app=phebee
+
+prod:
+  deploy:
+    parameters:
+      stack_name: phebee-prod
+      capabilities:
+        - CAPABILITY_IAM
+        - CAPABILITY_NAMED_IAM
+      parameter_overrides:
+        - VpcId=
+        - SubnetId1=
+        - SubnetId2=
+      tags:
+        - app=phebee

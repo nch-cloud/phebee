@@ -1,0 +1,149 @@
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix dcterms: <http://purl.org/dc/terms/> .
+@prefix phebee: <http://ods.nationwidechildrens.org/phebee#> .
+
+<http://ods.nationwidechildrens.org/phebee> a owl:Ontology ;
+    owl:versionIRI <http://ods.nationwidechildrens.org/phebee/0.9> .
+
+# Define Project class
+phebee:Project a owl:Class ;
+    rdfs:label "Project" ;
+    rdfs:comment "A class representing a project." .
+
+# Define projectId property
+phebee:projectId a owl:DatatypeProperty ;
+    rdfs:domain phebee:Project ;
+    rdfs:range xsd:string ;
+    rdfs:label "project ID" ;
+    rdfs:comment "A unique identifier for a project." .
+
+# Define Subject class
+phebee:Subject a owl:Class ;
+    rdfs:label "Subject" ;
+    rdfs:comment "A class representing a subject." .
+
+# Define ProjectSubjectId class
+phebee:ProjectSubjectId a owl:Class ;
+    rdfs:label "ProjectSubjectId" ;
+    rdfs:comment "A class representing a project-specific subject identifier." .
+
+# Define hasProjectSubjectId property
+phebee:hasProjectSubjectId a owl:ObjectProperty ;
+    rdfs:domain phebee:Subject ;
+    rdfs:range phebee:ProjectSubjectId ;
+    rdfs:label "has project subject ID" ;
+    rdfs:comment "Links a subject to their project-specific subject ID." .
+
+# Define hasProject property
+phebee:hasProject a owl:ObjectProperty ;
+    rdfs:domain phebee:ProjectSubjectId ;
+    rdfs:range phebee:Project ;
+    rdfs:label "has project" ;
+    rdfs:comment "Links a project-specific subject ID to a project." .
+
+# Define SubjectTermLink class
+phebee:SubjectTermLink a owl:Class ;
+    rdfs:label "SubjectTermLink" ;
+    rdfs:comment "A class representing a link between a subject and a term." .
+
+# Define hasSubjectTermLink property
+phebee:hasSubjectTermLink a owl:ObjectProperty ;
+    rdfs:domain phebee:Subject ;
+    rdfs:range phebee:SubjectTermLink ;
+    rdfs:label "has subject term link" ;
+    rdfs:comment "Links a subject to a subject term link." .
+
+# Define hasTerm property
+phebee:hasTerm a owl:ObjectProperty ;
+    rdfs:domain phebee:SubjectTermLink ;
+    rdfs:range rdfs:Resource ;
+    rdfs:label "has term" ;
+    rdfs:comment "Links a subject term link to a term, with the term being an unspecified non-literal node." .
+
+# Define SubjectTermEvidence class
+phebee:SubjectTermEvidence a owl:Class ;
+    rdfs:label "SubjectTermEvidence" ;
+    rdfs:comment "A class representing evidence for a subject term link." .
+
+# Define hasEvidence property
+phebee:hasEvidence a owl:ObjectProperty ;
+    rdfs:domain phebee:SubjectTermLink ;
+    rdfs:range phebee:SubjectTermEvidence ;
+    rdfs:label "has evidence" ;
+    rdfs:comment "Links a subject term link to evidence for that link." .
+
+# Define excluded property
+phebee:excluded a owl:DatatypeProperty ;
+    rdfs:domain phebee:SubjectTermEvidence ;
+    rdfs:range xsd:boolean ;
+    rdfs:label "excluded" ;
+    rdfs:comment "Indicates whether the evidence is excluded." .
+
+# Define EvidenceCreator class
+phebee:EvidenceCreator a owl:Class ;
+    rdfs:label "EvidenceCreator" ;
+    rdfs:comment "A class representing the creator of evidence." .
+
+# Define hasCreator property
+phebee:hasCreator a owl:ObjectProperty ;
+    rdfs:domain phebee:SubjectTermEvidence ;
+    rdfs:range phebee:EvidenceCreator ;
+    rdfs:label "has creator" ;
+    rdfs:comment "Links evidence to its creator." .
+
+# Define creatorType property
+phebee:creatorType a owl:DatatypeProperty ;
+    rdfs:domain phebee:EvidenceCreator ;
+    rdfs:range xsd:string ;
+    rdfs:label "creator type" ;
+    rdfs:comment "The type of the evidence creator." .
+
+# Define creatorIdentifier property
+phebee:creatorIdentifier a owl:DatatypeProperty ;
+    rdfs:domain phebee:EvidenceCreator ;
+    rdfs:range xsd:string ;
+    rdfs:label "creator identifier" ;
+    rdfs:comment "The identifier of the evidence creator." .
+
+# Define creatorVersion property
+phebee:creatorVersion a owl:DatatypeProperty ;
+    rdfs:domain phebee:EvidenceCreator ;
+    rdfs:range xsd:string ;
+    rdfs:label "creator version" ;
+    rdfs:comment "The version of the evidence creator." .
+
+# Define EvidenceSource class
+phebee:EvidenceSource a owl:Class ;
+    rdfs:label "EvidenceSource" ;
+    rdfs:comment "A class representing the source of evidence." .
+
+# Define hasSource property
+phebee:hasSource a owl:ObjectProperty ;
+    rdfs:domain phebee:SubjectTermEvidence ;
+    rdfs:range phebee:EvidenceSource ;
+    rdfs:label "has source" ;
+    rdfs:comment "Links evidence to its source." .
+
+# Define sourceType property
+phebee:sourceType a owl:DatatypeProperty ;
+    rdfs:domain phebee:EvidenceSource ;
+    rdfs:range xsd:string ;
+    rdfs:label "source type" ;
+    rdfs:comment "The type of the evidence source." .
+
+# Define sourceText property
+phebee:sourceText a owl:DatatypeProperty ;
+    rdfs:domain phebee:EvidenceSource ;
+    rdfs:range xsd:string ;
+    rdfs:label "source text" ;
+    rdfs:comment "The text description of the evidence source." .
+
+# Define sourceURL property
+phebee:sourceURL a owl:DatatypeProperty ;
+    rdfs:domain phebee:EvidenceSource ;
+    rdfs:range xsd:string ;
+    rdfs:label "source URL" ;
+    rdfs:comment "The URL of the evidence source." .

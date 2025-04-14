@@ -1,0 +1,97 @@
+{
+    "Comment": "A description of my state machine",
+    "StartAt": "Start Load",
+    "States": {
+      "Start Load": {
+        "Type": "Task",
+        "Resource": "arn:aws:states:::lambda:invoke",
+        "ResultPath": "$.startLoader",
+        "Parameters": {
+          "Payload": {
+            "format": "rdfxml",
+            "region": "${Region}",
+            "source.$": "$.source",
+            "graph_name.$": "$.graph_name",
+            "role": "${LoaderRole}"
+          },
+          "FunctionName": "${StartLoadFunctionArn}"
+        },
+        "Retry": [
+          {
+            "ErrorEquals": [
+              "Lambda.ServiceException",
+              "Lambda.AWSLambdaException",
+              "Lambda.SdkClientException"
+            ],
+            "IntervalSeconds": 2,
+            "MaxAttempts": 6,
+            "BackoffRate": 2
+          }
+        ],
+        "Next": "Wait"
+      },
+      "Wait": {
+        "Type": "Wait",
+        "Seconds": 30,
+        "Next": "Get Load Status"
+      },
+      "Get Load Status": {
+        "Type": "Task",
+        "Resource": "arn:aws:states:::lambda:invoke",
+        "Parameters": {
+          "Payload": {
+            "load_job_id.$": "$.startLoader.Payload.payload.loadId"
+          },
+          "FunctionName": "${GetLoadStatusFunctionArn}"
+        },
+        "Retry": [
+          {
+            "ErrorEquals": [
+              "Lambda.ServiceException",
+              "Lambda.AWSLambdaException",
+              "Lambda.SdkClientException"
+            ],
+            "IntervalSeconds": 2,
+            "MaxAttempts": 6,
+            "BackoffRate": 2
+          }
+        ],
+        "Next": "Choice",
+        "ResultPath": "$.loadStatus"
+      },
+      "Choice": {
+        "Type": "Choice",
+        "Choices": [
+          {
+            "Or": [
+              {
+                "Variable": "$.loadStatus.Payload.payload.overallStatus.status",
+                "StringEquals": "LOAD_NOT_STARTED"
+              },
+              {
+                "Variable": "$.loadStatus.Payload.payload.overallStatus.status",
+                "StringEquals": "LOAD_IN_PROGRESS"
+              },
+              {
+                "Variable": "$.loadStatus.Payload.payload.overallStatus.status",
+                "StringEquals": "LOAD_IN_QUEUE"
+              }
+            ],
+            "Next": "Wait"
+          },
+          {
+            "Variable": "$.loadStatus.Payload.payload.overallStatus.status",
+            "StringEquals": "LOAD_COMPLETED",
+            "Next": "Success"
+          }
+        ],
+        "Default": "Fail"
+      },
+      "Fail": {
+        "Type": "Fail"
+      },
+      "Success": {
+        "Type": "Succeed"
+      }
+    }
+  }

@@ -1,0 +1,84 @@
+{
+    "Comment": "Process phenopackets from zip file",
+    "StartAt": "ParseZipFile",
+    "States": {
+      "ParseZipFile": {
+        "Type": "Task",
+        "Resource": "arn:aws:states:::lambda:invoke",
+        "Parameters": {
+          "FunctionName": "${ParsePhenopacketCollectionFunctionArn}",
+          "Payload": {
+            "project_id.$": "$.project_id",
+            "s3_path.$": "$.s3_path",
+            "output_s3_path.$": "$.output_s3_path"
+          }
+        },
+        "Next": "ImportPhenopacketsMap"
+      },
+      "ImportPhenopacketsMap": {
+        "Type": "Map",
+        "ItemReader": {
+          "Resource": "arn:aws:states:::s3:getObject",
+          "ReaderConfig": {  
+            "InputType": "JSON"
+          },
+          "Parameters": {
+            "Bucket.$": "$.Payload.bucket",
+            "Key.$": "$.Payload.key"
+          }
+        },
+        "ItemProcessor": {
+          "ProcessorConfig": {
+            "Mode": "DISTRIBUTED",
+            "ExecutionType": "STANDARD"
+          },
+          "Comment": "Process standard phenopackets to phebee input arguments.",
+          "StartAt": "RenameInput",
+          "States": {
+            "RenameInput": {
+              "Type": "Pass",
+              "ResultPath": "$.Data.Phenopacket",
+              "OutputPath": "$.Data",
+              "Next": "ProcessPhenopacket"
+            },
+            "ProcessPhenopacket": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::lambda:invoke",
+              "Parameters": {
+                "FunctionName": "${ProcessPhenopacketFunctionArn}",
+                "Payload.$": "$"
+              },
+              "ResultPath": "$.ProcessedData",
+              "Next": "CreateSubject"
+            },
+            "CreateSubject": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::lambda:invoke",
+              "Parameters": {
+                "FunctionName": "${CreateSubjectFunctionArn}",
+                "Payload.$": "$.ProcessedData.Payload.subject_payload"
+              },
+              "ResultPath": "$.CreateSubjectResult",
+              "Next": "CreateSubjectTermLink"
+            },
+            "CreateSubjectTermLink": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::lambda:invoke",
+              "Parameters": {
+                "FunctionName": "${CreateSubjectTermLinkFunctionArn}",
+                "Payload.$": "$.ProcessedData.Payload.evidence_payload"
+              },
+              "ResultPath": "$.CreateSubjectTermLinkResult",
+              "End": true
+            }
+          }
+        },
+        "MaxConcurrency": 32,
+        "ResultSelector": {
+          "subject_ids": "$[*].ProcessedData.subject_id"
+        },
+        "ResultPath": "$.Summary",
+        "End": true
+      }
+    }
+  }

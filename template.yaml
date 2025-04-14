@@ -1,0 +1,977 @@
+AWSTemplateFormatVersion: 2010-09-09
+Transform: AWS::Serverless-2016-10-31
+Description: PheBee
+Globals:
+  Function:
+    Timeout: 90
+    Architectures:
+      - arm64
+    Tracing: Active
+    Runtime: python3.11
+    Environment:
+      Variables:
+        POWERTOOLS_SERVICE_NAME: phebee
+
+Parameters:
+  VpcId:
+    Default: false
+    Description: "VPC in which Neptune is supposed to run. ex: vpc-xxxxxxxxxxxxxx"
+    Type: String  
+
+  SubnetId1:
+    Default: false
+    Description: "Subnet in the VPC which Neptune is supposed to run. ex: subnet-xxxxxxxxxxxxxx"
+    Type: String  
+
+  SubnetId2:
+    Default: false
+    Description: "Subnet in the VPC which Neptune is supposed to run. ex: subnet-xxxxxxxxxxxxxx"
+    Type: String   
+
+  CreateS3Bucket:
+    Default: true
+    AllowedValues:
+      - true
+      - false
+    Description: Create a new S3 bucket to hold PheBee data
+    Type: String
+
+  S3AccessLogBucketName:
+    Type: String
+    Description: Optional. An existing bucket where access logs should be delivered.
+    Default: ""
+  
+  S3AccessLogPrefix:
+    Type: String
+    Description: Optional. Prefix (folder path) for the logs in the log bucket.
+    Default: phebee-access-logs/
+
+Conditions:
+  ShouldCreateS3Bucket: !Equals [!Ref CreateS3Bucket, true]
+
+  ShouldEnableS3Logging: !Not [!Equals [!Ref S3AccessLogBucketName, ""]]
+
+Resources:
+  SAMLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/vendedlogs/states/step_functions/ods-phebee-${AWS::StackName}
+
+  #################
+  # IAM
+  #################
+
+  PheBeeStepFunctionPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogDelivery
+              - logs:CreateLogStream
+              - logs:GetLogDelivery
+              - logs:UpdateLogDelivery
+              - logs:DeleteLogDelivery
+              - logs:ListLogDeliveries
+              - logs:PutLogEvents
+              - logs:PutResourcePolicy
+              - logs:DescribeResourcePolicies
+              - logs:DescribeLogGroups
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - events:PutTargets
+              - events:PutRule
+              - events:DescribeRule
+              - events:PutEvents
+            Resource: !GetAtt PheBeeBus.Arn
+          - Effect: Allow
+            Action:
+              - events:PutRule
+              - events:PutTargets
+              - events:DescribeRule
+            Resource: !Sub arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/StepFunctionsGetEventsForStepFunctionsExecutionRule
+
+  PheBeeAPIRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
+        - !Ref PheBeeAPIPolicy
+
+  PheBeeAPIPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - lambda:InvokeFunction
+            Resource:
+              - !GetAtt GetSourceInfoFunction.Arn
+              - !GetAtt CreateProjectFunction.Arn
+              - !GetAtt CreateSubjectFunction.Arn
+              - !GetAtt CreateSubjectTermLinkFunction.Arn
+              - !GetAtt ExportPhenopacketsFunction.Arn
+              - !GetAtt GetSubjectFunction.Arn
+              - !GetAtt GetSubjectsFunction.Arn
+              - !GetAtt GetSubjectsPhenotypesFunction.Arn
+              - !GetAtt RemoveSubjectFunction.Arn
+              - !GetAtt RemoveProjectFunction.Arn
+          - Effect: Allow
+            Action:
+              - states:StartSyncExecution
+            Resource:
+              - !GetAtt ImportPhenopacketsSFN.Arn
+
+  PheBeeS3ReadPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:ListBucket
+              - s3:PutObject
+            Resource:
+              - !GetAtt PheBeeBucket.Arn
+              - !Sub
+                - ${Arn}/*
+                - Arn: !GetAtt PheBeeBucket.Arn
+  
+  PheBeeS3WritePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:PutObject
+            Resource:
+              - !Sub
+                - ${Arn}/*
+                - Arn: !GetAtt PheBeeBucket.Arn
+  
+  PheBeeDynamoDBReadPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:Scan
+              - dynamodb:Query
+              - dynamodb:DescribeTable
+              - dynamodb:GetItem
+            Resource:
+              - !GetAtt DynamoDBTable.Arn
+  
+  PheBeeDynamoDBWritePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+              - dynamodb:DeleteItem
+              - dynamodb:BatchWriteItem
+            Resource:
+              - !GetAtt DynamoDBTable.Arn
+
+  PheBeeNeptuneReadPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - neptune-db:ReadDataViaQuery
+              - neptune-db:GetEngineStatus
+            Resource: !Sub
+              - arn:${AWS::Partition}:neptune-db:${AWS::Region}:${AWS::AccountId}:${ClusterId}/*
+              - ClusterId: !GetAtt PheBeeNeptuneCluster.ClusterResourceId
+  
+  PheBeeNeptuneLoadPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - neptune-db:StartLoaderJob
+              - neptune-db:GetLoaderJobStatus
+            Resource: !Sub
+              - arn:${AWS::Partition}:neptune-db:${AWS::Region}:${AWS::AccountId}:${ClusterId}/*
+              - ClusterId: !GetAtt PheBeeNeptuneCluster.ClusterResourceId
+
+  PheBeeNeptuneWritePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - neptune-db:WriteDataViaQuery
+            Resource: !Sub
+              - arn:${AWS::Partition}:neptune-db:${AWS::Region}:${AWS::AccountId}:${ClusterId}/*
+              - ClusterId: !GetAtt PheBeeNeptuneCluster.ClusterResourceId
+
+  PheBeeNeptuneDeletePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - neptune-db:DeleteDataViaQuery
+            Resource: !Sub
+              - arn:${AWS::Partition}:neptune-db:${AWS::Region}:${AWS::AccountId}:${ClusterId}/*
+              - ClusterId: !GetAtt PheBeeNeptuneCluster.ClusterResourceId
+
+  PheBeeNeptuneResetPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - neptune-db:ResetDatabase
+            Resource: !Sub
+              - arn:${AWS::Partition}:neptune-db:${AWS::Region}:${AWS::AccountId}:${ClusterId}/*
+              - ClusterId: !GetAtt PheBeeNeptuneCluster.ClusterResourceId
+
+  PheBeePutEventsPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - events:PutEvents
+            Resource:
+              - !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/${PheBeeBus}
+
+
+  NeptuneLoaderRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub phebee-neptune-loader-role-${AWS::StackName}
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: rds.amazonaws.com
+          Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref PheBeeS3ReadPolicy
+
+  #################
+  # Neptune Cluster
+  #################
+  PheBeeNeptuneSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Amazon Neptune Created
+      GroupName: !Sub phebee-neptune-sg-${AWS::StackName}
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - SourceSecurityGroupId: !Ref PheBeeLambdaSecurityGroup
+          IpProtocol: tcp
+          FromPort: 8182
+          ToPort: 8182
+          Description: PheBee Neptune
+
+  PheBeeNeptuneSubnetGroup:
+    UpdateReplacePolicy: Retain
+    Type: AWS::Neptune::DBSubnetGroup
+    Properties:
+      SubnetIds:
+      - !Ref SubnetId1
+      - !Ref SubnetId2
+      DBSubnetGroupDescription: Subnet group for PheBee subnets
+      DBSubnetGroupName: !Sub phebee-neptune-subnets-${AWS::StackName}
+
+  PheBeeNeptuneCluster:
+    Type: AWS::Neptune::DBCluster
+    Properties:
+      StorageEncrypted: true
+      # Associating the role here is necessary to pass it as the role to use for our bulk loader
+      AssociatedRoles:
+        - RoleArn: !GetAtt NeptuneLoaderRole.Arn
+      ServerlessScalingConfiguration:
+        MinCapacity: 1
+        MaxCapacity: 16
+      PreferredMaintenanceWindow: mon:09:10-mon:09:40
+      IamAuthEnabled: true
+      DBSubnetGroupName: !Ref PheBeeNeptuneSubnetGroup
+      PreferredBackupWindow: 03:59-04:29
+      DBPort: 8182
+      VpcSecurityGroupIds:
+        - !Ref PheBeeNeptuneSecurityGroup
+      CopyTagsToSnapshot: true
+      DBClusterParameterGroupName: default.neptune1.4
+      BackupRetentionPeriod: 7
+      EnableCloudwatchLogsExports:
+      - audit
+      - slowquery
+
+  PheBeeNeptuneInstance:
+    Type: AWS::Neptune::DBInstance
+    Properties:
+      DBInstanceClass: db.r5.large
+      DBClusterIdentifier: !Ref PheBeeNeptuneCluster
+      DBSubnetGroupName: !Ref PheBeeNeptuneSubnetGroup
+      DBParameterGroupName: default.neptune1.4
+      AutoMinorVersionUpgrade: true
+
+  #################
+  # Lambdas
+  #################
+
+  PheBeeLambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Amazon Neptune Created
+      GroupName: !Sub phebee-lambda-sg-${AWS::StackName}
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        # Egress is needed to allow test suite to invoke lambdas and receive a response
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+
+  DownloadGithubReleaseFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-DownloadGithubReleaseFunction
+      CodeUri: functions
+      Handler: download_github_release.lambda_handler
+      MemorySize: 1024
+      Environment:
+        Variables:
+          PheBeeBucketName: !Ref PheBeeBucket
+          PheBeeDynamoTable: !Ref DynamoDBTable
+      Policies:
+        - !Ref PheBeeS3ReadPolicy
+        - !Ref PheBeeDynamoDBWritePolicy
+        - Statement:
+          - Effect: Allow
+            Action: states:StartExecution
+            Resource:
+              - !Sub arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:InstallRDFXMLSFN
+
+
+  UpdateInstallTimestampFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-UpdateInstallTimestampFunction
+      CodeUri: functions
+      Handler: update_install_timestamp.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          PheBeeDynamoTable: !Ref DynamoDBTable
+      Policies:
+        - !Ref PheBeeDynamoDBReadPolicy
+        - !Ref PheBeeDynamoDBWritePolicy
+
+  StartLoadFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-StartLoadFunction
+      CodeUri: functions
+      Handler: start_load.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneLoadPolicy
+
+  GetLoadStatusFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-GetLoadStatusFunction
+      CodeUri: functions
+      Handler: get_load_status.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneLoadPolicy
+
+  GetSourceInfoFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-GetSourceInfoFunction
+      CodeUri: functions
+      Handler: get_source_info.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          PheBeeDynamoTable: !Ref DynamoDBTable
+      Policies:
+        - !Ref PheBeeDynamoDBReadPolicy
+
+  GetSubjectFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-GetSubjectFunction
+      CodeUri: functions
+      Handler: get_subject.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+
+  GetSubjectsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-GetSubjectsFunction
+      CodeUri: functions
+      Handler: get_subjects.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+          PheBeeDynamoTable: !Ref DynamoDBTable
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+        - !Ref PheBeeDynamoDBReadPolicy
+
+  CreateSubjectFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-CreateSubjectFunction
+      CodeUri: functions
+      Handler: create_subject.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+          PheBeeBus: !Ref PheBeeBus
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+        - !Ref PheBeeNeptuneWritePolicy
+        - !Ref PheBeePutEventsPolicy
+
+  RemoveSubjectFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-RemoveSubjectFunction
+      CodeUri: functions
+      Handler: remove_subject.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+        - !Ref PheBeeNeptuneDeletePolicy
+
+  CreateSubjectTermLinkFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-CreateSubjectTermLinkFunction
+      CodeUri: functions
+      Handler: create_subject_term_link.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+          PheBeeBus: !Ref PheBeeBus
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+        - !Ref PheBeeNeptuneWritePolicy
+        - !Ref PheBeeS3ReadPolicy
+        - !Ref PheBeePutEventsPolicy
+      Events:
+        CreateSubjectTermLinkEvent:
+          Type: CloudWatchEvent
+          Properties:
+            EventBusName: !Ref PheBeeBus
+            Pattern:
+              detail-type:
+                - subject_term_link_evidence
+
+  CreateProjectFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-CreateProjectFunction
+      CodeUri: functions
+      Handler: create_project.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+        - !Ref PheBeeNeptuneWritePolicy
+
+  RemoveProjectFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-RemoveProjectFunction
+      CodeUri: functions
+      Handler: remove_project.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+        - !Ref PheBeeNeptuneDeletePolicy
+
+  ParsePhenopacketCollectionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-ParsePhenopacketCollectionFunction
+      CodeUri: functions
+      Handler: parse_phenopacket_collection.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          PheBeeBucketName: !Ref PheBeeBucket
+      Policies:
+        - !Ref PheBeeS3ReadPolicy
+        - !Ref PheBeeS3WritePolicy
+
+  ProcessPhenopacketFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-ProcessPhenopacketFunction
+      CodeUri: functions
+      Handler: process_phenopacket.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          PheBeeBucketName: !Ref PheBeeBucket
+
+  ExportPhenopacketsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-ExportPhenopacketsFunction
+      CodeUri: functions
+      Handler: export_phenopackets.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          PheBeeBucketName: !Ref PheBeeBucket
+          PheBeeDynamoTable: !Ref DynamoDBTable
+      Policies:
+        - !Ref PheBeeS3ReadPolicy
+        - !Ref PheBeeS3WritePolicy
+        - !Ref PheBeeDynamoDBReadPolicy
+
+  GetSubjectsPhenotypesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-GetSubjectsPhenotypesFunction
+      CodeUri: functions
+      Handler: get_subjects_pheno.lambda_handler
+      MemorySize: 2048
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+          PheBeeBus: !Ref PheBeeBus
+          PheBeeBucketName: !Ref PheBeeBucket
+          PheBeeDynamoTable: !Ref DynamoDBTable
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+        - !Ref PheBeeS3ReadPolicy
+        - !Ref PheBeeS3WritePolicy
+        - !Ref PheBeeDynamoDBReadPolicy
+
+  ResetDatabaseFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-ResetDatabaseFunction
+      CodeUri: functions
+      Handler: reset_database.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          NeptuneClusterIdentifier: !Ref PheBeeNeptuneCluster
+          PheBeeDynamoTable: !Ref DynamoDBTable
+          Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneResetPolicy
+        - !Ref PheBeeDynamoDBWritePolicy
+
+  #################
+  # Step Functions
+  #################
+
+  InstallRDFXMLSFN:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      DefinitionUri: statemachine/install_rdfxml.asl.json
+      Logging:
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt SAMLogs.Arn
+        IncludeExecutionData: true
+        Level: ALL
+      DefinitionSubstitutions:
+        StartLoadFunctionArn: !Ref StartLoadFunction
+        GetLoadStatusFunctionArn: !Ref GetLoadStatusFunction
+        Region: !Sub ${AWS::Region}
+        LoaderRole: !GetAtt NeptuneLoaderRole.Arn
+      Type: STANDARD
+      Policies:
+        - !Ref PheBeeStepFunctionPolicy
+        - Statement:
+          - Effect: Allow
+            Action:
+              - lambda:InvokeFunction
+            Resource:
+              - !GetAtt StartLoadFunction.Arn
+              - !GetAtt GetLoadStatusFunction.Arn
+
+  UpdateHPOSFN:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      DefinitionUri: statemachine/update_hpo.asl.json
+      Logging:
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt SAMLogs.Arn
+        IncludeExecutionData: true
+        Level: ALL
+      DefinitionSubstitutions:
+        InstallRDFXMLSFNArn: !Ref InstallRDFXMLSFN
+        DownloadGithubReleaseFunctionArn: !Ref DownloadGithubReleaseFunction
+        UpdateInstallTimestampFunctionArn: !Ref UpdateInstallTimestampFunction
+        PheBeeBus: !Ref PheBeeBus
+      Type: STANDARD
+      Policies:
+        - !Ref PheBeeStepFunctionPolicy
+        - Statement:
+          - Effect: Allow
+            Action:
+              - lambda:InvokeFunction
+            Resource:
+              - !GetAtt DownloadGithubReleaseFunction.Arn
+              - !GetAtt UpdateInstallTimestampFunction.Arn
+          - Effect: Allow
+            Action: states:StartExecution
+            Resource:
+              - !GetAtt InstallRDFXMLSFN.Arn
+
+  UpdateMONDOSFN:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      DefinitionUri: statemachine/update_mondo.asl.json
+      Logging:
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt SAMLogs.Arn
+        IncludeExecutionData: true
+        Level: ALL
+      DefinitionSubstitutions:
+        InstallRDFXMLSFNArn: !Ref InstallRDFXMLSFN
+        DownloadGithubReleaseFunctionArn: !Ref DownloadGithubReleaseFunction
+        UpdateInstallTimestampFunctionArn: !Ref UpdateInstallTimestampFunction
+        PheBeeBus: !Ref PheBeeBus
+      Type: STANDARD
+      Policies:
+        - !Ref PheBeeStepFunctionPolicy
+        - Statement:
+          - Effect: Allow
+            Action:
+              - lambda:InvokeFunction
+            Resource:
+              - !GetAtt DownloadGithubReleaseFunction.Arn
+              - !GetAtt UpdateInstallTimestampFunction.Arn
+          - Effect: Allow
+            Action: states:StartExecution
+            Resource:
+              - !GetAtt InstallRDFXMLSFN.Arn
+
+  UpdateECOSFN:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      DefinitionUri: statemachine/update_eco.asl.json
+      Logging:
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt SAMLogs.Arn
+        IncludeExecutionData: true
+        Level: ALL
+      DefinitionSubstitutions:
+        InstallRDFXMLSFNArn: !Ref InstallRDFXMLSFN
+        DownloadGithubReleaseFunctionArn: !Ref DownloadGithubReleaseFunction
+        UpdateInstallTimestampFunctionArn: !Ref UpdateInstallTimestampFunction
+        PheBeeBus: !Ref PheBeeBus
+      Type: STANDARD
+      Policies:
+        - !Ref PheBeeStepFunctionPolicy
+        - Statement:
+          - Effect: Allow
+            Action:
+              - lambda:InvokeFunction
+            Resource:
+              - !GetAtt DownloadGithubReleaseFunction.Arn
+              - !GetAtt UpdateInstallTimestampFunction.Arn
+          - Effect: Allow
+            Action: states:StartExecution
+            Resource:
+              - !GetAtt InstallRDFXMLSFN.Arn
+
+
+  ImportPhenopacketsSFN:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: !Sub ImportPhenopacketsSFN-${AWS::StackName}
+      DefinitionUri: statemachine/import_phenopackets.asl.json
+      Logging:
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt SAMLogs.Arn
+        IncludeExecutionData: true
+        Level: ALL
+      DefinitionSubstitutions:
+        ParsePhenopacketCollectionFunctionArn: !Ref ParsePhenopacketCollectionFunction
+        ProcessPhenopacketFunctionArn: !Ref ProcessPhenopacketFunction
+        CreateSubjectFunctionArn: !Ref CreateSubjectFunction
+        CreateSubjectTermLinkFunctionArn: !Ref CreateSubjectTermLinkFunction
+      Type: STANDARD
+      Policies:
+        - !Ref PheBeeStepFunctionPolicy
+        - !Ref PheBeeS3ReadPolicy
+        - Statement:
+          - Effect: Allow
+            Action:
+              - lambda:InvokeFunction
+            Resource:
+              - !GetAtt CreateSubjectFunction.Arn
+              - !GetAtt CreateSubjectTermLinkFunction.Arn
+              - !GetAtt ParsePhenopacketCollectionFunction.Arn
+              - !GetAtt ProcessPhenopacketFunction.Arn
+          - Effect: Allow
+            Action:
+              - states:StartExecution
+            Resource:
+              - !Sub arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:ImportPhenopacketsSFN-${AWS::StackName}
+
+  #################
+  # DynamoDB
+  #################
+
+  DynamoDBTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  #################
+  # S3 Storage
+  #################
+
+  PheBeeBucket:
+    Type: AWS::S3::Bucket
+    Condition: ShouldCreateS3Bucket
+    Properties:
+      LoggingConfiguration: 
+        !If 
+          - ShouldEnableS3Logging
+          - DestinationBucketName: !Ref S3AccessLogBucketName
+            LogFilePrefix: !Ref S3AccessLogPrefix
+          - !Ref AWS::NoValue
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm:  AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      ObjectLockEnabled: false
+
+  PheBeeBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: ShouldCreateS3Bucket
+    Properties:
+      Bucket: !Ref PheBeeBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowSSLRequestsOnly # AWS Foundational Security Best Practices v1.0.0 S3.5
+            Action: "s3:*"
+            Principal: "*"
+            Effect: "Deny"
+            Condition:
+              Bool:
+                "aws:SecureTransport": false
+            Resource:
+              - !Sub "arn:${AWS::Partition}:s3:::${PheBeeBucket}"
+              - !Sub "arn:${AWS::Partition}:s3:::${PheBeeBucket}/*"
+
+  #################
+  # HTTP API
+  #################
+
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      DefinitionBody:
+        'Fn::Transform':
+          Name: 'AWS::Include'
+          Parameters:
+            Location: 'api.yaml'
+
+  #################
+  # EventBridge
+  #################
+
+  PheBeeBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: !Sub phebee-bus-${AWS::StackName}
+
+Outputs:
+  UpdateHPOSFNArn:
+    Value: !Ref UpdateHPOSFN
+
+  UpdateMONDOSFNArn:
+    Value: !Ref UpdateMONDOSFN
+
+  CreateProjectFunctionArn:
+    Value: !Ref CreateProjectFunction
+
+  ResetDatabaseFunctionArn:
+    Value: !Ref ResetDatabaseFunction
+
+  DynamoDBTableName:
+    Description: Table name of the PheBee DynamoDB table
+    Value: !Ref DynamoDBTable
+    Export:
+      Name: !Sub ${AWS::StackName}-DynamoDBTableName
+
+  Region:
+    Value: !Sub ${AWS::Region}
+
+  NeptuneEndpoint:
+    Value: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+
+  NeptuneClusterIdentifier:
+    Value: !Ref PheBeeNeptuneCluster
+  
+  HttpApiUrl:
+    Description: Base URL for the HTTP API
+    Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"

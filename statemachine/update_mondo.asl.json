@@ -1,0 +1,90 @@
+{
+    "Comment": "Download the newest version of the MONDO ontology and import it to Neptune",
+    "StartAt": "Download MONDO",
+    "States": {
+      "Download MONDO": {
+        "Type": "Task",
+        "Resource": "arn:aws:states:::lambda:invoke",
+        "Parameters": {
+          "FunctionName": "${DownloadGithubReleaseFunctionArn}",
+          "Payload": {
+            "source_name": "mondo",
+            "user": "monarch-initiative",
+            "repo": "mondo",
+            "test.$": "$.test",
+            "asset_names": [
+              "mondo.owl"
+            ]
+          }
+        },
+        "ResultPath": "$.mondo",
+        "Next": "Was New MONDO Version Downloaded?"
+      },
+      "Was New MONDO Version Downloaded?": {
+        "Type": "Choice",
+        "Choices": [          
+          {
+            "Variable": "$.mondo.Payload.downloaded",
+            "BooleanEquals": true,
+            "Next": "Get MONDO OWL Info"
+          }
+        ],
+        "Default": "Success"
+      },
+      "Get MONDO OWL Info": {
+        "Type": "Pass",
+        "Parameters": {
+          "filtered_assets.$": "$.mondo.Payload.assets.[?(@.asset_name == 'mondo.owl')]",
+          "mondo_version.$": "$.mondo.Payload.version"
+        },
+        "Next": "Install MONDO"
+      },
+      "Install MONDO": {
+        "Type": "Task",
+        "Resource": "arn:aws:states:::states:startExecution.sync:2",
+        "Parameters": {
+          "StateMachineArn": "${InstallRDFXMLSFNArn}",
+          "Input": {
+            "source.$": "$.filtered_assets.[0].asset_path",
+            "graph_name.$": "States.Format('mondo~{}', $.mondo_version)"
+          }
+        },
+        "ResultPath": "$.install",
+        "Next": "Update Install Timestamp"
+      },
+      "Update Install Timestamp": {
+        "Type": "Task",
+        "Resource": "arn:aws:states:::lambda:invoke",
+        "Parameters": {
+          "FunctionName": "${UpdateInstallTimestampFunctionArn}",
+          "Payload": {
+            "source": "mondo",
+            "version.$": "$.mondo_version"
+          }
+        },
+        "ResultPath": "$.update_timestamp",
+        "Next": "Fire Update Event"
+      },
+      "Fire Update Event": {
+        "Type": "Task",
+        "Resource": "arn:aws:states:::events:putEvents",
+        "Parameters": {
+          "Entries": [
+            {
+              "Detail": {
+                "source": "mondo",
+                "version.$": "$.mondo_version"
+              },
+              "DetailType": "source_updated",
+              "EventBusName": "${PheBeeBus}",
+              "Source": "PheBee"
+            }
+          ]
+        },
+        "Next": "Success"
+      },
+      "Success": {
+        "Type": "Succeed"
+      }
+    }
+  }

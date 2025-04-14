@@ -1,0 +1,93 @@
+{
+    "Comment": "Download the newest version of the HPO ontology and import it to Neptune",
+    "StartAt": "Download HPO",
+    "States": {
+      "Download HPO": {
+        "Type": "Task",
+        "Resource": "arn:aws:states:::lambda:invoke",
+        "Parameters": {
+          "FunctionName": "${DownloadGithubReleaseFunctionArn}",
+          "Payload": {
+            "source_name": "hpo",
+            "user": "obophenotype",
+            "repo": "human-phenotype-ontology",
+            "test.$": "$.test",
+            "asset_names": [
+              "hp.owl",
+              "phenotype_to_genes.txt",
+              "phenotype.hpoa",
+              "hp.obo"
+            ]
+          }
+        },
+        "ResultPath": "$.hpo",
+        "Next": "Was New HPO Version Downloaded?"
+      },
+      "Was New HPO Version Downloaded?": {
+        "Type": "Choice",
+        "Choices": [          
+          {
+            "Variable": "$.hpo.Payload.downloaded",
+            "BooleanEquals": true,
+            "Next": "Get HPO OWL Info"
+          }
+        ],
+        "Default": "Success"
+      },
+      "Get HPO OWL Info": {
+        "Type": "Pass",
+        "Parameters": {
+          "filtered_assets.$": "$.hpo.Payload.assets.[?(@.asset_name == 'hp.owl')]",
+          "hpo_version.$": "$.hpo.Payload.version"
+        },
+        "Next": "Install HPO"
+      },
+      "Install HPO": {
+        "Type": "Task",
+        "Resource": "arn:aws:states:::states:startExecution.sync:2",
+        "Parameters": {
+          "StateMachineArn": "${InstallRDFXMLSFNArn}",
+          "Input": {
+            "source.$": "$.filtered_assets.[0].asset_path",
+            "graph_name.$": "States.Format('hpo~{}', $.hpo_version)"
+          }
+        },
+        "ResultPath": "$.install",
+        "Next": "Update Install Timestamp"
+      },
+      "Update Install Timestamp": {
+        "Type": "Task",
+        "Resource": "arn:aws:states:::lambda:invoke",
+        "Parameters": {
+          "FunctionName": "${UpdateInstallTimestampFunctionArn}",
+          "Payload": {
+            "source": "hpo",
+            "version.$": "$.hpo_version"
+          }
+        },
+        "ResultPath": "$.update_timestamp",
+        "Next": "Fire Update Event"
+      },
+      "Fire Update Event": {
+        "Type": "Task",
+        "Resource": "arn:aws:states:::events:putEvents",
+        "Parameters": {
+          "Entries": [
+            {
+              "Detail": {
+                "source": "hpo",
+                "version.$": "$.hpo_version"
+              },
+              "DetailType": "source_updated",
+              "EventBusName": "${PheBeeBus}",
+              "Source": "PheBee"
+            }
+          ]
+        },
+        "Next": "Success"
+      },
+      "Success": {
+        "Type": "Succeed"
+      }
+    }
+  }
