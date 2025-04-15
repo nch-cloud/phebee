@@ -55,7 +55,7 @@ Resources:
   SAMLogs:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub /aws/vendedlogs/states/step_functions/ods-phebee-${AWS::StackName}
+      LogGroupName: !Sub /aws/vendedlogs/states/step_functions/phebee-${AWS::StackName}
 
   #################
   # IAM

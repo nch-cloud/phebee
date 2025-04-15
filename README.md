@@ -1,49 +1,102 @@
-# Manually Deploying the SAM Application
+# PheBee
 
-This guide provides instructions on how to manually build and deploy the AWS SAM (Serverless Application Model) application using the AWS SAM CLI.
+**PheBee** is a phenotype-to-cohort query service that integrates structured biomedical ontologies and AWS-native infrastructure to support translational research. It enables researchers and clinicians to ask complex questions about phenotypic data in patient cohorts, such as:
 
-## Prerequisites
+- "Which subjects have a specific phenotype or any of its descendants?"
+- "How frequently does a phenotype occur within a cohort?"
 
-Ensure you have the following set up before deploying the SAM application:
-- **AWS SAM CLI** installed.
-- **AWS CLI** installed and configured with appropriate credentials.
-- A valid **SAM template** (e.g., `template.yaml`) ready for deployment.
+PheBee leverages ontologies like HPO, MONDO, OMIM, and Orphanet to provide deep, hierarchical querying. It integrates with in-house tools such as Mr. Phene and supports knowledge graph-enhanced retrieval for LLM-powered chat agents.
 
-### Installation Commands (if needed)
+## Features
 
-To install the necessary dependencies:
+- Query patient cohorts based on ontological relationships
+- Discover disease-phenotype associations
+- Graph-based data storage in AWS Neptune
+- RESTful API with OpenAPI spec
+- Serverless architecture powered by AWS SAM and Lambda
+- Integration with SPARQL, DynamoDB, and S3
+- Automated deployment and testing workflows
+
+---
+
+## Getting Started
+
+### Configuration Setup
+
+This project provides a `samconfig.yaml.example` file as a template for your deployment configuration.
+
+To get started, copy it to create your own `samconfig.yaml`:
+
+```bash
+cp samconfig.yaml.example samconfig.yaml
+```
+
+Then, edit the file with your environment-specific values. Each section of the file contains deployment settings for a  stack in a given environment. Here's what each field means:
+
+```yaml
+prod:                                  # The environment name
+  deploy:
+    parameters:
+      stack_name: phebee-prod          # The name of the CloudFormation stack to be created or updated
+      capabilities:
+        - CAPABILITY_IAM               # Allows creation of IAM resources
+        - CAPABILITY_NAMED_IAM         # Allows creation of named IAM roles and policies
+      parameter_overrides:
+        - VpcId=                       # The ID of your target VPC, which allows your Lambda functions and resources to connect securely within your private network
+                                # Learn more: https://docs.aws.amazon.com/vpc/latest/userguide/what-is-amazon-vpc.html
+        - SubnetId1=                   # The first subnet ID, typically in the same availability zone as other services your app needs to access
+                                # Learn more: https://docs.aws.amazon.com/vpc/latest/userguide/VPC_Subnets.html
+        - SubnetId2=                   # The second subnet ID, usually in a different availability zone for high availability and fault tolerance
+                                # Learn more: https://docs.aws.amazon.com/vpc/latest/userguide/VPC_Subnets.html
+      tags:
+        - app=phebee                   # Tags applied to the stack for resource tracking or cost management
+```
+
+Once filled in, this configuration will allow you to run:
+
+```bash
+sam deploy --config-env prod
+```
+
+This command will use the parameters defined in your `samconfig.yaml` without needing to specify them manually each time.
+
+### Prerequisites
+
+Before building or deploying PheBee, make sure you have:
+
+- [AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/install-cliv2.html) installed and configured
+- [AWS SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html)
+- Python 3.9+
+- `pip` and `virtualenv` (recommended)
+- AWS credentials with appropriate IAM permissions for deploying a SAM app
+
+To install the required Python dependencies for deployment:
 
 ```bash
 pip install awscli aws-sam-cli
 ```
 
-Configure your AWS CLI credentials:
+Then configure AWS:
 
 ```bash
 aws configure
 ```
 
-## Steps to Manually Deploy the SAM Application for development
+---
 
-### 1. Building the SAM Application
+## Building and Deploying PheBee
 
-The `sam build` command compiles your SAM template and prepares the application for deployment. It also resolves any dependencies for your Lambda functions.
+You can manually build and deploy the SAM application using the AWS SAM CLI.
 
-Run the following command:
+### 1. Build the SAM Application
 
 ```bash
 sam build
 ```
 
-This command will:
-- Compile and bundle the application code and dependencies.
-- Create a `.aws-sam/build/` folder with the packaged artifacts.
+This command compiles the application and its dependencies into `.aws-sam/build`.
 
-### 2. Deploying the SAM Application
-
-After the build process is complete, you can deploy the application using the `sam deploy` command.
-
-To deploy the application:
+### 2. Deploy the Application
 
 ```bash
 sam deploy --config-env dev \
@@ -52,141 +105,102 @@ sam deploy --config-env dev \
            --no-fail-on-empty-changeset
 ```
 
-If you need to deploy using a specific set of AWS credentials defined in your ~/.aws/config file, add the profile flag to the previous command:
+Optional flags:
 
-```bash
-           --profile <your-profile-name>
-```
+- `--profile <your-profile>`: Use a named AWS profile
+- `--stack-name <custom-stack>`: Deploy under a custom stack name
 
-If you already have a development stack deployed and need to create an additional stack, add the stack name flag to the previous command:
-
-```bash
-           --stack-name <new-stack-name>
-```
-
-Explanation:
-- **`--stack-name`**: The name of the CloudFormation stack that will be created or updated, e.g. phebee-dev.
-- **`--capabilities`**: Required to allow SAM to create IAM roles and resources.
-- **`--no-confirm-changeset`**: Skips the confirmation prompt, making the deployment non-interactive.
-- **`--resolve-s3`**: Automatically creates an S3 bucket to store packaged artifacts if needed.
-- **`--profile`**: Chooses a set of AWS credentials from the ~/.aws/config file
-
-### 3. Viewing Stack Status
-
-You can check the status of the deployed stack via the AWS Management Console under **CloudFormation** or by running the following AWS CLI command:
+To check deployment status:
 
 ```bash
 aws cloudformation describe-stacks --stack-name <your-stack-name>
 ```
 
-### 4. Cleaning Up
-
-After testing or using the SAM application, you can delete the stack to remove all associated AWS resources and avoid incurring costs. To delete the stack, use:
+### 3. Clean Up Resources
 
 ```bash
 sam delete --stack-name <your-stack-name> --no-prompts
 ```
 
-This will:
-- Delete the CloudFormation stack.
-- Remove all associated resources created during the deployment.
+---
 
-<h1>Running Integration Tests</h1>
+## Running Integration Tests
 
-This repository contains integration tests for deploying and managing AWS resources using the AWS SAM CLI and CloudFormation. These tests are marked as `@pytest.mark.integration` to allow for easy identification and execution of integration tests.
+Integration tests validate the infrastructure and APIs by deploying the stack and exercising key endpoints.
 
-## Prerequisites
+### Prerequisites
 
-Ensure you have the following set up before running the integration tests:
-- **AWS SAM CLI** installed.
-- **AWS CLI** configured with appropriate credentials.
-- **pytest** and **boto3** installed.
-
-### Installation Commands (if needed)
+Install dependencies:
 
 ```bash
 pip install pytest boto3
 ```
 
-Set up your AWS credentials using the AWS CLI:
+Ensure your AWS credentials are configured (`aws configure`).
 
-```bash
-aws configure
-```
-
-## Running the Integration Tests
-
-### 1. Running All Integration Tests
-
-To run all integration tests in the project, use the following command:
+### Run All Integration Tests
 
 ```bash
 pytest -m integration -v
 ```
 
-The --profile and config-env flags can also be used to specify AWS profiles for a new stack:
+With profile or environment:
 
 ```bash
 pytest -m integration --profile=dev --config-env=dev -v
 ```
 
-This command will:
-1. Build the SAM application using `sam build`.
-2. Deploy the CloudFormation stack using `sam deploy`.
-3. Run the integration tests marked with `@pytest.mark.integration`.
-4. Automatically clean up the resources by deleting the CloudFormation stack after the tests.
-
-If you already have a stack deployed and want to use it for integration tests, add the --existing-stack parameter to the pytest command.
+Use an existing deployed stack:
 
 ```bash
-pytest -m integration --existing-stack <your-existing-test-stack-name> -v
+pytest -m integration --existing-stack <your-stack-name> -v
 ```
 
-Note that the tests will potentially modify data in the stack, so it should not be used in situations where that is an issue.
-
-### 2. Running a Specific Integration Test
-
-You can run a specific integration test using the following command:
+Run a specific test:
 
 ```bash
 pytest tests/integration/test_cloudformation_stack.py::test_cloudformation_stack -m integration -v
 ```
 
-This will run only the specified integration test, while skipping others.
+---
 
-### 3. Viewing Detailed Output
+## Project Structure
 
-The `-v` flag enables verbose output, allowing you to see more detailed information about the tests being run, including the test names and execution status.
-
-## How Tests Are Structured
-
-- **Setup and Teardown**: The tests automatically deploy the necessary AWS resources before execution and clean them up afterward using the `sam delete` command.
-- **Test Marking**: Integration tests are marked with `@pytest.mark.integration` to distinguish them from other types of tests (e.g., unit tests).
-  
-## Configuration
-
-To avoid warnings related to unknown marks, ensure that the `integration` mark is registered in your `pytest.ini` file. This should already be set up, but you can add the following to `pytest.ini` if needed:
-
-```ini
-[pytest]
-markers =
-    integration: marks a test as an integration test
+```
+├── LICENSE                       # Project license
+├── README.md                     # This README file
+├── api.yaml                      # OpenAPI specification for the PheBee REST API
+├── functions/                    # Lambda function definitions
+├── model/                        # Data models and ontology loading logic
+├── statemachine/                 # AWS Step Function definitions
+├── src/                          # Supporting Python modules and utilities
+├── tests/                        # Unit and integration tests
+├── pyproject.toml                # Python project configuration
+├── pytest.ini                    # Pytest configuration file
+├── samconfig.yaml.example        # Sample SAM config for customization
+├── setup.cfg                     # Additional project setup config
+├── template.yaml                 # AWS SAM template
+├── uv.lock                       # Dependency lock file (used by uv or pip-tools)
 ```
 
-## Teardown and Cleanup
+---
 
-The integration tests automatically delete the CloudFormation stack after the tests finish. If you need to manually delete the stack, you can do so using the following command:
+## Contributing
 
-```bash
-sam delete --stack-name <your-stack-name> --no-prompts
-```
+We welcome contributions! Please open an issue or submit a pull request for bug reports, feature suggestions, or general improvements.
 
-## Additional Resources
-
-- [AWS SAM Documentation](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/what-is-sam.html)
-- [Pytest Documentation](https://docs.pytest.org/en/latest/)
-- [AWS CLI Documentation](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-quickstart.html)
+---
 
 ## License
 
 This project is licensed under the BSD 3-Clause License. See the [LICENSE](./LICENSE) file for details.
+
+---
+
+## References
+
+- [AWS SAM Documentation](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/what-is-sam.html)
+- [Pytest Documentation](https://docs.pytest.org/en/latest/)
+- [HPO Ontology](https://hpo.jax.org/)
+- [SPARQL Specification](https://www.w3.org/TR/sparql11-query/)
+

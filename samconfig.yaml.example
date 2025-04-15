@@ -4,7 +4,7 @@ integration-test:
     parameters:
       stack_name: phebee-integration-test
       capabilities:
-        - CAPABILITY_IAM
+        - CAPABILITY_AUTO_EXPAND
         - CAPABILITY_NAMED_IAM
       parameter_overrides:
         - VpcId=
@@ -19,7 +19,7 @@ dev:
     parameters:
       stack_name: phebee-dev
       capabilities:
-        - CAPABILITY_IAM
+        - CAPABILITY_AUTO_EXPAND
         - CAPABILITY_NAMED_IAM
       parameter_overrides:
         - VpcId=
@@ -34,7 +34,7 @@ staging:
     parameters:
       stack_name: phebee-staging
       capabilities:
-        - CAPABILITY_IAM
+        - CAPABILITY_AUTO_EXPAND
         - CAPABILITY_NAMED_IAM
       parameter_overrides:
         - VpcId=
@@ -48,7 +48,7 @@ prod:
     parameters:
       stack_name: phebee-prod
       capabilities:
-        - CAPABILITY_IAM
+        - CAPABILITY_AUTO_EXPAND
         - CAPABILITY_NAMED_IAM
       parameter_overrides:
         - VpcId=

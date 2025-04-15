@@ -84,7 +84,7 @@ def cloudformation_stack(request, aws_session, profile_name):
     config_env = request.config.getoption("--config-env")
     stack_uuid = str(uuid.uuid4())[-3:]
     stack_name = (
-        f"ods-phebee-integration-test-{stack_uuid}"
+        f"phebee-integration-test-{stack_uuid}"
         if not existing_stack
         else existing_stack
     )
