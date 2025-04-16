@@ -358,6 +358,7 @@ Resources:
       VpcId: !Ref VpcId
       SecurityGroupEgress:
         # Egress is needed to allow test suite to invoke lambdas and receive a response
+        # TODO : Might be able to lock this down to specific ports to further tighten security
         - IpProtocol: -1
           CidrIp: 0.0.0.0/0
 
