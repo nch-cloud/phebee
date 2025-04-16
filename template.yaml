@@ -274,7 +274,6 @@ Resources:
             Resource:
               - !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/${PheBeeBus}
 
-
   NeptuneLoaderRole:
     Type: AWS::IAM::Role
     Properties:
@@ -306,7 +305,6 @@ Resources:
           Description: PheBee Neptune
 
   PheBeeNeptuneSubnetGroup:
-    UpdateReplacePolicy: Retain
     Type: AWS::Neptune::DBSubnetGroup
     Properties:
       SubnetIds:
@@ -917,7 +915,7 @@ Resources:
             Effect: "Deny"
             Condition:
               Bool:
-                "aws:SecureTransport": false
+                "aws:SecureTransport": "false"
             Resource:
               - !Sub "arn:${AWS::Partition}:s3:::${PheBeeBucket}"
               - !Sub "arn:${AWS::Partition}:s3:::${PheBeeBucket}/*"
