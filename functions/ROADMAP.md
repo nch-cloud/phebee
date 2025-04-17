@@ -58,6 +58,14 @@ This document outlines our planned milestones and the focus areas for each versi
 
 ---
 
+## How To Get Involved
+
+As we transition our codebase from an internally-focused project to open source, we will probably keep development in-house until the 0.2 release to smooth that process and ensure we can continue to hit milestones for our pilot projects.
+
+In the meantime, we'd love to hear your feedback and ideas, and we hope to open up to new contributors as soon as possible!
+
+---
+
 ## Notes
 
 This roadmap is a living document. Features and priorities may shift based on community feedback and internal requirements.
