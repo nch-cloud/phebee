@@ -570,6 +570,56 @@ def create_subject_term_evidence(subject_term_link_id: str, evidence: dict) -> d
 
     return {"evidence_id": subject_term_evidence_uuid}
 
+def create_encounter(subject_iri: str, encounter_id: str):
+    encounter_iri = f"{subject_iri}/encounter/{encounter_id}"
+    sparql = f"""
+    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+    PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+
+    INSERT DATA {{
+        <{encounter_iri}> rdf:type phebee:Encounter ;
+                          phebee:encounterId "{encounter_id}" ;
+                          phebee:subject <{subject_iri}> .
+    }}
+    """
+    execute_update(sparql)
+
+def get_encounter(subject_iri: str, encounter_id: str) -> dict:    
+    encounter_iri = f"{subject_iri}/encounter/{encounter_id}"
+    sparql = f"""
+    SELECT ?p ?o WHERE {{
+        <{encounter_iri}> ?p ?o .
+    }}
+    """
+    results = execute_query(sparql)
+
+    properties = {}
+    for binding in results["results"]["bindings"]:
+        predicate = binding["p"]["value"]
+        obj = binding["o"]["value"]
+
+        # Extract unprefixed name from IRI (e.g. ...#encounterType → encounterType)
+        key = predicate.split("#")[-1] if "#" in predicate else predicate.split("/")[-1]
+        properties[key] = obj
+
+    return {
+        "encounter_iri": encounter_iri,
+        "subject_iri": subject_iri,
+        "encounter_id": encounter_id,
+        "properties": properties
+    }
+
+def delete_encounter(subject_iri: str, encounter_id: str):
+    encounter_iri = f"{subject_iri}/encounter/{encounter_id}"
+    sparql = f"""
+    DELETE WHERE {{
+        <{encounter_iri}> ?p ?o .
+    }};
+    DELETE WHERE {{
+        ?s ?p <{encounter_iri}> .
+    }}
+    """
+    execute_update(sparql)
 
 def flatten_sparql_results(sparql_json, include_datatype=False, group_subjects=False):
     """

@@ -128,6 +128,9 @@ Resources:
               - !GetAtt GetSubjectsPhenotypesFunction.Arn
               - !GetAtt RemoveSubjectFunction.Arn
               - !GetAtt RemoveProjectFunction.Arn
+              - !GetAtt CreateEncounterFunction.Arn
+              - !GetAtt GetEncounterFunction.Arn
+              - !GetAtt RemoveEncounterFunction.Arn
           - Effect: Allow
             Action:
               - states:StartSyncExecution
@@ -699,6 +702,68 @@ Resources:
       Policies:
         - !Ref PheBeeNeptuneResetPolicy
         - !Ref PheBeeDynamoDBWritePolicy
+
+  CreateEncounterFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-CreateEncounterFunction
+      CodeUri: functions
+      Handler: create_encounter.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+        - !Ref PheBeeNeptuneWritePolicy
+
+  GetEncounterFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-GetEncounterFunction
+      CodeUri: functions
+      Handler: get_encounter.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+
+  RemoveEncounterFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-RemoveEncounterFunction
+      CodeUri: functions
+      Handler: remove_encounter.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+        - !Ref PheBeeNeptuneDeletePolicy
 
   #################
   # Step Functions
