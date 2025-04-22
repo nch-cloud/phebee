@@ -128,7 +128,7 @@ def lambda_handler(event, context):
 
     # If no existing subject, create a new one
     subject_uuid = uuid.uuid4()
-    subject_iri = f"{PHEBEE}/subjects#{subject_uuid}"
+    subject_iri = f"{PHEBEE}/subjects/{subject_uuid}"
 
     # Add the link from our new subject to a project-subject id node linked to
     # the desired project in the project graph, and timestamp the creation
