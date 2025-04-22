@@ -267,7 +267,9 @@ def test_project_id(cloudformation_stack):
         Payload=json.dumps({"body": json.dumps(payload)}),
     )
 
-    body = json.loads(json.loads(create_response["Payload"].read().decode("utf-8"))["body"])
+    body = json.loads(
+        json.loads(create_response["Payload"].read().decode("utf-8"))["body"]
+    )
     assert create_response["StatusCode"] == 200, f"Invoke failed: {body}"
     assert body.get("project_created") is True
 
@@ -283,6 +285,68 @@ def test_project_id(cloudformation_stack):
     result = json.loads(delete_response["Payload"].read().decode("utf-8"))
     if delete_response["StatusCode"] != 200:
         print(f"WARNING: Teardown failed: {result}")
+
+
+@pytest.fixture
+def create_test_subject_iri(physical_resources):
+    lambda_client = get_client("lambda")
+    created_subjects = []
+    project_id = f"test-proj-{uuid.uuid4().hex[:6]}"
+
+    # Create project
+    lambda_client.invoke(
+        FunctionName=physical_resources["CreateProjectFunction"],
+        Payload=json.dumps({"body": json.dumps({"project_id": project_id})}).encode(
+            "utf-8"
+        ),
+        InvocationType="RequestResponse",
+    )
+
+    def _make_subject():
+        project_subject_id = f"test-subj-{uuid.uuid4().hex[:6]}"
+        payload = {"project_id": project_id, "project_subject_id": project_subject_id}
+
+        response = lambda_client.invoke(
+            FunctionName=physical_resources["CreateSubjectFunction"],
+            Payload=json.dumps({"body": json.dumps(payload)}).encode("utf-8"),
+            InvocationType="RequestResponse",
+        )
+
+        body = json.loads(response["Payload"].read())
+        subject_data = json.loads(body["body"])["subject"]
+
+        created_subjects.append(
+            {"project_id": project_id, "project_subject_id": project_subject_id}
+        )
+
+        return subject_data["id"]
+
+    yield _make_subject
+
+    # Cleanup
+    for subj in created_subjects:
+        lambda_client.invoke(
+            FunctionName=physical_resources["RemoveSubjectFunction"],
+            Payload=json.dumps(
+                {
+                    "body": json.dumps(
+                        {
+                            "project_id": subj["project_id"],
+                            "project_subject_id": subj["project_subject_id"],
+                        }
+                    )
+                }
+            ).encode("utf-8"),
+            InvocationType="RequestResponse",
+        )
+
+    lambda_client.invoke(
+        FunctionName=physical_resources["RemoveProjectFunction"],
+        Payload=json.dumps({"body": json.dumps({"project_id": project_id})}).encode(
+            "utf-8"
+        ),
+        InvocationType="RequestResponse",
+    )
 
 
 # Fixture to upload phenopacket test data to S3

@@ -343,6 +343,127 @@ paths:
         connectionType: "INTERNET"
         timeoutInMillis: 30000
 
+  /encounter/create:
+    post:
+      summary: Create an encounter node
+      description: |
+        Creates an Encounter node for the given subject IRI and encounter ID.
+        The resulting node IRI is returned in the response.
+      operationId: createEncounter
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - subject_iri
+                - encounter_id
+              properties:
+                subject_iri:
+                  type: string
+                encounter_id:
+                  type: string
+      responses:
+        "200":
+          description: Encounter created
+        "400":
+          description: Missing required fields
+        "500":
+          description: Internal server error
+      security:
+        - sigv4: []
+      x-amazon-apigateway-integration:
+        credentials:
+          Fn::GetAtt: [PheBeeAPIRole, Arn]
+        payloadFormatVersion: "2.0"
+        type: "aws_proxy"
+        uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-CreateEncounterFunction/invocations
+        connectionType: "INTERNET"
+        timeoutInMillis: 30000
+
+  /encounter:
+    post:
+      summary: Retrieve encounter node details
+      description: |
+        Fetches properties of an encounter based on subject IRI and encounter ID.
+        Returns the encounter IRI and its associated unprefixed properties.
+      operationId: getEncounter
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - subject_iri
+                - encounter_id
+              properties:
+                subject_iri:
+                  type: string
+                encounter_id:
+                  type: string
+      responses:
+        "200":
+          description: Encounter found
+        "400":
+          description: Missing required fields
+        "404":
+          description: Encounter not found
+        "500":
+          description: Internal server error
+      security:
+        - sigv4: []
+      x-amazon-apigateway-integration:
+        credentials:
+          Fn::GetAtt: [PheBeeAPIRole, Arn]
+        payloadFormatVersion: "2.0"
+        type: "aws_proxy"
+        uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-GetEncounterFunction/invocations
+        connectionType: "INTERNET"
+        timeoutInMillis: 30000
+
+  /encounter/remove:
+    post:
+      summary: Remove an encounter node
+      description: |
+        Deletes an Encounter node identified by subject IRI and encounter ID.
+      operationId: removeEncounter
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - subject_iri
+                - encounter_id
+              properties:
+                subject_iri:
+                  type: string
+                encounter_id:
+                  type: string
+      responses:
+        "200":
+          description: Encounter deleted
+        "400":
+          description: Missing required fields
+        "500":
+          description: Internal server error
+      security:
+        - sigv4: []
+      x-amazon-apigateway-integration:
+        credentials:
+          Fn::GetAtt: [PheBeeAPIRole, Arn]
+        payloadFormatVersion: "2.0"
+        type: "aws_proxy"
+        uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-RemoveEncounterFunction/invocations
+        connectionType: "INTERNET"
+        timeoutInMillis: 30000
+
 x-amazon-apigateway-cors:
   allowMethods:
     - "*"
