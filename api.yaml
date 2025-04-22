@@ -464,6 +464,126 @@ paths:
         connectionType: "INTERNET"
         timeoutInMillis: 30000
 
+  /clinical-note/create:
+    post:
+      summary: Create a ClinicalNote node
+      description: |
+        Creates a ClinicalNote node linked to a specific Encounter. The note ID must be unique within the encounter.
+      operationId: createClinicalNote
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - encounter_iri
+                - clinical_note_id
+              properties:
+                encounter_iri:
+                  type: string
+                clinical_note_id:
+                  type: string
+                note_timestamp:
+                  type: string
+                  format: date-time
+      responses:
+        "200":
+          description: ClinicalNote created
+        "400":
+          description: Missing required fields
+        "500":
+          description: Internal server error
+      security:
+        - sigv4: []
+      x-amazon-apigateway-integration:
+        credentials:
+          Fn::GetAtt: [PheBeeAPIRole, Arn]
+        payloadFormatVersion: "2.0"
+        type: "aws_proxy"
+        uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-CreateClinicalNoteFunction/invocations
+        connectionType: "INTERNET"
+        timeoutInMillis: 30000
+
+  /clinical-note:
+    post:
+      summary: Get ClinicalNote details
+      description: |
+        Retrieves all properties of a ClinicalNote node based on encounter IRI and clinical note ID.
+      operationId: getClinicalNote
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - encounter_iri
+                - clinical_note_id
+              properties:
+                encounter_iri:
+                  type: string
+                clinical_note_id:
+                  type: string
+      responses:
+        "200":
+          description: ClinicalNote found or not found
+        "400":
+          description: Missing required fields
+        "500":
+          description: Internal server error
+      security:
+        - sigv4: []
+      x-amazon-apigateway-integration:
+        credentials:
+          Fn::GetAtt: [PheBeeAPIRole, Arn]
+        payloadFormatVersion: "2.0"
+        type: "aws_proxy"
+        uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-GetClinicalNoteFunction/invocations
+        connectionType: "INTERNET"
+        timeoutInMillis: 30000
+
+  /clinical-note/remove:
+    post:
+      summary: Delete a ClinicalNote node
+      description: |
+        Deletes a ClinicalNote node from the graph by its encounter and note ID.
+      operationId: removeClinicalNote
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - encounter_iri
+                - clinical_note_id
+              properties:
+                encounter_iri:
+                  type: string
+                clinical_note_id:
+                  type: string
+      responses:
+        "200":
+          description: ClinicalNote deleted
+        "400":
+          description: Missing required fields
+        "500":
+          description: Internal server error
+      security:
+        - sigv4: []
+      x-amazon-apigateway-integration:
+        credentials:
+          Fn::GetAtt: [PheBeeAPIRole, Arn]
+        payloadFormatVersion: "2.0"
+        type: "aws_proxy"
+        uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-RemoveClinicalNoteFunction/invocations
+        connectionType: "INTERNET"
+        timeoutInMillis: 30000
+
 x-amazon-apigateway-cors:
   allowMethods:
     - "*"

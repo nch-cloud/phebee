@@ -311,7 +311,7 @@ def create_test_subject_iri(physical_resources):
             Payload=json.dumps({"body": json.dumps(payload)}).encode("utf-8"),
             InvocationType="RequestResponse",
         )
-
+ 
         body = json.loads(response["Payload"].read())
         subject_data = json.loads(body["body"])["subject"]
 
@@ -347,6 +347,45 @@ def create_test_subject_iri(physical_resources):
         ),
         InvocationType="RequestResponse",
     )
+
+
+@pytest.fixture
+def create_test_encounter_iri(create_test_subject_iri, physical_resources):
+    lambda_client = get_client("lambda")
+    created_encounters = []
+
+    def _make_encounter():
+        subject_iri = create_test_subject_iri()
+        encounter_id = f"test-enc-{uuid.uuid4().hex[:6]}"
+        payload = {"subject_iri": subject_iri, "encounter_id": encounter_id}
+
+        print(f"payload: {payload}")
+
+        response = lambda_client.invoke(
+            FunctionName=physical_resources["CreateEncounterFunction"],
+            Payload=json.dumps({"body": json.dumps(payload)}).encode("utf-8"),
+            InvocationType="RequestResponse",
+        )
+
+        body = json.loads(json.loads(response["Payload"].read())["body"])
+
+        print(f"body: {body}")
+
+        encounter_iri = body["encounter_iri"]
+
+        created_encounters.append((subject_iri, encounter_id))
+        return encounter_iri
+
+    yield _make_encounter
+
+    # Cleanup
+    for subject_iri, encounter_id in created_encounters:
+        payload = {"subject_iri": subject_iri, "encounter_id": encounter_id}
+        lambda_client.invoke(
+            FunctionName=physical_resources["RemoveEncounterFunction"],
+            Payload=json.dumps({"body": json.dumps(payload)}).encode("utf-8"),
+            InvocationType="RequestResponse",
+        )
 
 
 # Fixture to upload phenopacket test data to S3

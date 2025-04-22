@@ -131,6 +131,9 @@ Resources:
               - !GetAtt CreateEncounterFunction.Arn
               - !GetAtt GetEncounterFunction.Arn
               - !GetAtt RemoveEncounterFunction.Arn
+              - !GetAtt CreateClinicalNoteFunction.Arn
+              - !GetAtt GetClinicalNoteFunction.Arn
+              - !GetAtt RemoveClinicalNoteFunction.Arn
           - Effect: Allow
             Action:
               - states:StartSyncExecution
@@ -750,6 +753,68 @@ Resources:
       FunctionName: !Sub ${AWS::StackName}-RemoveEncounterFunction
       CodeUri: functions
       Handler: remove_encounter.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+        - !Ref PheBeeNeptuneDeletePolicy
+
+  CreateClinicalNoteFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-CreateClinicalNoteFunction
+      CodeUri: functions
+      Handler: create_clinical_note.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+        - !Ref PheBeeNeptuneWritePolicy
+
+  GetClinicalNoteFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-GetClinicalNoteFunction
+      CodeUri: functions
+      Handler: get_clinical_note.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+
+  RemoveClinicalNoteFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-RemoveClinicalNoteFunction
+      CodeUri: functions
+      Handler: remove_clinical_note.lambda_handler
       MemorySize: 512
       Environment:
         Variables:

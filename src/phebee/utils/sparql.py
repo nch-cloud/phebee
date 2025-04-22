@@ -3,6 +3,7 @@ import uuid
 from collections import defaultdict
 from typing import List
 from aws_lambda_powertools import Metrics, Logger, Tracer
+from datetime import datetime
 
 from .neptune import execute_query, execute_update
 from .aws import get_current_timestamp
@@ -177,7 +178,6 @@ def get_subjects(
     optional_clause: str = None,
     # s3_path: str = None,
 ) -> list:
-
     # TODO We pass in an unqualified project_id and project_subject_ids, but return fully qualified IRIs.  If this presents a problem we may want to allow full IRI inputs.
 
     # These flags require more information to be useful:
@@ -237,7 +237,6 @@ def get_subjects(
 
     # WHERE clause
     if project_subject_ids:
-
         values_clause = "\n        ".join(
             [
                 f"<http://ods.nationwidechildrens.org/phebee/projects/{project_id}#{subject_id}>"
@@ -316,7 +315,6 @@ def get_subjects(
 
         # Add optional evidence fields dynamically
         if optional_evidence:
-
             for field in optional_evidence:
                 where_clause += f"""
         OPTIONAL {{ ?stle phebee:{field} ?{camel_to_snake(field)} . }}
@@ -570,21 +568,26 @@ def create_subject_term_evidence(subject_term_link_id: str, evidence: dict) -> d
 
     return {"evidence_id": subject_term_evidence_uuid}
 
+
 def create_encounter(subject_iri: str, encounter_id: str):
     encounter_iri = f"{subject_iri}/encounter/{encounter_id}"
+    now_iso = get_current_timestamp()
     sparql = f"""
     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+    PREFIX dcterms: <http://purl.org/dc/terms/>
     PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
 
     INSERT DATA {{
         <{encounter_iri}> rdf:type phebee:Encounter ;
                           phebee:encounterId "{encounter_id}" ;
+                          dcterms:created "{now_iso}" ;
                           phebee:subject <{subject_iri}> .
     }}
     """
     execute_update(sparql)
 
-def get_encounter(subject_iri: str, encounter_id: str) -> dict:    
+
+def get_encounter(subject_iri: str, encounter_id: str) -> dict:
     encounter_iri = f"{subject_iri}/encounter/{encounter_id}"
     sparql = f"""
     SELECT ?p ?o WHERE {{
@@ -606,8 +609,9 @@ def get_encounter(subject_iri: str, encounter_id: str) -> dict:
         "encounter_iri": encounter_iri,
         "subject_iri": subject_iri,
         "encounter_id": encounter_id,
-        "properties": properties
+        "properties": properties,
     }
+
 
 def delete_encounter(subject_iri: str, encounter_id: str):
     encounter_iri = f"{subject_iri}/encounter/{encounter_id}"
@@ -620,6 +624,80 @@ def delete_encounter(subject_iri: str, encounter_id: str):
     }}
     """
     execute_update(sparql)
+
+
+def create_clinical_note(
+    encounter_iri: str,
+    clinical_note_id: str,
+    note_timestamp: str = None,
+):
+    clinical_note_iri = f"{encounter_iri}/note/{clinical_note_id}"
+    now_iso = get_current_timestamp()
+
+    triples = [
+        f"<{clinical_note_iri}> rdf:type phebee:ClinicalNote",
+        f"<{clinical_note_iri}> phebee:clinicalNoteId \"{clinical_note_id}\"",
+        f"<{clinical_note_iri}> phebee:hasEncounter <{encounter_iri}>",
+        f"<{clinical_note_iri}> dc:created \"{now_iso}\"^^xsd:dateTime",
+    ]
+
+    if note_timestamp:
+        triples.append(
+            f"<{clinical_note_iri}> phebee:noteTimestamp \"{note_timestamp}\"^^xsd:dateTime"
+        )
+
+    triples_block = " .\n        ".join(triples)
+
+    sparql = f"""
+    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+    PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+    PREFIX dc: <http://purl.org/dc/terms/>
+    PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+
+    INSERT DATA {{
+        {triples_block} .
+    }}
+    """
+
+    execute_update(sparql)
+
+
+def get_clinical_note(encounter_iri: str, clinical_note_id: str) -> dict:
+    clinical_note_iri = f"{encounter_iri}/note/{clinical_note_id}"
+    sparql = f"""
+    SELECT ?p ?o WHERE {{
+        <{clinical_note_iri}> ?p ?o .
+    }}
+    """
+    results = execute_query(sparql)
+
+    properties = {}
+    for binding in results["results"]["bindings"]:
+        pred = binding["p"]["value"]
+        obj = binding["o"]["value"]
+        key = pred.split("#")[-1] if "#" in pred else pred.split("/")[-1]
+        properties[key] = obj
+
+    return {
+        "clinical_note_iri": clinical_note_iri,
+        "encounter_iri": encounter_iri,
+        "clinical_note_id": clinical_note_id,
+        "properties": properties,
+    }
+
+
+def delete_clinical_note(encounter_iri: str, clinical_note_id: str):
+    clinical_note_iri = f"{encounter_iri}/note/{clinical_note_id}"
+    sparql = f"""
+    DELETE WHERE {{
+        <{clinical_note_iri}> ?p ?o .
+    }};
+    DELETE WHERE {{
+        ?s ?p <{clinical_note_iri}> .
+    }}
+    """
+    execute_update(sparql)
+
 
 def flatten_sparql_results(sparql_json, include_datatype=False, group_subjects=False):
     """

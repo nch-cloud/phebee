@@ -98,6 +98,24 @@ phebee:encounterEnd a owl:DatatypeProperty ;
     rdfs:label "Encounter End" ;
     rdfs:comment "The date and time the encounter ended." .
 
+phebee:clinicalNoteId a owl:DatatypeProperty ;
+    rdfs:domain phebee:ClinicalNote ;
+    rdfs:range xsd:string ;
+    rdfs:label "Clinical Note ID" ;
+    rdfs:comment "The identifier of the clinical note." .
+
+phebee:noteTimestamp a owl:DatatypeProperty ;
+    rdfs:domain phebee:ClinicalNote ;
+    rdfs:range xsd:dateTime ;
+    rdfs:label "Note Timestamp" ;
+    rdfs:comment "The date and time the note was created in the original source." .
+
+phebee:hasEncounter a owl:DatatypeProperty ;
+    rdfs:domain phebee:ClinicalNote ;
+    rdfs:range phebee:Encounter ;
+    rdfs:label "Clinical Note Encounter" ;
+    rdfs:comment "The encounter a ClinicalNote is associated with." .
+
 phebee:providerType a owl:DatatypeProperty ;
     rdfs:domain phebee:ClinicalNote ;
     rdfs:range xsd:string ;
