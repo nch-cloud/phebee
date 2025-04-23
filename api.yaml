@@ -700,6 +700,124 @@ paths:
         connectionType: "INTERNET"
         timeoutInMillis: 30000
 
+  /text-annotation/create:
+    post:
+      summary: Create a TextAnnotation node
+      description: |
+        Creates a TextAnnotation node linked to a TextSource. A unique IRI is generated automatically.
+      operationId: createTextAnnotation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - text_source_iri
+              properties:
+                text_source_iri:
+                  type: string
+                span_start:
+                  type: integer
+                span_end:
+                  type: integer
+                creator_iri:
+                  type: string
+                term_iri:
+                  type: string
+                metadata:
+                  type: string
+      responses:
+        "200":
+          description: Annotation created
+        "400":
+          description: Missing required fields
+        "500":
+          description: Internal server error
+      security:
+        - sigv4: []
+      x-amazon-apigateway-integration:
+        credentials:
+          Fn::GetAtt: [PheBeeAPIRole, Arn]
+        payloadFormatVersion: "2.0"
+        type: "aws_proxy"
+        uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-CreateTextAnnotationFunction/invocations
+        connectionType: "INTERNET"
+        timeoutInMillis: 30000
+
+  /text-annotation:
+    post:
+      summary: Get TextAnnotation details
+      description: |
+        Retrieves all properties of a TextAnnotation node by IRI.
+      operationId: getTextAnnotation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - annotation_iri
+              properties:
+                annotation_iri:
+                  type: string
+      responses:
+        "200":
+          description: TextAnnotation found or not found
+        "400":
+          description: Missing required field
+        "500":
+          description: Internal server error
+      security:
+        - sigv4: []
+      x-amazon-apigateway-integration:
+        credentials:
+          Fn::GetAtt: [PheBeeAPIRole, Arn]
+        payloadFormatVersion: "2.0"
+        type: "aws_proxy"
+        uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-GetTextAnnotationFunction/invocations
+        connectionType: "INTERNET"
+        timeoutInMillis: 30000
+
+  /text-annotation/remove:
+    post:
+      summary: Delete a TextAnnotation node
+      description: |
+        Deletes a TextAnnotation node by IRI.
+      operationId: removeTextAnnotation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - annotation_iri
+              properties:
+                annotation_iri:
+                  type: string
+      responses:
+        "200":
+          description: TextAnnotation deleted
+        "400":
+          description: Missing required field
+        "500":
+          description: Internal server error
+      security:
+        - sigv4: []
+      x-amazon-apigateway-integration:
+        credentials:
+          Fn::GetAtt: [PheBeeAPIRole, Arn]
+        payloadFormatVersion: "2.0"
+        type: "aws_proxy"
+        uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-RemoveTextAnnotationFunction/invocations
+        connectionType: "INTERNET"
+        timeoutInMillis: 30000
+
 x-amazon-apigateway-cors:
   allowMethods:
     - "*"

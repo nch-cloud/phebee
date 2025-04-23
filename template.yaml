@@ -137,6 +137,9 @@ Resources:
               - !GetAtt CreateCreatorFunction.Arn
               - !GetAtt GetCreatorFunction.Arn
               - !GetAtt RemoveCreatorFunction.Arn
+              - !GetAtt CreateTextAnnotationFunction.Arn
+              - !GetAtt GetTextAnnotationFunction.Arn
+              - !GetAtt RemoveTextAnnotationFunction.Arn
           - Effect: Allow
             Action:
               - states:StartSyncExecution
@@ -880,6 +883,68 @@ Resources:
       FunctionName: !Sub ${AWS::StackName}-RemoveCreatorFunction
       CodeUri: functions
       Handler: remove_creator.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+        - !Ref PheBeeNeptuneDeletePolicy
+
+  CreateTextAnnotationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-CreateTextAnnotationFunction
+      CodeUri: functions
+      Handler: create_text_annotation.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+        - !Ref PheBeeNeptuneWritePolicy
+
+  GetTextAnnotationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-GetTextAnnotationFunction
+      CodeUri: functions
+      Handler: get_text_annotation.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+
+  RemoveTextAnnotationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-RemoveTextAnnotationFunction
+      CodeUri: functions
+      Handler: remove_text_annotation.lambda_handler
       MemorySize: 512
       Environment:
         Variables:
