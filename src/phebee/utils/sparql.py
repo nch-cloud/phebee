@@ -4,6 +4,7 @@ from collections import defaultdict
 from typing import List
 from aws_lambda_powertools import Metrics, Logger, Tracer
 from datetime import datetime
+from urllib.parse import quote
 
 from .neptune import execute_query, execute_update
 from .aws import get_current_timestamp
@@ -636,14 +637,14 @@ def create_clinical_note(
 
     triples = [
         f"<{clinical_note_iri}> rdf:type phebee:ClinicalNote",
-        f"<{clinical_note_iri}> phebee:clinicalNoteId \"{clinical_note_id}\"",
+        f'<{clinical_note_iri}> phebee:clinicalNoteId "{clinical_note_id}"',
         f"<{clinical_note_iri}> phebee:hasEncounter <{encounter_iri}>",
-        f"<{clinical_note_iri}> dc:created \"{now_iso}\"^^xsd:dateTime",
+        f'<{clinical_note_iri}> dc:created "{now_iso}"^^xsd:dateTime',
     ]
 
     if note_timestamp:
         triples.append(
-            f"<{clinical_note_iri}> phebee:noteTimestamp \"{note_timestamp}\"^^xsd:dateTime"
+            f'<{clinical_note_iri}> phebee:noteTimestamp "{note_timestamp}"^^xsd:dateTime'
         )
 
     triples_block = " .\n        ".join(triples)
@@ -694,6 +695,86 @@ def delete_clinical_note(encounter_iri: str, clinical_note_id: str):
     }};
     DELETE WHERE {{
         ?s ?p <{clinical_note_iri}> .
+    }}
+    """
+    execute_update(sparql)
+
+
+def create_creator(
+    creator_id: str, creator_type: str, name: str = None, version: str = None
+):
+    now_iso = get_current_timestamp()
+    creator_id_safe = quote(creator_id, safe="")
+    creator_iri = f"http://ods.nationwidechildrens.org/phebee/creator/{creator_id_safe}"
+
+    if creator_type == "human":
+        rdf_type = "phebee:HumanCreator"
+    elif creator_type == "automated":
+        rdf_type = "phebee:AutomatedCreator"
+    else:
+        raise ValueError("Invalid creator_type. Must be 'human' or 'automated'.")
+
+    triples = [
+        f"<{creator_iri}> rdf:type {rdf_type}",
+        f'<{creator_iri}> dc:created "{now_iso}"^^xsd:dateTime',
+    ]
+
+    if name:
+        triples.append(f'<{creator_iri}> dc:title "{name}"')
+    if creator_type == "automated":
+        if not version:
+            raise ValueError("version is required for automated creators")
+        triples.append(f'<{creator_iri}> dc:hasVersion "{version}"')
+
+    triples_block = " .\n    ".join(triples) + " ."
+
+    sparql = f"""
+    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+    PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+    PREFIX dc: <http://purl.org/dc/terms/>
+    PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+
+    INSERT DATA {{
+        {triples_block}
+    }}
+    """
+    execute_update(sparql)
+
+
+def get_creator(creator_id: str) -> dict:
+    creator_id_safe = quote(creator_id, safe="")
+    creator_iri = f"http://ods.nationwidechildrens.org/phebee/creator/{creator_id_safe}"
+
+    sparql = f"""
+    SELECT ?p ?o WHERE {{
+        <{creator_iri}> ?p ?o .
+    }}
+    """
+
+    results = execute_query(sparql)
+    properties = {}
+    for binding in results["results"]["bindings"]:
+        pred = binding["p"]["value"]
+        obj = binding["o"]["value"]
+        key = pred.split("#")[-1] if "#" in pred else pred.split("/")[-1]
+        properties[key] = obj
+
+    return {
+        "creator_iri": creator_iri,
+        "creator_id": creator_id,
+        "properties": properties,
+    }
+
+
+def delete_creator(creator_id: str):
+    creator_id_safe = quote(creator_id, safe="")
+    creator_iri = f"http://ods.nationwidechildrens.org/phebee/creator/{creator_id_safe}"
+    sparql = f"""
+    DELETE WHERE {{
+        <{creator_iri}> ?p ?o .
+    }};
+    DELETE WHERE {{
+        ?s ?p <{creator_iri}> .
     }}
     """
     execute_update(sparql)

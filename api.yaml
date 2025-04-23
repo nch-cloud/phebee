@@ -584,6 +584,122 @@ paths:
         connectionType: "INTERNET"
         timeoutInMillis: 30000
 
+  /creator/create:
+    post:
+      summary: Create a Creator node
+      description: |
+        Creates a new Creator node in the PheBee graph. Supports both HumanCreator and AutomatedCreator types.
+      operationId: createCreator
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - creator_id
+                - creator_type
+              properties:
+                creator_id:
+                  type: string
+                creator_type:
+                  type: string
+                  enum: [human, automated]
+                name:
+                  type: string
+                version:
+                  type: string
+      responses:
+        "200":
+          description: Creator created
+        "400":
+          description: Invalid or missing fields
+        "500":
+          description: Internal server error
+      security:
+        - sigv4: []
+      x-amazon-apigateway-integration:
+        credentials:
+          Fn::GetAtt: [PheBeeAPIRole, Arn]
+        payloadFormatVersion: "2.0"
+        type: "aws_proxy"
+        uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-CreateCreatorFunction/invocations
+        connectionType: "INTERNET"
+        timeoutInMillis: 30000
+
+  /creator:
+    post:
+      summary: Get Creator node details
+      description: |
+        Retrieves all properties of a Creator node by creator ID.
+      operationId: getCreator
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - creator_id
+              properties:
+                creator_id:
+                  type: string
+      responses:
+        "200":
+          description: Creator found or not found
+        "400":
+          description: Missing required field
+        "500":
+          description: Internal server error
+      security:
+        - sigv4: []
+      x-amazon-apigateway-integration:
+        credentials:
+          Fn::GetAtt: [PheBeeAPIRole, Arn]
+        payloadFormatVersion: "2.0"
+        type: "aws_proxy"
+        uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-GetCreatorFunction/invocations
+        connectionType: "INTERNET"
+        timeoutInMillis: 30000
+
+  /creator/remove:
+    post:
+      summary: Delete a Creator node
+      description: |
+        Deletes a Creator node by creator ID.
+      operationId: removeCreator
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - creator_id
+              properties:
+                creator_id:
+                  type: string
+      responses:
+        "200":
+          description: Creator deleted
+        "400":
+          description: Missing required field
+        "500":
+          description: Internal server error
+      security:
+        - sigv4: []
+      x-amazon-apigateway-integration:
+        credentials:
+          Fn::GetAtt: [PheBeeAPIRole, Arn]
+        payloadFormatVersion: "2.0"
+        type: "aws_proxy"
+        uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-RemoveCreatorFunction/invocations
+        connectionType: "INTERNET"
+        timeoutInMillis: 30000
+
 x-amazon-apigateway-cors:
   allowMethods:
     - "*"
