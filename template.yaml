@@ -134,6 +134,9 @@ Resources:
               - !GetAtt CreateClinicalNoteFunction.Arn
               - !GetAtt GetClinicalNoteFunction.Arn
               - !GetAtt RemoveClinicalNoteFunction.Arn
+              - !GetAtt CreateCreatorFunction.Arn
+              - !GetAtt GetCreatorFunction.Arn
+              - !GetAtt RemoveCreatorFunction.Arn
           - Effect: Allow
             Action:
               - states:StartSyncExecution
@@ -815,6 +818,68 @@ Resources:
       FunctionName: !Sub ${AWS::StackName}-RemoveClinicalNoteFunction
       CodeUri: functions
       Handler: remove_clinical_note.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+        - !Ref PheBeeNeptuneDeletePolicy
+
+  CreateCreatorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-CreateCreatorFunction
+      CodeUri: functions
+      Handler: create_creator.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+        - !Ref PheBeeNeptuneWritePolicy
+
+  GetCreatorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-GetCreatorFunction
+      CodeUri: functions
+      Handler: get_creator.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+
+  RemoveCreatorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-RemoveCreatorFunction
+      CodeUri: functions
+      Handler: remove_creator.lambda_handler
       MemorySize: 512
       Environment:
         Variables:

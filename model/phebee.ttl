@@ -146,11 +146,11 @@ phebee:metadata a owl:DatatypeProperty ;
     rdfs:label "Metadata" ;
     rdfs:comment "Additional structured data about the annotation, serialized as JSON." .
 
-phebee:userId a owl:DatatypeProperty ;
-    rdfs:domain phebee:HumanCreator ;
+phebee:creatorId a owl:DatatypeProperty ;
+    rdfs:domain phebee:Creator ;
     rdfs:range xsd:string ;
-    rdfs:label "User ID" ;
-    rdfs:comment "The identifier of the human user who created the annotation." .
+    rdfs:label "Creator ID" ;
+    rdfs:comment "The identifier of the entity responsible for creating a node in the PheBee graph." .
 
 phebee:creatorId a owl:DatatypeProperty ;
     rdfs:domain phebee:AutomatedCreator ;
