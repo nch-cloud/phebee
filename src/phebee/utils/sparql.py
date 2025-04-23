@@ -780,6 +780,83 @@ def delete_creator(creator_id: str):
     execute_update(sparql)
 
 
+def create_text_annotation(
+    text_source_iri: str,
+    span_start: int = None,
+    span_end: int = None,
+    creator_iri: str = None,
+    term_iri: str = None,
+    metadata: str = None,
+) -> str:
+    annotation_id = str(uuid.uuid4())
+    annotation_iri = f"{text_source_iri}/annotation/{annotation_id}"
+    created = get_current_timestamp()
+
+    triples = [
+        f"<{annotation_iri}> rdf:type phebee:TextAnnotation",
+        f"<{annotation_iri}> phebee:textSource <{text_source_iri}>",
+        f'<{annotation_iri}> dc:created "{created}"^^xsd:dateTime',
+    ]
+
+    if span_start is not None:
+        triples.append(
+            f'<{annotation_iri}> phebee:spanStart "{span_start}"^^xsd:integer'
+        )
+    if span_end is not None:
+        triples.append(f'<{annotation_iri}> phebee:spanEnd "{span_end}"^^xsd:integer')
+    if creator_iri:
+        triples.append(f"<{annotation_iri}> phebee:creator <{creator_iri}>")
+    if term_iri:
+        triples.append(f"<{annotation_iri}> phebee:term <{term_iri}>")
+    if metadata:
+        triples.append(f'<{annotation_iri}> phebee:metadata """{metadata}"""')
+
+    triples_block = " .\n    ".join(triples) + " ."
+
+    sparql = f"""
+    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+    PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+    PREFIX dc: <http://purl.org/dc/terms/>
+    PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+
+    INSERT DATA {{
+        {triples_block}
+    }}
+    """
+    execute_update(sparql)
+    return annotation_iri
+
+
+def get_text_annotation(annotation_iri: str) -> dict:
+    sparql = f"""
+    SELECT ?p ?o WHERE {{
+        <{annotation_iri}> ?p ?o .
+    }}
+    """
+    results = execute_query(sparql)
+
+    properties = {}
+    for binding in results["results"]["bindings"]:
+        pred = binding["p"]["value"]
+        obj = binding["o"]["value"]
+        key = pred.split("#")[-1] if "#" in pred else pred.split("/")[-1]
+        properties[key] = obj
+
+    return {"annotation_iri": annotation_iri, "properties": properties}
+
+
+def delete_text_annotation(annotation_iri: str):
+    sparql = f"""
+    DELETE WHERE {{
+        <{annotation_iri}> ?p ?o .
+    }};
+    DELETE WHERE {{
+        ?s ?p <{annotation_iri}> .
+    }}
+    """
+    execute_update(sparql)
+
+
 def flatten_sparql_results(sparql_json, include_datatype=False, group_subjects=False):
     """
     Flattens the SPARQL JSON result format. Optionally, groups results by subject if group_subjects is True.
