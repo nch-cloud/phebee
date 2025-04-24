@@ -140,6 +140,9 @@ Resources:
               - !GetAtt CreateTextAnnotationFunction.Arn
               - !GetAtt GetTextAnnotationFunction.Arn
               - !GetAtt RemoveTextAnnotationFunction.Arn
+              - !GetAtt CreateTermLinkFunction.Arn
+              - !GetAtt GetTermLinkFunction.Arn
+              - !GetAtt RemoveTermLinkFunction.Arn
           - Effect: Allow
             Action:
               - states:StartSyncExecution
@@ -945,6 +948,68 @@ Resources:
       FunctionName: !Sub ${AWS::StackName}-RemoveTextAnnotationFunction
       CodeUri: functions
       Handler: remove_text_annotation.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+        - !Ref PheBeeNeptuneDeletePolicy
+
+  CreateTermLinkFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-CreateTermLinkFunction
+      CodeUri: functions
+      Handler: create_term_link.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+        - !Ref PheBeeNeptuneWritePolicy
+
+  GetTermLinkFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-GetTermLinkFunction
+      CodeUri: functions
+      Handler: get_term_link.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+
+  RemoveTermLinkFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-RemoveTermLinkFunction
+      CodeUri: functions
+      Handler: remove_term_link.lambda_handler
       MemorySize: 512
       Environment:
         Variables:

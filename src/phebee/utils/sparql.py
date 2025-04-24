@@ -857,6 +857,78 @@ def delete_text_annotation(annotation_iri: str):
     execute_update(sparql)
 
 
+def create_term_link(
+    source_node_iri: str,
+    term_iri: str,
+    creator_iri: str,
+    evidence_iris: list[str]
+) -> str:
+    if not evidence_iris:
+        raise ValueError("At least one evidence IRI is required.")
+
+    termlink_id = str(uuid.uuid4())
+    termlink_iri = f"{source_node_iri}/term-link/{termlink_id}"
+    created = get_current_timestamp()
+
+    triples = [
+        f"<{termlink_iri}> rdf:type phebee:TermLink",
+        f"<{termlink_iri}> phebee:hasTerm <{term_iri}>",
+        f"<{termlink_iri}> phebee:creator <{creator_iri}>",
+        f"<{termlink_iri}> dc:created \"{created}\"^^xsd:dateTime"
+    ]
+
+    for evidence_iri in evidence_iris:
+        triples.append(f"<{termlink_iri}> phebee:hasEvidence <{evidence_iri}>")
+
+    triples_block = " .\n    ".join(triples) + " ."
+
+    sparql = f"""
+    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+    PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+    PREFIX dc: <http://purl.org/dc/terms/>
+    PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+
+    INSERT DATA {{
+        {triples_block}
+    }}
+    """
+    execute_update(sparql)
+    return termlink_iri
+
+
+def get_term_link(termlink_iri: str) -> dict:
+    sparql = f"""
+    SELECT ?p ?o WHERE {{
+        <{termlink_iri}> ?p ?o .
+    }}
+    """
+    results = execute_query(sparql)
+
+    properties = {}
+    for binding in results["results"]["bindings"]:
+        pred = binding["p"]["value"]
+        obj = binding["o"]["value"]
+        key = pred.split("#")[-1] if "#" in pred else pred.split("/")[-1]
+        properties.setdefault(key, []).append(obj)
+
+    return {
+        "termlink_iri": termlink_iri,
+        "properties": properties
+    }
+
+
+def delete_term_link(termlink_iri: str):
+    sparql = f"""
+    DELETE WHERE {{
+        <{termlink_iri}> ?p ?o .
+    }};
+    DELETE WHERE {{
+        ?s ?p <{termlink_iri}> .
+    }}
+    """
+    execute_update(sparql)
+
+
 def flatten_sparql_results(sparql_json, include_datatype=False, group_subjects=False):
     """
     Flattens the SPARQL JSON result format. Optionally, groups results by subject if group_subjects is True.
