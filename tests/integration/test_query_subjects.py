@@ -32,7 +32,9 @@ def upload_phenopacket_s3(physical_resources):
 
 
 @pytest.mark.integration
-def test_phenopackets(upload_phenopacket_s3, test_project_id, physical_resources):
+def test_phenopackets(
+    upload_phenopacket_s3, test_project_id, physical_resources, update_hpo
+):
     project_id = test_project_id
     print(f"Using project {project_id} for phenopacket tests")
 
@@ -202,6 +204,7 @@ def test_term_filtering_query(
     term_id,
     include_descendants,
     expected_output,
+    update_hpo,
 ):
     """
     Test querying with term_iri to filter subjects by specific phenotypes.

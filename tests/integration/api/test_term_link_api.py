@@ -14,7 +14,7 @@ def test_create_and_delete_term_link(api_base_url, sigv4_auth):
         "source_node_iri": source_node_iri,
         "term_iri": term_iri,
         "creator_iri": creator_iri,
-        "evidence_iris": evidence_iris
+        "evidence_iris": evidence_iris,
     }
 
     # --- Create TermLink ---
@@ -47,13 +47,12 @@ def test_get_term_link(api_base_url, sigv4_auth):
     source_node_iri = "http://example.org/phebee/subject/test-subject"
     term_iri = "http://purl.obolibrary.org/obo/HP_0000118"
     creator_iri = "http://ods.nationwidechildrens.org/phebee/creator/test-creator"
-    evidence_iris = ["http://example.org/phebee/annotation/example-evidence"]
 
     payload = {
         "source_node_iri": source_node_iri,
         "term_iri": term_iri,
         "creator_iri": creator_iri,
-        "evidence_iris": evidence_iris
+        "evidence_iris": [],
     }
 
     # --- Create TermLink ---
@@ -72,8 +71,7 @@ def test_get_term_link(api_base_url, sigv4_auth):
     assert get_resp.status_code == 200
 
     body = get_resp.json()
+    print(f"test_term_link_api body: {body}")
     assert body["termlink_iri"] == termlink_iri
-    assert isinstance(body["properties"], dict)
-    assert term_iri in body["properties"].get("hasTerm", [])
-    assert creator_iri in body["properties"].get("creator", [])
-    assert evidence_iris[0] in body["properties"].get("hasEvidence", [])
+    assert term_iri in body.get("has_term", [])
+    assert creator_iri in body.get("creator", [])

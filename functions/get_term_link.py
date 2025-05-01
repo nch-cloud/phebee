@@ -14,7 +14,7 @@ def lambda_handler(event, context):
 
         result = get_term_link(termlink_iri)
 
-        if not result["properties"]:
+        if not result:
             return {
                 "statusCode": 200,
                 "body": json.dumps({"message": "TermLink not found"})

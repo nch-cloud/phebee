@@ -44,8 +44,7 @@ def test_creator_lifecycle(physical_resources, creator_type, extra):
     assert get_resp["StatusCode"] == 200
     get_body = json.loads(json.loads(get_resp["Payload"].read())["body"])
     assert get_body["creator_id"] == creator_id
-    assert isinstance(get_body["properties"], dict)
-    assert "created" in get_body["properties"]
+    assert "created" in get_body
 
     # --- Remove ---
     remove_resp = lambda_client.invoke(

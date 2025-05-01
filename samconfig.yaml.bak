@@ -2,7 +2,7 @@ version: 0.1
 integration-test:
   deploy:
     parameters:
-      stack_name: phebee-integration-test
+      stack_name: phebee-it
       capabilities:
         - CAPABILITY_IAM
         - CAPABILITY_NAMED_IAM

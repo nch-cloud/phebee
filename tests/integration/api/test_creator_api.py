@@ -75,5 +75,4 @@ def test_get_creator(api_base_url, sigv4_auth):
 
     body = get_resp.json()
     assert body["creator_id"] == creator_id
-    assert isinstance(body["properties"], dict)
-    assert body["properties"].get("title") == "Test User"
+    assert body.get("title") == "Test User"

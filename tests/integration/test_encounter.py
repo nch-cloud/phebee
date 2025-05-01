@@ -42,7 +42,6 @@ def test_encounter(create_test_subject, physical_resources):
     get_body = json.loads(json.loads(get_resp["Payload"].read())["body"])
     assert get_body["encounter_id"] == encounter_id
     assert get_body["subject_iri"] == test_subject_iri
-    assert isinstance(get_body["properties"], dict)
 
     # --- Delete Encounter ---
     remove_resp = lambda_client.invoke(

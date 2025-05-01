@@ -278,7 +278,9 @@ def get_creator_info(creator_iri: str) -> dict:
 
 
 def split_predicate(pred: str):
-    return (pred.split("#")[-1] if "#" in pred else pred.split("/")[-1]).lower()
+    return camel_to_snake(
+        (pred.split("#")[-1] if "#" in pred else pred.split("/")[-1])
+    ).lower()
 
 
 def get_term_links_for_node(
@@ -404,85 +406,6 @@ def get_term_links_for_node(
     ]
 
 
-# def get_term_links_for_node(source_node_iri: str) -> list[dict]:
-#     sparql = f"""
-#     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
-#     PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-#     PREFIX dc: <http://purl.org/dc/terms/>
-#     PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
-
-#     SELECT ?link ?term ?term_label ?termlink_creator ?evidence ?evidence_type ?p ?o ?evidence_creator
-#     FROM <http://ods.nationwidechildrens.org/phebee/subjects>
-#     WHERE {{
-#         ?link rdf:type phebee:TermLink ;
-#               phebee:sourceNode <{source_node_iri}> ;
-#               phebee:hasTerm ?term ;
-#               phebee:creator ?termlink_creator .
-
-#         OPTIONAL {{ ?link phebee:hasEvidence ?evidence . }}
-#         OPTIONAL {{ ?term rdfs:label ?term_label . }}
-#         OPTIONAL {{ ?evidence rdf:type ?evidence_type . }}
-#         OPTIONAL {{ ?evidence phebee:creator ?evidence_creator . }}
-#         OPTIONAL {{ ?evidence ?p ?o . }}
-#     }}
-#     """
-
-#     result = execute_query(sparql)
-#     links = {}
-
-#     for row in result["results"]["bindings"]:
-#         link_iri = row["link"]["value"]
-#         term_iri = row["term"]["value"]
-#         termlink_creator_iri = row["termlink_creator"]["value"]
-#         evidence_iri = row["evidence"]["value"]
-#         evidence_type = row.get("evidence_type", {}).get("value")
-#         evidence_creator_iri = row.get("evidence_creator", {}).get("value")
-#         predicate = row.get("p", {}).get("value")
-#         obj = row.get("o", {}).get("value")
-
-#         # Init TermLink
-#         if link_iri not in links:
-#             links[link_iri] = {
-#                 "termlink_iri": link_iri,
-#                 "term_iri": term_iri,
-#                 "term_label": row.get("term_label", {}).get("value"),
-#                 "creator": get_creator_info(termlink_creator_iri),
-#                 "evidence": {},
-#             }
-
-#         ev = links[link_iri]["evidence"].setdefault(
-#             evidence_iri,
-#             {
-#                 "evidence_iri": evidence_iri,
-#                 "evidence_type": evidence_type,
-#                 "properties": {},
-#                 "creator": get_creator_info(evidence_creator_iri)
-#                 if evidence_creator_iri
-#                 else None,
-#             },
-#         )
-
-#         if predicate and obj:
-#             key = (
-#                 predicate.split("#")[-1]
-#                 if "#" in predicate
-#                 else predicate.split("/")[-1]
-#             )
-#             ev["properties"][key] = obj
-
-#     # Final reshape
-#     return [
-#         {
-#             "termlink_iri": link["termlink_iri"],
-#             "term_iri": link["term_iri"],
-#             "term_label": link["term_label"],
-#             "creator": link["creator"],
-#             "evidence": list(link["evidence"].values()),
-#         }
-#         for link in links.values()
-#     ]
-
-
 def term_link_exists(source_node_iri: str, term_iri: str) -> dict:
     sparql = f"""
     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
@@ -537,7 +460,8 @@ def get_encounter(subject_iri: str, encounter_id: str) -> dict:
     results = execute_query(sparql)
 
     properties = {}
-    for binding in results["results"]["bindings"]:
+    bindings = results["results"]["bindings"]
+    for binding in bindings:
         predicate = binding["p"]["value"]
         obj = binding["o"]["value"]
 
@@ -545,12 +469,17 @@ def get_encounter(subject_iri: str, encounter_id: str) -> dict:
         key = predicate.split("#")[-1] if "#" in predicate else predicate.split("/")[-1]
         properties[key] = obj
 
-    return {
-        "encounter_iri": encounter_iri,
-        "subject_iri": subject_iri,
-        "encounter_id": encounter_id,
-        "properties": properties,
-    }
+    if len(bindings) > 0:
+        return flatten_response(
+            {
+                "encounter_iri": encounter_iri,
+                "subject_iri": subject_iri,
+                "encounter_id": encounter_id,
+            },
+            properties,
+        )
+    else:
+        return None
 
 
 def delete_encounter(subject_iri: str, encounter_id: str):
@@ -617,18 +546,23 @@ def get_clinical_note(encounter_iri: str, clinical_note_id: str) -> dict:
     results = execute_query(sparql)
 
     properties = {}
-    for binding in results["results"]["bindings"]:
+    bindings = results["results"]["bindings"]
+    for binding in bindings:
         pred = binding["p"]["value"]
         obj = binding["o"]["value"]
         key = split_predicate(pred)
         properties[key] = obj
 
-    return {
-        "clinical_note_iri": clinical_note_iri,
-        "encounter_iri": encounter_iri,
-        "clinical_note_id": clinical_note_id,
-        "properties": properties,
-    }
+    if len(bindings) > 0:
+        return flatten_response(
+            {
+                "clinical_note_iri": clinical_note_iri,
+                "encounter_iri": encounter_iri,
+            },
+            properties,
+        )
+    else:
+        return None
 
 
 def delete_clinical_note(encounter_iri: str, clinical_note_id: str):
@@ -702,17 +636,19 @@ def get_creator(creator_id: str) -> dict:
 
     results = execute_query(sparql)
     properties = {}
-    for binding in results["results"]["bindings"]:
+    bindings = results["results"]["bindings"]
+    for binding in bindings:
         pred = binding["p"]["value"]
         obj = binding["o"]["value"]
         key = split_predicate(pred)
         properties[key] = obj
 
-    return {
-        "creator_iri": creator_iri,
-        "creator_id": creator_id,
-        "properties": properties,
-    }
+    if len(bindings) > 0:
+        return flatten_response(
+            {"creator_iri": creator_iri, "creator_id": creator_id}, properties
+        )
+    else:
+        return None
 
 
 def delete_creator(creator_id: str):
@@ -790,13 +726,17 @@ def get_text_annotation(annotation_iri: str) -> dict:
     results = execute_query(sparql)
 
     properties = {}
-    for binding in results["results"]["bindings"]:
+    bindings = results["results"]["bindings"]
+    for binding in bindings:
         pred = binding["p"]["value"]
         obj = binding["o"]["value"]
         key = split_predicate(pred)
         properties[key] = obj
 
-    return {"annotation_iri": annotation_iri, "properties": properties}
+    if len(bindings) > 0:
+        return flatten_response({"annotation_iri": annotation_iri}, properties)
+    else:
+        return None
 
 
 def delete_text_annotation(annotation_iri: str):
@@ -862,13 +802,24 @@ def get_term_link(termlink_iri: str) -> dict:
     results = execute_query(sparql)
 
     properties = {}
-    for binding in results["results"]["bindings"]:
+    bindings = results["results"]["bindings"]
+    for binding in bindings:
         pred = binding["p"]["value"]
         obj = binding["o"]["value"]
         key = split_predicate(pred)
         properties.setdefault(key, []).append(obj)
 
-    return {"termlink_iri": termlink_iri, "properties": properties}
+    if len(bindings) > 0:
+        return flatten_response({"termlink_iri": termlink_iri}, properties)
+    else:
+        return None
+
+
+def flatten_response(fixed: dict, properties: dict) -> dict:
+    overlap = fixed.keys() & properties.keys()
+    if overlap:
+        raise ValueError(f"Property keys conflict with fixed keys: {overlap}")
+    return {**fixed, **properties}
 
 
 def delete_term_link(termlink_iri: str):

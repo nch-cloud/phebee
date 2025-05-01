@@ -14,7 +14,7 @@ def lambda_handler(event, context):
 
         result = get_creator(creator_id)
 
-        if not result["properties"]:
+        if not result:
             return {
                 "statusCode": 200,
                 "body": json.dumps({"message": "Creator not found"})

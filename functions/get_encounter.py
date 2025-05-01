@@ -16,7 +16,7 @@ def lambda_handler(event, context):
 
         result = get_encounter(subject_iri, encounter_id)
 
-        if not result["properties"]:
+        if not result:
             return {
                 "statusCode": 404,
                 "body": json.dumps({"message": f"Encounter not found: {encounter_id} for subject: {subject_iri}"})

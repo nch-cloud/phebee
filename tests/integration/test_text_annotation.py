@@ -40,10 +40,10 @@ def test_text_annotation(physical_resources):
     )
     assert get_resp["StatusCode"] == 200
     get_body = json.loads(json.loads(get_resp["Payload"].read())["body"])
+    print(f"get_body: {get_body}")
     assert get_body["annotation_iri"] == annotation_iri
-    assert isinstance(get_body["properties"], dict)
-    assert get_body["properties"].get("spanStart") == "10"
-    assert get_body["properties"].get("spanEnd") == "42"
+    assert get_body.get("span_start") == "10"
+    assert get_body.get("span_end") == "42"
 
     # --- Remove ---
     delete_resp = lambda_client.invoke(
@@ -62,6 +62,7 @@ def test_text_annotation(physical_resources):
         InvocationType="RequestResponse"
     )
     get_again_body = json.loads(json.loads(get_again_resp["Payload"].read())["body"])
+    print(f"get_again_body: {get_again_body}")
     assert get_again_body.get("message") == "TextAnnotation not found"
 
     # --- Missing required field ---
