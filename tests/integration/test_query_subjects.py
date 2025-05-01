@@ -113,6 +113,13 @@ def test_project_query(physical_resources, test_project_id, upload_phenopacket_s
             "Mismatch in project_subject_iris"
         )
 
+        # Clean up files
+        s3_client = get_client("s3")
+        s3_client.delete_object(
+            Bucket=physical_resources["PheBeeBucket"],
+            Key=IMPORT_OUTPUT_KEY,
+        )
+
     except ClientError as e:
         pytest.fail(f"Project query function failed: {e}")
 
@@ -170,6 +177,13 @@ def test_subject_specific_query(
         # Assert that the expected projectSubjectIds match the actual projectSubjectIds
         assert expected_project_subject_iris == actual_project_subject_iris, (
             "Mismatch in project_subject_iris"
+        )
+
+        # Clean up files
+        s3_client = get_client("s3")
+        s3_client.delete_object(
+            Bucket=physical_resources["PheBeeBucket"],
+            Key=IMPORT_OUTPUT_KEY,
         )
 
     except ClientError as e:
@@ -242,6 +256,13 @@ def test_term_filtering_query(
             [o.replace("<PROJECT>", project_id) for o in expected_output]
         ), f"Mismatch in expected output for term {term_id}"
 
+        # Clean up files
+        s3_client = get_client("s3")
+        s3_client.delete_object(
+            Bucket=physical_resources["PheBeeBucket"],
+            Key=IMPORT_OUTPUT_KEY,
+        )
+
     except ClientError as e:
         pytest.fail(f"Term filtering query function failed: {e}")
 
@@ -250,11 +271,12 @@ def import_phenopacket(physical_resources, project_id):
     # Start the step function for import
     bucket = physical_resources["PheBeeBucket"]
     s3_path = f"s3://{bucket}/{ZIP_KEY}"
+    output_s3_path = f"s3://{bucket}/{IMPORT_OUTPUT_KEY}"
     step_function_input = json.dumps(
         {
             "project_id": project_id,
             "s3_path": s3_path,
-            "output_s3_path": f"{s3_path}/{IMPORT_OUTPUT_KEY}",
+            "output_s3_path": output_s3_path,
         }
     )
 
@@ -306,32 +328,6 @@ def export_phenopacket(physical_resources, project_id):
 
     except ClientError as e:
         pytest.fail(f"Export function failed: {e}")
-
-
-# @pytest.mark.integration
-# @pytest.mark.parametrize(
-#     "create_test_project, upload_phenopacket_s3, import_phenopacket",
-#     [("phenopacket", "phenopacket", "phenopacket")],
-#     indirect=True,
-# )
-# def test_import_phenopacket(create_test_project, import_phenopacket):
-#     result = import_phenopacket
-#     config = PROJECT_CONFIGS["phenopacket"]
-
-#     # Validate the result of the step function
-#     assert result["status"] == "SUCCEEDED", "Step function did not succeed"
-
-#     # TODO this is just the number of parsed packets - not necessarily imported. Check how to get the state of successful imports from the MAP state.
-#     output_data = json.loads(result["output"])
-#     assert "number_phenopackets" in output_data["Payload"], (
-#         "Missing importedPacketCount in result"
-#     )
-#     n_packets = output_data["Payload"]["number_phenopackets"]
-#     assert n_packets == config["EXPECTED_PACKET_COUNT"], (
-#         f"Expected {config['EXPECTED_PACKET_COUNT']} packets, but got {n_packets}"
-#     )
-
-#     # Note: Test of the data itself is happening in test_subject_pheno_queries
 
 
 def export_phenopacket_zip_to_s3(physical_resources, project_id, bucket, key):
@@ -565,41 +561,6 @@ comparison_schema = {
     },
     "interpretations": "optional_import",
 }
-
-
-# # Download the phenopacket file from s3 and check that it matches the imported phenopacket
-# @pytest.mark.integration
-# @pytest.mark.parametrize(
-#     "create_test_project, upload_phenopacket_s3, import_phenopacket",
-#     [("phenopacket", "phenopacket", "phenopacket")],
-#     indirect=True,
-# )
-# def test_compare_phenopacket(
-#     physical_resources, upload_phenopacket_s3, import_phenopacket, update_hpo
-# ):
-#     config = PROJECT_CONFIGS["phenopacket"]
-
-#     import_data = download_and_extract_zip(config["ZIP_PATH"])
-
-#     export_data = export_phenopacket(physical_resources, config["PROJECT_ID"])
-
-#     compare_phenopacket_data(import_data, export_data)
-
-#     bucket = physical_resources["PheBeeBucket"]
-#     key = f"export/{config['PROJECT_ID']}.json"
-
-#     export_path = export_phenopacket_to_s3(
-#         physical_resources, config["PROJECT_ID"], bucket, key
-#     )
-#     s3_export_data = download_and_extract_zip(export_path)
-
-#     compare_phenopacket_data(import_data, s3_export_data)
-
-#     s3_client = get_client("s3")
-#     s3_client.delete_object(
-#         Bucket=bucket,
-#         Key=key,
-#     )
 
 
 def compare_phenopacket_data(pp_data_1, pp_data_2):

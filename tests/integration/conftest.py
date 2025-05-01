@@ -164,8 +164,12 @@ def cloudformation_stack(request, aws_session, profile_name):
     if not existing_stack:
         # Tear down the stack after tests
         try:
+            teardown_args = ["sam", "delete", "--stack-name", stack_name, "--no-prompts"]
+            if profile_name:
+                teardown_args.append("--profile")
+                teardown_args.append(profile_name)
             subprocess.run(
-                ["sam", "delete", "--stack-name", stack_name, "--no-prompts"],
+                teardown_args,
                 check=True,
             )
         except subprocess.CalledProcessError as e:
@@ -449,47 +453,6 @@ def create_test_project(request, cloudformation_stack, physical_resources):
         assert result["statusCode"] == 200, (
             f"Failed to remove the {config['PROJECT_ID']} project"
         )
-
-
-# # Fixture to import phenopacket data
-# @pytest.fixture(scope="session")
-# def import_phenopacket(
-#     request,
-#     upload_phenopacket_s3,
-#     create_test_project,
-#     physical_resources,
-#     update_hpo,
-#     update_mondo,
-# ):
-#     config = PROJECT_CONFIGS[request.param]
-#     s3_key = upload_phenopacket_s3
-
-#     # Start the step function for import
-#     bucket_arn = physical_resources["PheBeeBucket"]
-#     s3_path = f"s3://{bucket_arn}/{s3_key}"
-#     output_s3_path = f"s3://{bucket_arn}/test_import_packets.json"
-#     step_function_input = json.dumps(
-#         {
-#             "project_id": config["PROJECT_ID"],
-#             "s3_path": s3_path,
-#             "output_s3_path": output_s3_path,
-#         }
-#     )
-
-#     try:
-#         # Start the step function and wait for completion
-#         execution_arn = start_step_function(
-#             physical_resources["ImportPhenopacketsSFN"],
-#             step_function_input,
-#         )
-#         result = wait_for_step_function_completion(execution_arn, return_response=True)
-#         yield result
-#     except ClientError as e:
-#         pytest.fail(f"Step function failed: {e}")
-
-#     finally:
-#         s3_client = get_client("s3")
-#         s3_client.delete_object(Bucket=bucket_arn, Key="test_import_packets.json")
 
 
 def pytest_collection_modifyitems(session, config, items):
