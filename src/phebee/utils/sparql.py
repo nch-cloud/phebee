@@ -1,3 +1,28 @@
+"""
+SPARQL Query Conventions for PheBee Graph
+
+Prefix Usage:
+- PREFIX rdf:    http://www.w3.org/1999/02/22-rdf-syntax-ns#
+- PREFIX rdfs:   http://www.w3.org/2000/01/rdf-schema#
+- PREFIX dc:     http://purl.org/dc/terms/
+- PREFIX xsd:    http://www.w3.org/2001/XMLSchema#
+- PREFIX phebee: http://ods.nationwidechildrens.org/phebee#
+
+Property Naming:
+- All custom properties from the PheBee ontology use camelCase (e.g., phebee:hasTerm, phebee:noteTimestamp).
+- Extracted property keys in Python are normalized to lowercase via `split_predicate()` to avoid case mismatches.
+- Known prefixes are included in all SPARQL queries, even if not immediately used, for readability and future-proofing.
+
+Query Structure:
+- Prefer `INSERT DATA`, `SELECT`, `DELETE WHERE` syntax blocks with consistent indentation.
+- Use FROM clauses for graph-specific queries (e.g., subjects, HPO, MONDO).
+- Optional clauses use `OPTIONAL { ... }` syntax for safe retrieval of uncertain data.
+
+Utilities:
+- `split_predicate(pred)` extracts the property name from a full IRI and lowercases it.
+- Use `get_current_timestamp()` for consistent xsd:dateTime values.
+"""
+
 import re
 import uuid
 from collections import defaultdict
@@ -94,16 +119,16 @@ def get_subject(project_iri: str, project_subject_iri: str) -> dict:
     # Create a project-subject id IRI matching our project's namespace and provided project_subject_iri
     # Find the subject node connected to the created project-subject id
     sparql = f"""
-        PREFIX phebeePredicate: <http://ods.nationwidechildrens.org/phebee#>
+        PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
 
         SELECT ?subject ?project ?projectSubjectId
         WHERE {{
-            ?projectParam phebeePredicate:hasProjectIri "{project_iri}" .
+            ?projectParam phebee:hasProjectIri "{project_iri}" .
             
-            ?subject phebeePredicate:hasProjectSubjectIri <{project_subject_iri}> .
+            ?subject phebee:hasProjectSubjectIri <{project_subject_iri}> .
             
-            ?subject phebeePredicate:hasProjectSubjectIri ?projectSubjectId .
-            ?projectSubjectId phebeePredicate:hasProject ?project
+            ?subject phebee:hasProjectSubjectIri ?projectSubjectId .
+            ?projectSubjectId phebee:hasProject ?project
         }}
     """
 
@@ -131,26 +156,6 @@ def camel_to_snake(name: str) -> str:
     return re.sub("([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
 
 
-def validate_optional_fields(optional_fields: list) -> None:
-    """
-    Validate the user-provided optional fields.
-    :param optional_fields: List of optional fields to be validated.
-    :raises ValueError: If any field is not valid.
-    """
-    valid_fields = [
-        "creatorVersion",
-        "termSource",
-        "termSourceVersion",
-        "evidenceText",
-        "evidenceCreated",
-        "evidenceReferenceId",
-        "evidenceReferenceDescription",
-    ]
-    for field in optional_fields:
-        if field not in valid_fields:
-            raise ValueError(f"Invalid optional evidence field: {field}")
-
-
 def get_subjects(
     project_iri: str,
     hpo_version: str,
@@ -162,9 +167,7 @@ def get_subjects(
 ) -> list[dict]:
     project_subject_ids_clause = ""
     if project_subject_ids:
-        iri_list = " ".join(
-            f"<{project_iri}/{psid}>" for psid in project_subject_ids
-        )
+        iri_list = " ".join(f"<{project_iri}/{psid}>" for psid in project_subject_ids)
         project_subject_ids_clause = f"VALUES ?projectSubjectIRI {{ {iri_list} }}"
 
     if term_iri:
@@ -268,17 +271,14 @@ def get_creator_info(creator_iri: str) -> dict:
     for row in result["results"]["bindings"]:
         pred = row["p"]["value"]
         obj = row["o"]["value"]
-        key = pred.split("#")[-1] if "#" in pred else pred.split("/")[-1]
+        key = split_predicate(pred)
         creator[key] = obj
 
     return creator
 
 
-def _parse_term_link_property_row(properties_dict, pred, obj):
-    if not pred or not obj:
-        return
-    key = pred.split("#")[-1] if "#" in pred else pred.split("/")[-1]
-    properties_dict[key] = obj
+def split_predicate(pred: str):
+    return (pred.split("#")[-1] if "#" in pred else pred.split("/")[-1]).lower()
 
 
 def get_term_links_for_node(
@@ -360,7 +360,10 @@ def get_term_links_for_node(
         # Parse evidence block
         evidence_iri = row.get("evidence", {}).get("value")
         if evidence_iri:
-            if row.get("evidence_type", {}).get("value") == "http://ods.nationwidechildrens.org/phebee#TermLink":
+            if (
+                row.get("evidence_type", {}).get("value")
+                == "http://ods.nationwidechildrens.org/phebee#TermLink"
+            ):
                 continue  # Skip malformed nested TermLinks
 
             ev = link["evidence"].setdefault(
@@ -522,6 +525,11 @@ def create_encounter(subject_iri: str, encounter_id: str):
 def get_encounter(subject_iri: str, encounter_id: str) -> dict:
     encounter_iri = f"{subject_iri}/encounter/{encounter_id}"
     sparql = f"""
+    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+    PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+    PREFIX dc: <http://purl.org/dc/terms/>
+    PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+
     SELECT ?p ?o WHERE {{
         <{encounter_iri}> ?p ?o .
     }}
@@ -597,6 +605,11 @@ def create_clinical_note(
 def get_clinical_note(encounter_iri: str, clinical_note_id: str) -> dict:
     clinical_note_iri = f"{encounter_iri}/note/{clinical_note_id}"
     sparql = f"""
+    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+    PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+    PREFIX dc: <http://purl.org/dc/terms/>
+    PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+
     SELECT ?p ?o WHERE {{
         <{clinical_note_iri}> ?p ?o .
     }}
@@ -607,7 +620,7 @@ def get_clinical_note(encounter_iri: str, clinical_note_id: str) -> dict:
     for binding in results["results"]["bindings"]:
         pred = binding["p"]["value"]
         obj = binding["o"]["value"]
-        key = pred.split("#")[-1] if "#" in pred else pred.split("/")[-1]
+        key = split_predicate(pred)
         properties[key] = obj
 
     return {
@@ -677,6 +690,11 @@ def get_creator(creator_id: str) -> dict:
     creator_iri = f"http://ods.nationwidechildrens.org/phebee/creator/{creator_id_safe}"
 
     sparql = f"""
+    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+    PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+    PREFIX dc: <http://purl.org/dc/terms/>
+    PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+
     SELECT ?p ?o WHERE {{
         <{creator_iri}> ?p ?o .
     }}
@@ -687,7 +705,7 @@ def get_creator(creator_id: str) -> dict:
     for binding in results["results"]["bindings"]:
         pred = binding["p"]["value"]
         obj = binding["o"]["value"]
-        key = pred.split("#")[-1] if "#" in pred else pred.split("/")[-1]
+        key = split_predicate(pred)
         properties[key] = obj
 
     return {
@@ -760,6 +778,11 @@ def create_text_annotation(
 
 def get_text_annotation(annotation_iri: str) -> dict:
     sparql = f"""
+    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+    PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+    PREFIX dc: <http://purl.org/dc/terms/>
+    PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+
     SELECT ?p ?o WHERE {{
         <{annotation_iri}> ?p ?o .
     }}
@@ -770,7 +793,7 @@ def get_text_annotation(annotation_iri: str) -> dict:
     for binding in results["results"]["bindings"]:
         pred = binding["p"]["value"]
         obj = binding["o"]["value"]
-        key = pred.split("#")[-1] if "#" in pred else pred.split("/")[-1]
+        key = split_predicate(pred)
         properties[key] = obj
 
     return {"annotation_iri": annotation_iri, "properties": properties}
@@ -827,6 +850,11 @@ def create_term_link(
 
 def get_term_link(termlink_iri: str) -> dict:
     sparql = f"""
+    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+    PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+    PREFIX dc: <http://purl.org/dc/terms/>
+    PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+    
     SELECT ?p ?o WHERE {{
         <{termlink_iri}> ?p ?o .
     }}
@@ -837,7 +865,7 @@ def get_term_link(termlink_iri: str) -> dict:
     for binding in results["results"]["bindings"]:
         pred = binding["p"]["value"]
         obj = binding["o"]["value"]
-        key = pred.split("#")[-1] if "#" in pred else pred.split("/")[-1]
+        key = split_predicate(pred)
         properties.setdefault(key, []).append(obj)
 
     return {"termlink_iri": termlink_iri, "properties": properties}
