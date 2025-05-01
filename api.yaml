@@ -6,7 +6,7 @@ info:
 
 paths:
   # --- Project-related endpoints ---
-  /project:
+  /project/create:
     post:
       summary: Create a new project node
       description: |
@@ -71,7 +71,7 @@ paths:
         timeoutInMillis: 30000
 
   # --- Subject-related endpoints ---
-  /subject:
+  /subject/create:
     post:
       summary: Create or link a subject
       description: |
@@ -87,7 +87,7 @@ paths:
               type: object
               required:
                 - project_id
-                - project_subject_id
+                - project_subject_iri
               properties:
                 project_id:
                   type: string
@@ -95,7 +95,7 @@ paths:
                   type: string
                 known_project_id:
                   type: string
-                known_project_subject_id:
+                known_project_subject_iri:
                   type: string
                 known_subject_iri:
                   type: string
@@ -111,7 +111,7 @@ paths:
         connectionType: "INTERNET"
         timeoutInMillis: 30000
 
-  /subject/details:
+  /subject:
     post:
       summary: Retrieve subject details and associated terms
       description: |
@@ -126,11 +126,11 @@ paths:
               type: object
               required:
                 - project_id
-                - project_subject_id
+                - project_subject_iri
               properties:
                 project_id:
                   type: string
-                project_subject_id:
+                project_subject_iri:
                   type: string
       security:
         - sigv4: []
@@ -159,11 +159,11 @@ paths:
               type: object
               required:
                 - project_id
-                - project_subject_id
+                - project_subject_iri
               properties:
                 project_id:
                   type: string
-                project_subject_id:
+                project_subject_iri:
                   type: string
       security:
         - sigv4: []
@@ -178,61 +178,6 @@ paths:
         timeoutInMillis: 30000
 
   /subjects/query:
-    post:
-      summary: Query subject data with optional filters and export
-      description: |
-        Returns structured subject data for a given project. Supports filters like subject IDs, terms,
-        and flags for phenotypes, evidence, and descendants. Optionally exports results to S3 if
-        `output_s3_path` is provided.
-      operationId: querySubjects
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required:
-                - project_id
-              properties:
-                project_id:
-                  type: string
-                project_subject_ids:
-                  type: array
-                  items:
-                    type: string
-                term_iri:
-                  type: string
-                term_source:
-                  type: string
-                term_source_version:
-                  type: string
-                return_excluded_terms:
-                  type: boolean
-                include_descendants:
-                  type: boolean
-                include_phenotypes:
-                  type: boolean
-                include_evidence:
-                  type: boolean
-                optional_evidence:
-                  type: object
-                return_raw_json:
-                  type: boolean
-                output_s3_path:
-                  type: string
-      security:
-        - sigv4: []
-      x-amazon-apigateway-integration:
-        credentials:
-          Fn::GetAtt: [PheBeeAPIRole, Arn]
-        payloadFormatVersion: "2.0"
-        type: "aws_proxy"
-        uri:
-          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-GetSubjectsFunction/invocations
-        connectionType: "INTERNET"
-        timeoutInMillis: 30000
-
-  /subjects/phenotypes:
     post:
       summary: List subjects and their phenotypes for a project
       description: |
@@ -271,52 +216,7 @@ paths:
         timeoutInMillis: 30000
 
   # --- Term & link-related endpoints ---
-  /subject-term-link:
-    post:
-      summary: Link a subject to a term with evidence
-      description: |
-        Associates a subject with a term in the PheBee graph. If the link does not yet exist, it is created.
-        Evidence metadata is required for each link and is stored alongside the association.
-      operationId: createSubjectTermLink
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                evidence_list:
-                  type: array
-                  items:
-                    type: object
-                    required:
-                      - project_id
-                      - project_subject_id
-                      - term_iri
-                      - evidence
-                    properties:
-                      project_id:
-                        type: string
-                      project_subject_id:
-                        type: string
-                      term_iri:
-                        type: string
-                      evidence:
-                        type: object
-                evidence_s3_path:
-                  type: string
-      security:
-        - sigv4: []
-      x-amazon-apigateway-integration:
-        credentials:
-          Fn::GetAtt: [PheBeeAPIRole, Arn]
-        payloadFormatVersion: "2.0"
-        type: "aws_proxy"
-        uri:
-          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-CreateSubjectTermLinkFunction/invocations
-        connectionType: "INTERNET"
-        timeoutInMillis: 30000
-
+  
   /source/{source_name}:
     get:
       summary: Get term source metadata
@@ -815,6 +715,125 @@ paths:
         type: "aws_proxy"
         uri:
           Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-RemoveTextAnnotationFunction/invocations
+        connectionType: "INTERNET"
+        timeoutInMillis: 30000
+
+  /term-link/create:
+    post:
+      summary: Create a TermLink node
+      description: |
+        Creates a TermLink node that connects a Subject, Encounter, or ClinicalNote to a term with supporting evidence.
+      operationId: createTermLink
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - source_node_iri
+                - term_iri
+                - creator_iri
+                - evidence_iris
+              properties:
+                source_node_iri:
+                  type: string
+                term_iri:
+                  type: string
+                creator_iri:
+                  type: string
+                evidence_iris:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        "200":
+          description: TermLink created
+        "400":
+          description: Missing required fields or invalid structure
+        "500":
+          description: Internal server error
+      security:
+        - sigv4: []
+      x-amazon-apigateway-integration:
+        credentials:
+          Fn::GetAtt: [PheBeeAPIRole, Arn]
+        payloadFormatVersion: "2.0"
+        type: "aws_proxy"
+        uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-CreateTermLinkFunction/invocations
+        connectionType: "INTERNET"
+        timeoutInMillis: 30000
+
+  /term-link:
+    post:
+      summary: Get TermLink details
+      description: |
+        Retrieves a TermLink node and its associated properties.
+      operationId: getTermLink
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - termlink_iri
+              properties:
+                termlink_iri:
+                  type: string
+      responses:
+        "200":
+          description: TermLink found or not found
+        "400":
+          description: Missing required field
+        "500":
+          description: Internal server error
+      security:
+        - sigv4: []
+      x-amazon-apigateway-integration:
+        credentials:
+          Fn::GetAtt: [PheBeeAPIRole, Arn]
+        payloadFormatVersion: "2.0"
+        type: "aws_proxy"
+        uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-GetTermLinkFunction/invocations
+        connectionType: "INTERNET"
+        timeoutInMillis: 30000
+
+  /term-link/remove:
+    post:
+      summary: Delete a TermLink node
+      description: |
+        Deletes a TermLink node by IRI.
+      operationId: removeTermLink
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - termlink_iri
+              properties:
+                termlink_iri:
+                  type: string
+      responses:
+        "200":
+          description: TermLink deleted
+        "400":
+          description: Missing required field
+        "500":
+          description: Internal server error
+      security:
+        - sigv4: []
+      x-amazon-apigateway-integration:
+        credentials:
+          Fn::GetAtt: [PheBeeAPIRole, Arn]
+        payloadFormatVersion: "2.0"
+        type: "aws_proxy"
+        uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-RemoveTermLinkFunction/invocations
         connectionType: "INTERNET"
         timeoutInMillis: 30000
 

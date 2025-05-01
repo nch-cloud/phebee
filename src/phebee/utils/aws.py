@@ -158,7 +158,7 @@ def download_and_extract_zip(source_path):
     :param source_path: Path to the ZIP file (S3 URL, HTTP URL, or local path).
     :return: Dictionary of {subject_id: JSON data}.
     """
-    subject_dict = {}
+    subject_list = []
     s3_client = get_client("s3")
     with tempfile.TemporaryDirectory() as temp_dir:
         if source_path.startswith("s3://"):
@@ -195,13 +195,10 @@ def download_and_extract_zip(source_path):
             for root, _, files in os.walk(temp_dir):
                 for file in files:
                     if file.endswith(".json"):
-                        subject_id = os.path.splitext(file)[
-                            0
-                        ]  # Get subject_id from filename
                         with open(os.path.join(root, file), "r") as f:
-                            subject_dict[subject_id] = json.load(f)
+                            subject_list.append(json.load(f))
 
-    return subject_dict
+    return subject_list
 
 
 """ Helper functions for local development.
@@ -211,7 +208,7 @@ def download_and_extract_zip(source_path):
 # This is especially useful when using an AWS profile, e.g. running integration test suite, so we don't have to pass it everywhere.
 _clients = {}
 
-def get_client(client_name, profile=None):
+def get_client(client_name, profile=None, config=None):
     """
     Returns a boto3 client. Uses an authenticated session when running locally,
     and the default client when running on AWS.
@@ -227,13 +224,13 @@ def get_client(client_name, profile=None):
         # Check if we're running on AWS Lambda
         if "AWS_EXECUTION_ENV" in os.environ:
             # We're on AWS, use the default client
-            _clients[client_name] = boto3.client(client_name)
+            _clients[client_name] = boto3.client(client_name, config=config)
         else:
             # Running locally, use an authenticated session
             if profile is None:
                 profile = os.environ.get("AWS_PROFILE")
             session = boto3.Session(profile_name=profile)
-            _clients[client_name] = session.client(client_name)
+            _clients[client_name] = session.client(client_name, config=config)
 
     return _clients[client_name]
 

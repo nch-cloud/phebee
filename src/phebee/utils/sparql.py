@@ -5,7 +5,8 @@ from typing import List
 from aws_lambda_powertools import Metrics, Logger, Tracer
 from datetime import datetime
 from urllib.parse import quote
-
+from collections import defaultdict
+from phebee.constants import SPARQL_SEPARATOR
 from .neptune import execute_query, execute_update
 from .aws import get_current_timestamp
 
@@ -46,23 +47,62 @@ def triple_exists(subject: str, predicate: str, object: str) -> bool:
     return result["boolean"]
 
 
-def get_subject(project_id: str, project_subject_id: str) -> dict:
+def project_exists(project_id: str) -> bool:
+    project_iri = f"http://ods.nationwidechildrens.org/phebee/projects/{project_id}"
+
+    sparql = f"""
+    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+    PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+
+    ASK WHERE {{
+        GRAPH <{project_iri}> {{
+            <{project_iri}> rdf:type phebee:Project .
+        }}
+    }}
+    """
+    result = execute_query(sparql)
+    return result.get("boolean", False)
+
+
+def create_project(project_id: str, project_label: str) -> bool:
+    project_iri = f"http://ods.nationwidechildrens.org/phebee/projects/{project_id}"
+
+    if project_exists(project_id):
+        return False
+
+    # Insert if not
+    sparql_insert = f"""
+    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+    PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+    PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+
+    INSERT DATA {{
+        GRAPH <{project_iri}> {{
+            <{project_iri}> rdf:type phebee:Project ;
+                            rdfs:label "{project_label}" ;
+                            phebee:projectId "{project_id}" .
+        }}
+    }}
+    """
+    execute_update(sparql_insert)
+    return True
+
+
+def get_subject(project_iri: str, project_subject_iri: str) -> dict:
     # Get project node with IRI matching project_id
     # Get project-subject id nodes pointing at project node
-    # Create a project-subject id IRI matching our project's namespace and provided project_subject_id
+    # Create a project-subject id IRI matching our project's namespace and provided project_subject_iri
     # Find the subject node connected to the created project-subject id
     sparql = f"""
         PREFIX phebeePredicate: <http://ods.nationwidechildrens.org/phebee#>
 
         SELECT ?subject ?project ?projectSubjectId
         WHERE {{
-            ?projectParam phebeePredicate:hasProjectId "{project_id}" .
+            ?projectParam phebeePredicate:hasProjectIri "{project_iri}" .
             
-            BIND(IRI(CONCAT(STR(?projectParam), "#", "{project_subject_id}")) AS ?projectSubjectIdParam)
+            ?subject phebeePredicate:hasProjectSubjectIri <{project_subject_iri}> .
             
-            ?subject phebeePredicate:hasProjectSubjectId ?projectSubjectIdParam .
-            
-            ?subject phebeePredicate:hasProjectSubjectId ?projectSubjectId .
+            ?subject phebeePredicate:hasProjectSubjectIri ?projectSubjectId .
             ?projectSubjectId phebeePredicate:hasProject ?project
         }}
     """
@@ -80,62 +120,10 @@ def get_subject(project_id: str, project_subject_id: str) -> dict:
         subject_iri = binding["subject"]["value"]
 
         return {
-            "iri": subject_iri,
-            # Yes, we passsed this value in, but this keeps the return format consistent with get_subjects_for_project
-            "project_subject_id": project_subject_id,
+            "subject_iri": subject_iri,
+            # Yes, we passsed this value in, but this keeps the return format consistent with get_subjects
+            "project_subject_iri": project_subject_iri,
         }
-
-
-@tracer.capture_method
-def get_subjects_for_project(
-    project_id: str,
-    term_source: str = None,
-    term_source_version: str = None,
-    term_iri: str = None,
-) -> list:
-    if term_iri:
-        # Get only subjects matching the given term
-        sparql = f"""
-            PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-
-            SELECT ?subjectIRI ?projectSubjectId
-            FROM <http://ods.nationwidechildrens.org/phebee/{term_source}~{term_source_version}>
-            FROM <http://ods.nationwidechildrens.org/phebee/projects/{project_id}>
-            FROM <http://ods.nationwidechildrens.org/phebee/subjects>
-            WHERE {{
-                ?projectSubjectId phebee:hasProject <http://ods.nationwidechildrens.org/phebee/projects/{project_id}> .
-                ?subjectIRI phebee:hasProjectSubjectId ?projectSubjectId .
-                ?subjectIRI phebee:hasSubjectTermLink ?subjectTermLink .
-                ?subjectTermLink phebee:hasTerm ?term .
-                ?term rdfs:subClassOf* <{term_iri}>
-            }}
-        """
-    else:
-        # Get all subjects
-        sparql = f"""
-            PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-
-            SELECT ?subjectIRI ?projectSubjectId
-            FROM <http://ods.nationwidechildrens.org/phebee/projects/{project_id}>
-            WHERE {{
-                ?projectSubjectId phebee:hasProject <http://ods.nationwidechildrens.org/phebee/projects/{project_id}> .
-                ?subjectIRI phebee:hasProjectSubjectId ?projectSubjectId
-            }}
-        """
-
-    result = execute_query(sparql)
-
-    logger.info(result)
-
-    subjects = [
-        {
-            "iri": binding["subjectIRI"]["value"],
-            "project_subject_id": binding["projectSubjectId"]["value"],
-        }
-        for binding in result["results"]["bindings"]
-    ]
-
-    return subjects
 
 
 def camel_to_snake(name: str) -> str:
@@ -163,411 +151,354 @@ def validate_optional_fields(optional_fields: list) -> None:
             raise ValueError(f"Invalid optional evidence field: {field}")
 
 
-@tracer.capture_method
 def get_subjects(
-    project_id: str,
-    project_subject_ids: List[str] = None,
+    project_iri: str,
+    hpo_version: str,
+    mondo_version: str,
     term_iri: str = None,
     term_source: str = None,
     term_source_version: str = None,
-    return_excluded_terms: bool = False,
-    include_descendants: bool = False,
-    include_phenotypes: bool = False,
-    include_evidence: bool = False,
-    optional_evidence: List[str] = None,
-    return_raw_json: bool = False,
-    optional_clause: str = None,
-    # s3_path: str = None,
-) -> list:
-    # TODO We pass in an unqualified project_id and project_subject_ids, but return fully qualified IRIs.  If this presents a problem we may want to allow full IRI inputs.
-
-    # These flags require more information to be useful:
-    if include_descendants and not term_iri:
-        raise ValueError("include_descendants requires a term IRI.")
-
-    if return_excluded_terms and not (include_phenotypes):
-        raise ValueError(
-            "Returning excluded terms requires include_phenotypes to resolve status."
-        )
-
-    if include_evidence and not include_phenotypes:
-        raise ValueError("Include evidence requires phenotypes.")
-
-    if optional_evidence:
-        validate_optional_fields(optional_evidence)
-
-    prefix_clause = """
-    PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-    PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
-    PREFIX dcterms: <http://purl.org/dc/terms/>
-    """
-
-    # FROM clause
-    from_clause = f"""
-    FROM <http://ods.nationwidechildrens.org/phebee/projects/{project_id}>
-    FROM <http://ods.nationwidechildrens.org/phebee/subjects>
-    """
-
-    # TODO validate term_source and term_source_version against db to avoid empty responses
-    if term_iri or include_phenotypes:
-        if not term_source or not term_source_version:
-            raise ValueError(
-                "Need term_source and term_source_version if terms are used for querying or returned as results."
-            )
-        from_clause += f"""FROM <http://ods.nationwidechildrens.org/phebee/{term_source}~{term_source_version}>
-        """
-
-    # SELECT clause
-    select_clause = """
-    SELECT ?subjectIRI ?projectSubjectId """
-
-    if include_phenotypes:
-        select_clause += " ?term ?termLabel "
-
-    if return_excluded_terms:
-        select_clause += " ?excluded "
-
-    if include_evidence:
-        select_clause += " ?creator ?created ?assertion_method ?evidence_type "
-
-        if optional_evidence:
-            for field in optional_evidence:
-                select_clause += f"?{camel_to_snake(field)} "
-
-    select_clause += "\n"
-
-    # WHERE clause
+    project_subject_ids: list[str] = None,
+) -> list[dict]:
+    project_subject_ids_clause = ""
     if project_subject_ids:
-        values_clause = "\n        ".join(
-            [
-                f"<http://ods.nationwidechildrens.org/phebee/projects/{project_id}#{subject_id}>"
-                for subject_id in project_subject_ids
-            ]
+        iri_list = " ".join(
+            f"<{project_iri}/{psid}>" for psid in project_subject_ids
         )
-
-        where_clause = f"""
-    WHERE {{
-        # Use list of project subject ids
-        ?projectSubjectId phebee:hasProject <http://ods.nationwidechildrens.org/phebee/projects/{project_id}> .
-        # Filter by project subject id list
-        VALUES ?projectSubjectId {{ 
-        {values_clause} 
-            }}
-        ?subjectIRI phebee:hasProjectSubjectId ?projectSubjectId .
-        """
-    else:
-        where_clause = f"""
-    WHERE {{
-        # Project-specific subjects
-        ?projectSubjectId phebee:hasProject <http://ods.nationwidechildrens.org/phebee/projects/{project_id}> .
-        ?subjectIRI phebee:hasProjectSubjectId ?projectSubjectId .
-    """
-
-    if term_iri or include_phenotypes:
-        where_clause += """
-        ?subjectIRI phebee:hasSubjectTermLink ?subjectTermLink .
-        ?subjectTermLink phebee:hasSubjectTermEvidence ?stle .
-        # Handle excluded phenotypes
-        OPTIONAL {{ ?stle phebee:excluded ?excluded . }}
-    """
+        project_subject_ids_clause = f"VALUES ?projectSubjectIRI {{ {iri_list} }}"
 
     if term_iri:
-        # Add query term IRI to the WHERE clause
-        if include_descendants:
-            where_clause += f"""
-        # Include descendents
-        ?subjectTermLink phebee:hasTerm ?term .
-        ?term rdfs:subClassOf* <{term_iri}> .
-            """
-        else:
-            where_clause += f"""
-        # Match the term exactly, don't include descendents
-        # We need to bind the fixed term to the ?term variable for the query to work
-        BIND(<{term_iri}>  AS ?term) .
-        ?subjectTermLink phebee:hasTerm ?term .
-            """
-    elif include_phenotypes:
-        # We don't have a query term, but are returning terms, so need to define ?term variable
-        where_clause += """
-        ?subjectTermLink phebee:hasTerm ?term .
+        sparql = f"""
+        PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+        PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+
+        SELECT ?subjectIRI ?projectSubjectIRI
+        FROM <http://ods.nationwidechildrens.org/phebee/{term_source}~{term_source_version}>
+        FROM <{project_iri}>
+        FROM <http://ods.nationwidechildrens.org/phebee/subjects>
+        WHERE {{
+            ?projectSubjectIRI phebee:hasProject <{project_iri}> .
+            {project_subject_ids_clause}
+            ?subjectIRI phebee:hasProjectSubjectId ?projectSubjectIRI .
+
+            ?termlink rdf:type phebee:TermLink ;
+                      phebee:sourceNode ?subjectIRI ;
+                      phebee:hasTerm ?term .
+
+            ?term rdfs:subClassOf* <{term_iri}> .
+        }}
+        """
+    else:
+        sparql = f"""
+        PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+
+        SELECT ?subjectIRI ?projectSubjectIRI
+        FROM <{project_iri}>
+        FROM <http://ods.nationwidechildrens.org/phebee/subjects>
+        WHERE {{
+            ?projectSubjectIRI phebee:hasProject <{project_iri}> .
+            {project_subject_ids_clause}
+            ?subjectIRI phebee:hasProjectSubjectId ?projectSubjectIRI .
+        }}
         """
 
-    # Drop the excluded terms unless explicitly requested
-    if term_iri or include_phenotypes and not return_excluded_terms:
-        where_clause += """
-        # Exclude cases where ?excluded is true
-        FILTER (!BOUND(?excluded) || ?excluded = false)
-    """
-
-    if include_phenotypes:
-        where_clause += """
-        # Phenotypes
-        ?term rdfs:label ?termLabel .
-        """
-
-    if include_evidence:
-        where_clause += """
-        # Evidence details
-        ?stle dcterms:creator ?creator .
-        ?stle dcterms:created ?created .
-        ?stle phebee:assertionMethod ?assertion_method .
-        ?stle phebee:evidenceType ?evidence_type .
-        """
-
-        # Add optional evidence fields dynamically
-        if optional_evidence:
-            for field in optional_evidence:
-                where_clause += f"""
-        OPTIONAL {{ ?stle phebee:{field} ?{camel_to_snake(field)} . }}
-                """
-
-    # Close the WHERE clause
-    where_clause += """
-    }
-    """
-
-    # Combine everything
-    sparql = prefix_clause + select_clause + from_clause + where_clause
-
-    # Optional clause to allow debugging e.g. LIMIT and OFFSET
-    # TODO Consider pagination and result caching for large queries (only available for Gremlin?)
-    # https://aws.amazon.com/blogs/database/part-2-accelerate-graph-query-performance-with-caching-in-amazon-neptune/
-    if optional_clause:
-        sparql += optional_clause
-
-    # Execute the query and process results
     result = execute_query(sparql)
+    logger.info(f"Subjects matching term: {term_iri}")
     logger.info(result)
 
-    if return_raw_json:
-        return result
-    else:
-        return flatten_sparql_results(result, group_subjects=True)
-
-
-def get_subject_term_info(subject_iri: str) -> dict:
-    terms_sparql = f"""
-        PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-        PREFIX dcterms: <http://purl.org/dc/terms/>
-
-        SELECT ?stl ?term_label ?term_iri ?assertion_method ?creator ?created ?creator_version ?evidence_type ?evidence_text ?evidence_created ?evidence_reference_id ?evidence_reference_description ?term_source ?term_source_version ?excluded
-
-        WHERE {{
-            <{subject_iri}> phebee:hasSubjectTermLink ?stl .
-            ?stl phebee:hasTerm ?term_iri .
-            ?term_iri rdfs:label ?term_label .
-            ?stl phebee:hasSubjectTermEvidence ?stle .
-            ?stle dcterms:creator ?creator .
-            ?stle dcterms:created ?created .
-            ?stle phebee:assertionMethod ?assertion_method .
-            ?stle phebee:evidenceType ?evidence_type .
-            OPTIONAL {{?stle phebee:creatorVersion ?creator_version .}}
-            OPTIONAL {{?stle phebee:termSource ?term_source .}}
-            OPTIONAL {{?stle phebee:termSourceVersion ?term_source_version .}}
-            OPTIONAL {{?stle phebee:evidenceText ?evidence_text .}}
-            OPTIONAL {{?stle phebee:evidenceCreated ?evidence_created .}}
-            OPTIONAL {{?stle phebee:evidenceReferenceId ?evidence_reference_id .}}
-            OPTIONAL {{?stle phebee:evidenceReferenceDescription ?evidence_reference_description .}}
-            OPTIONAL {{?stle phebee:excluded ?excluded}}
-        }}
-    """
-
-    terms_result = execute_query(terms_sparql)
-
-    logger.info(terms_result)
-
-    terms = {}
-
-    for binding in terms_result["results"]["bindings"]:
-        logger.info(binding)
-
-        term = binding["term_iri"]["value"]
-
-        # If we haven't seen the term from this term link yet, add it to our list
-        if term not in terms:
-            terms[term] = {"evidence": []}
-
-            # If we have a label for our term, add it to the response
-            if binding["term_label"]["value"]:
-                terms[term]["label"] = binding["term_label"]["value"]
-
-        evidence = {
-            "creator": binding["creator"]["value"],
-            "created": binding["created"]["value"],
-            "assertion_method": binding["assertion_method"]["value"],
-            "evidence_type": binding["evidence_type"]["value"],
-            "evidence_created": binding["evidence_created"]["value"],
+    subjects = []
+    for binding in result["results"]["bindings"]:
+        subject_iri = binding["subjectIRI"]["value"]
+        project_subject_iri = binding["projectSubjectIRI"]["value"]
+        entry = {
+            "subject_iri": subject_iri,
+            "project_subject_iri": project_subject_iri,
+            "project_subject_id": project_subject_iri.split("/")[-1],
         }
 
-        add_optional_evidence_property(evidence, "excluded", binding)
-        add_optional_evidence_property(evidence, "creator_version", binding)
-        add_optional_evidence_property(evidence, "term_source", binding)
-        add_optional_evidence_property(evidence, "term_source_version", binding)
-        add_optional_evidence_property(evidence, "evidence_text", binding)
-        add_optional_evidence_property(evidence, "evidence_reference_id", binding)
-        add_optional_evidence_property(
-            evidence, "evidence_reference_description", binding
+        entry["term_links"] = get_term_links_for_node(
+            subject_iri, hpo_version, mondo_version
         )
 
-        terms[term]["evidence"].append(evidence)
+        subjects.append(entry)
 
-    return terms
-
-
-def add_optional_evidence_property(evidence, property_name, binding):
-    if property_name in binding:
-        evidence[property_name] = binding[property_name]["value"]
+    return subjects
 
 
-def subject_term_link_exists(subject_iri: str, term_iri: str) -> dict:
-    sparql = f"""
-        PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-
-        SELECT ?subjectTermLink WHERE {{
-            <{subject_iri}> phebee:hasSubjectTermLink ?subjectTermLink .
-            ?subjectTermLink phebee:hasTerm <{term_iri}> .
+def dump_graph_contents(
+    graph_iri: str, limit: int = 100, object_iri: str = None
+) -> list[dict]:
+    if object_iri:
+        sparql = f"""
+        SELECT ?s ?p ?o
+        FROM <{graph_iri}>
+        WHERE {{
+            BIND (<{object_iri}> AS ?o)
+            ?s ?p ?o
         }}
+        LIMIT {limit}
+        """
+    else:
+        sparql = f"""
+        SELECT ?s ?p ?o
+        FROM <{graph_iri}>
+        WHERE {{
+            ?s ?p ?o
+        }}
+        LIMIT {limit}
+        """
+
+    result = execute_query(sparql)
+    return [
+        {"s": row["s"]["value"], "p": row["p"]["value"], "o": row["o"]["value"]}
+        for row in result["results"]["bindings"]
+    ]
+
+
+def get_creator_info(creator_iri: str) -> dict:
+    sparql = f"""
+    PREFIX dc: <http://purl.org/dc/terms/>
+    SELECT ?p ?o WHERE {{
+        <{creator_iri}> ?p ?o .
+    }}
+    """
+    result = execute_query(sparql)
+    creator = {"iri": creator_iri}
+
+    for row in result["results"]["bindings"]:
+        pred = row["p"]["value"]
+        obj = row["o"]["value"]
+        key = pred.split("#")[-1] if "#" in pred else pred.split("/")[-1]
+        creator[key] = obj
+
+    return creator
+
+
+def _parse_term_link_property_row(properties_dict, pred, obj):
+    if not pred or not obj:
+        return
+    key = pred.split("#")[-1] if "#" in pred else pred.split("/")[-1]
+    properties_dict[key] = obj
+
+
+def get_term_links_for_node(
+    source_node_iri: str, hpo_version: str, mondo_version: str
+) -> list[dict]:
+    sparql = f"""
+    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+    PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+    PREFIX dc: <http://purl.org/dc/terms/>
+    PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+
+    SELECT 
+      ?link ?term ?term_label
+      ?termlink_creator_type ?termlink_creator_name ?termlink_creator_version
+      ?evidence ?evidence_type
+      ?evidence_creator_type ?evidence_creator_name ?evidence_creator_version
+      ?p ?o
+    FROM <http://ods.nationwidechildrens.org/phebee/subjects>
+    FROM <http://ods.nationwidechildrens.org/phebee/hpo~{hpo_version}>
+    FROM <http://ods.nationwidechildrens.org/phebee/mondo~{mondo_version}>
+    WHERE {{
+      ?link rdf:type phebee:TermLink ;
+            phebee:sourceNode <{source_node_iri}> ;
+            phebee:hasTerm ?term ;
+            phebee:creator ?termlink_creator .
+
+      OPTIONAL {{ ?term rdfs:label ?term_label . }}
+
+      OPTIONAL {{
+        ?link phebee:hasEvidence ?evidence .
+
+        OPTIONAL {{ ?evidence rdf:type ?evidence_type . }}
+        OPTIONAL {{ ?evidence phebee:creator ?evidence_creator . }}
+        OPTIONAL {{ ?evidence ?p ?o . }}
+
+        OPTIONAL {{
+          ?evidence_creator rdf:type ?evidence_creator_type .
+          ?evidence_creator dc:title ?evidence_creator_name .
+          ?evidence_creator phebee:version ?evidence_creator_version .
+        }}
+      }}
+
+      OPTIONAL {{
+        ?termlink_creator rdf:type ?termlink_creator_type .
+        ?termlink_creator dc:title ?termlink_creator_name .
+        ?termlink_creator phebee:version ?termlink_creator_version .
+      }}
+    }}
+    """
+
+    result = execute_query(sparql)
+    links = {}
+
+    for row in result["results"]["bindings"]:
+        link_iri = row["link"]["value"]
+        term_iri = row["term"]["value"]
+        term_label = row.get("term_label", {}).get("value")
+
+        # TermLink creator
+        creator = {
+            "creator_iri": row.get("termlink_creator", {}).get("value"),
+            "creator_type": row.get("termlink_creator_type", {}).get("value"),
+            "name": row.get("termlink_creator_name", {}).get("value"),
+            "version": row.get("termlink_creator_version", {}).get("value"),
+        }
+
+        # Initialize top-level link record
+        link = links.setdefault(
+            link_iri,
+            {
+                "termlink_iri": link_iri,
+                "term_iri": term_iri,
+                "term_label": term_label,
+                "creator": creator,
+                "evidence": {},
+            },
+        )
+
+        # Parse evidence block
+        evidence_iri = row.get("evidence", {}).get("value")
+        if evidence_iri:
+            if row.get("evidence_type", {}).get("value") == "http://ods.nationwidechildrens.org/phebee#TermLink":
+                continue  # Skip malformed nested TermLinks
+
+            ev = link["evidence"].setdefault(
+                evidence_iri,
+                {
+                    "evidence_iri": evidence_iri,
+                    "evidence_type": row.get("evidence_type", {}).get("value"),
+                    "creator": None,
+                    "properties": [],
+                },
+            )
+
+            # Add creator if present
+            evidence_creator_iri = row.get("evidence_creator", {}).get("value")
+            if evidence_creator_iri:
+                ev["creator"] = {
+                    "creator_iri": evidence_creator_iri,
+                    "creator_type": row.get("evidence_creator_type", {}).get("value"),
+                    "name": row.get("evidence_creator_name", {}).get("value"),
+                    "version": row.get("evidence_creator_version", {}).get("value"),
+                }
+
+            # Add any extra evidence properties
+            p = row.get("p", {}).get("value")
+            o = row.get("o", {}).get("value")
+            if p and o:
+                ev["properties"].append({"predicate": p, "object": o})
+
+    return [
+        {
+            "termlink_iri": link["termlink_iri"],
+            "term_iri": link["term_iri"],
+            "term_label": link["term_label"],
+            "creator": link["creator"],
+            "evidence": list(link["evidence"].values()),
+        }
+        for link in links.values()
+    ]
+
+
+# def get_term_links_for_node(source_node_iri: str) -> list[dict]:
+#     sparql = f"""
+#     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+#     PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+#     PREFIX dc: <http://purl.org/dc/terms/>
+#     PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+
+#     SELECT ?link ?term ?term_label ?termlink_creator ?evidence ?evidence_type ?p ?o ?evidence_creator
+#     FROM <http://ods.nationwidechildrens.org/phebee/subjects>
+#     WHERE {{
+#         ?link rdf:type phebee:TermLink ;
+#               phebee:sourceNode <{source_node_iri}> ;
+#               phebee:hasTerm ?term ;
+#               phebee:creator ?termlink_creator .
+
+#         OPTIONAL {{ ?link phebee:hasEvidence ?evidence . }}
+#         OPTIONAL {{ ?term rdfs:label ?term_label . }}
+#         OPTIONAL {{ ?evidence rdf:type ?evidence_type . }}
+#         OPTIONAL {{ ?evidence phebee:creator ?evidence_creator . }}
+#         OPTIONAL {{ ?evidence ?p ?o . }}
+#     }}
+#     """
+
+#     result = execute_query(sparql)
+#     links = {}
+
+#     for row in result["results"]["bindings"]:
+#         link_iri = row["link"]["value"]
+#         term_iri = row["term"]["value"]
+#         termlink_creator_iri = row["termlink_creator"]["value"]
+#         evidence_iri = row["evidence"]["value"]
+#         evidence_type = row.get("evidence_type", {}).get("value")
+#         evidence_creator_iri = row.get("evidence_creator", {}).get("value")
+#         predicate = row.get("p", {}).get("value")
+#         obj = row.get("o", {}).get("value")
+
+#         # Init TermLink
+#         if link_iri not in links:
+#             links[link_iri] = {
+#                 "termlink_iri": link_iri,
+#                 "term_iri": term_iri,
+#                 "term_label": row.get("term_label", {}).get("value"),
+#                 "creator": get_creator_info(termlink_creator_iri),
+#                 "evidence": {},
+#             }
+
+#         ev = links[link_iri]["evidence"].setdefault(
+#             evidence_iri,
+#             {
+#                 "evidence_iri": evidence_iri,
+#                 "evidence_type": evidence_type,
+#                 "properties": {},
+#                 "creator": get_creator_info(evidence_creator_iri)
+#                 if evidence_creator_iri
+#                 else None,
+#             },
+#         )
+
+#         if predicate and obj:
+#             key = (
+#                 predicate.split("#")[-1]
+#                 if "#" in predicate
+#                 else predicate.split("/")[-1]
+#             )
+#             ev["properties"][key] = obj
+
+#     # Final reshape
+#     return [
+#         {
+#             "termlink_iri": link["termlink_iri"],
+#             "term_iri": link["term_iri"],
+#             "term_label": link["term_label"],
+#             "creator": link["creator"],
+#             "evidence": list(link["evidence"].values()),
+#         }
+#         for link in links.values()
+#     ]
+
+
+def term_link_exists(source_node_iri: str, term_iri: str) -> dict:
+    sparql = f"""
+    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+    PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+
+    SELECT ?link WHERE {{
+        ?link rdf:type phebee:TermLink ;
+              phebee:sourceNode <{source_node_iri}> ;
+              phebee:hasTerm <{term_iri}> .
+    }}
     """
 
     result = execute_query(sparql)
 
-    logger.info(result)
-
-    if len(result["results"]["bindings"]) == 0:
+    if not result["results"]["bindings"]:
         return {"link_exists": False}
     else:
-        subject_term_link_uuid = result["results"]["bindings"][0]["subjectTermLink"][
-            "value"
-        ]
-
-        return {"link_exists": True, "link_id": subject_term_link_uuid}
-
-
-def create_subject_term_link(subject_iri: str, term_iri: str) -> dict:
-    link_uuid = uuid.uuid4()
-    subject_term_link_uuid = f"{subject_iri}/{link_uuid}"
-
-    sparql = f"""
-        PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
-        PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-        PREFIX dcterms: <http://purl.org/dc/terms/>
-
-        INSERT DATA {{
-            GRAPH <http://ods.nationwidechildrens.org/phebee/subjects>
-            {{
-                <{subject_iri}> phebee:hasSubjectTermLink <{subject_term_link_uuid}> .
-                <{subject_term_link_uuid}> rdf:type phebee:SubjectTermLink ;
-                    phebee:hasTerm <{term_iri}> ;
-                    dcterms:created "{get_current_timestamp()}"^^xsd:dateTime .
-            }}
-        }}
-    """
-
-    execute_update(sparql)
-
-    return {"link_created": True, "link_id": subject_term_link_uuid}
-
-
-def create_subject_term_evidence(subject_term_link_id: str, evidence: dict) -> dict:
-    excluded = evidence.get("excluded", "").lower() == "true"
-    excluded_optional_triple = "phebee:excluded true ;" if excluded else ""
-
-    creator = evidence["creator"]
-    created = get_current_timestamp()
-
-    creator_version = evidence.get("creator_version")
-    creator_version_optional_triple = (
-        f'phebee:creatorVersion "{creator_version}" ;' if creator_version else ""
-    )
-
-    term_source = evidence.get("term_source")
-    term_source_optional_triple = (
-        f'phebee:termSource "{term_source}" ;' if term_source else ""
-    )
-
-    term_source_version = evidence.get("term_source_version")
-    term_source_version_optional_triple = (
-        f'phebee:termSourceVersion "{term_source_version}" ;'
-        if term_source_version
-        else ""
-    )
-
-    evidence_text = evidence.get("evidence_text")
-    evidence_text_optional_triple = (
-        f'phebee:evidenceText "{evidence_text}" ;' if evidence_text else ""
-    )
-
-    evidence_reference_id = evidence.get("evidence_reference_id")
-    evidence_reference_id_optional_triple = (
-        f'phebee:evidenceReferenceId "{evidence_reference_id}" ;'
-        if evidence_reference_id
-        else ""
-    )
-
-    evidence_reference_description = evidence.get("evidence_reference_description")
-    evidence_reference_description_optional_triple = (
-        f'phebee:evidenceReferenceDescription "{evidence_reference_description}" ;'
-        if evidence_reference_description
-        else ""
-    )
-
-    evidence_created = evidence.get("evidence_created")
-    evidence_created_triple = (
-        f'phebee:evidenceCreated "{evidence_created}"^^xsd:dateTime ;'
-        if evidence_created
-        else f'phebee:evidenceCreated "{created}"^^xsd:dateTime ;'
-    )
-
-    evidence_type = evidence["evidence_type"]
-    if not evidence_type.startswith("http://purl.obolibrary.org/obo/ECO_"):
-        raise Exception(
-            "Evidence type should be a term from the Evidence Ontology descended from http://purl.obolibrary.org/obo/ECO_0000000"
-        )
-
-    assertion_method = evidence["assertion_method"]
-    if assertion_method not in [
-        "http://purl.obolibrary.org/obo/ECO_0000218",
-        "http://purl.obolibrary.org/obo/ECO_0000203",
-    ]:
-        raise Exception(
-            "Assertion method should be either ECO:0000218  (manual assertion) or ECO:0000203 (automatic assertion) from the Evidence Ontology"
-        )
-
-    evidence_uuid = uuid.uuid4()
-
-    subject_term_evidence_uuid = f"{subject_term_link_id}/{evidence_uuid}"
-
-    sparql = f"""
-        PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
-        PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-        PREFIX dcterms: <http://purl.org/dc/terms/>
-
-        INSERT DATA {{
-            GRAPH <http://ods.nationwidechildrens.org/phebee/subjects>
-            {{
-                <{subject_term_link_id}> phebee:hasSubjectTermEvidence <{subject_term_evidence_uuid}> .
-                <{subject_term_evidence_uuid}> rdf:type phebee:SubjectTermEvidence ;
-                    {excluded_optional_triple}
-                    dcterms:created "{created}"^^xsd:dateTime ;
-                    dcterms:creator "{creator}" ;
-                    {creator_version_optional_triple}
-                    {term_source_optional_triple}
-                    {term_source_version_optional_triple}
-                    {evidence_text_optional_triple}
-                    {evidence_reference_id_optional_triple}
-                    {evidence_reference_description_optional_triple}
-                    {evidence_created_triple}
-                    phebee:assertionMethod <{assertion_method}> ;
-                    phebee:evidenceType <{evidence_type}> .
-            }}
-        }}
-    """
-
-    logger.info(sparql)
-
-    execute_update(sparql)
-
-    return {"evidence_id": subject_term_evidence_uuid}
+        link_iri = result["results"]["bindings"][0]["link"]["value"]
+        return {"link_exists": True, "link_iri": link_iri}
 
 
 def create_encounter(subject_iri: str, encounter_id: str):
@@ -852,6 +783,73 @@ def delete_text_annotation(annotation_iri: str):
     }};
     DELETE WHERE {{
         ?s ?p <{annotation_iri}> .
+    }}
+    """
+    execute_update(sparql)
+
+
+def create_term_link(
+    source_node_iri: str, term_iri: str, creator_iri: str, evidence_iris: list[str]
+) -> str:
+    termlink_id = str(uuid.uuid4())
+    termlink_iri = f"{source_node_iri}/term-link/{termlink_id}"
+    created = get_current_timestamp()
+
+    triples = [
+        f"<{termlink_iri}> rdf:type phebee:TermLink",
+        f"<{termlink_iri}> phebee:sourceNode <{source_node_iri}>",
+        f"<{termlink_iri}> phebee:hasTerm <{term_iri}>",
+        f"<{termlink_iri}> phebee:creator <{creator_iri}>",
+        f'<{termlink_iri}> dc:created "{created}"^^xsd:dateTime',
+    ]
+
+    if evidence_iris:
+        for evidence_iri in evidence_iris:
+            triples.append(f"<{termlink_iri}> phebee:hasEvidence <{evidence_iri}>")
+
+    triples_block = " .\n    ".join(triples) + " ."
+
+    sparql = f"""
+    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+    PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+    PREFIX dc: <http://purl.org/dc/terms/>
+    PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+
+    INSERT DATA {{
+        GRAPH <http://ods.nationwidechildrens.org/phebee/subjects> {{
+            {triples_block}
+        }}
+    }}
+    """
+    execute_update(sparql)
+    return termlink_iri
+
+
+def get_term_link(termlink_iri: str) -> dict:
+    sparql = f"""
+    SELECT ?p ?o WHERE {{
+        <{termlink_iri}> ?p ?o .
+    }}
+    """
+    results = execute_query(sparql)
+
+    properties = {}
+    for binding in results["results"]["bindings"]:
+        pred = binding["p"]["value"]
+        obj = binding["o"]["value"]
+        key = pred.split("#")[-1] if "#" in pred else pred.split("/")[-1]
+        properties.setdefault(key, []).append(obj)
+
+    return {"termlink_iri": termlink_iri, "properties": properties}
+
+
+def delete_term_link(termlink_iri: str):
+    sparql = f"""
+    DELETE WHERE {{
+        <{termlink_iri}> ?p ?o .
+    }};
+    DELETE WHERE {{
+        ?s ?p <{termlink_iri}> .
     }}
     """
     execute_update(sparql)

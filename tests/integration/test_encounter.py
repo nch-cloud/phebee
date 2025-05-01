@@ -5,14 +5,14 @@ from phebee.utils.aws import get_client
 
 
 @pytest.mark.integration
-def test_encounter(create_test_subject_iri, physical_resources):
+def test_encounter(create_test_subject, physical_resources):
     lambda_client = get_client("lambda")
 
     create_fn = physical_resources["CreateEncounterFunction"]
     get_fn = physical_resources["GetEncounterFunction"]
     remove_fn = physical_resources["RemoveEncounterFunction"]
 
-    test_subject_iri = create_test_subject_iri()
+    test_subject_iri = create_test_subject()["iri"]
 
     print(f"test_subject_iri: {test_subject_iri}")
 

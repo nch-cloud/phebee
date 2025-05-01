@@ -15,6 +15,13 @@ from s3_utils import delete_s3_prefix
 from update_source_utils import update_source
 from constants import PROJECT_CONFIGS
 
+def pytest_addoption(parser):
+    parser.addoption(
+        "--skip-ontology-updates",
+        action="store_true",
+        default=False,
+        help="Skip slow HPO and MONDO graph updates during tests."
+    )
 
 @pytest.fixture(scope="session")
 def profile_name(request):
@@ -239,19 +246,27 @@ def physical_resources(aws_session, cloudformation_stack):
 
 
 @pytest.fixture(scope="session")
-def update_hpo(cloudformation_stack, physical_resources):
-    test_start_time = update_source(cloudformation_stack, "hpo", "UpdateHPOSFNArn")
-    yield test_start_time
+def update_hpo(request, cloudformation_stack, physical_resources):
+    if request.config.getoption("--skip-ontology-updates"):
+        print("Skipping HPO update as requested via --skip-ontology-updates parameter")
+        yield
+    else:
+        test_start_time = update_source(cloudformation_stack, "hpo", "UpdateHPOSFNArn")
+        yield test_start_time
 
-    delete_s3_prefix(physical_resources["PheBeeBucket"], "sources/hpo")
+        delete_s3_prefix(physical_resources["PheBeeBucket"], "sources/hpo")
 
 
 @pytest.fixture(scope="session")
-def update_mondo(cloudformation_stack, physical_resources):
-    test_start_time = update_source(cloudformation_stack, "mondo", "UpdateMONDOSFNArn")
-    yield test_start_time
+def update_mondo(request, cloudformation_stack, physical_resources):
+    if request.config.getoption("--skip-ontology-updates"):
+        print("Skipping Mondo update as requested via --skip-ontology-updates parameter")
+        yield
+    else:
+        test_start_time = update_source(cloudformation_stack, "mondo", "UpdateMONDOSFNArn")
+        yield test_start_time
 
-    delete_s3_prefix(physical_resources["PheBeeBucket"], "sources/mondo")
+        delete_s3_prefix(physical_resources["PheBeeBucket"], "sources/mondo")
 
 
 @pytest.fixture
@@ -273,7 +288,7 @@ def test_project_id(cloudformation_stack):
     assert create_response["StatusCode"] == 200, f"Invoke failed: {body}"
     assert body.get("project_created") is True
 
-    yield project_id
+    yield body.get("project_id")
 
     # Teardown
     delete_response = lambda_client.invoke(
@@ -288,20 +303,24 @@ def test_project_id(cloudformation_stack):
 
 
 @pytest.fixture
-def create_test_subject_iri(physical_resources):
+def create_test_subject(physical_resources):
     lambda_client = get_client("lambda")
     created_subjects = []
     project_id = f"test-proj-{uuid.uuid4().hex[:6]}"
 
     # Create project
-    lambda_client.invoke(
+    project_response = lambda_client.invoke(
         FunctionName=physical_resources["CreateProjectFunction"],
-        Payload=json.dumps({"body": json.dumps({"project_id": project_id})}).encode(
+        Payload=json.dumps({"body": json.dumps({"project_id": project_id, "project_label": project_id})}).encode(
             "utf-8"
         ),
         InvocationType="RequestResponse",
     )
-
+    project_body = json.loads(
+        json.loads(project_response["Payload"].read().decode("utf-8"))["body"]
+    )
+    print(project_body)
+    
     def _make_subject():
         project_subject_id = f"test-subj-{uuid.uuid4().hex[:6]}"
         payload = {"project_id": project_id, "project_subject_id": project_subject_id}
@@ -313,13 +332,16 @@ def create_test_subject_iri(physical_resources):
         )
  
         body = json.loads(response["Payload"].read())
+
+        print(body)
+
         subject_data = json.loads(body["body"])["subject"]
 
         created_subjects.append(
             {"project_id": project_id, "project_subject_id": project_subject_id}
         )
 
-        return subject_data["id"]
+        return subject_data
 
     yield _make_subject
 
@@ -350,12 +372,12 @@ def create_test_subject_iri(physical_resources):
 
 
 @pytest.fixture
-def create_test_encounter_iri(create_test_subject_iri, physical_resources):
+def create_test_encounter_iri(create_test_subject, physical_resources):
     lambda_client = get_client("lambda")
     created_encounters = []
 
     def _make_encounter():
-        subject_iri = create_test_subject_iri()
+        subject_iri = create_test_subject()["iri"]
         encounter_id = f"test-enc-{uuid.uuid4().hex[:6]}"
         payload = {"subject_iri": subject_iri, "encounter_id": encounter_id}
 
@@ -386,27 +408,6 @@ def create_test_encounter_iri(create_test_subject_iri, physical_resources):
             Payload=json.dumps({"body": json.dumps(payload)}).encode("utf-8"),
             InvocationType="RequestResponse",
         )
-
-
-# Fixture to upload phenopacket test data to S3
-@pytest.fixture(scope="session")
-def upload_phenopacket_s3(request, cloudformation_stack, physical_resources):
-    config = PROJECT_CONFIGS[request.param]
-    s3_client = get_client("s3")
-
-    try:
-        zip_key = f"{request.param}/{os.path.basename(config['ZIP_PATH'])}"
-        with open(config["ZIP_PATH"], "rb") as data:
-            s3_client.put_object(
-                Bucket=physical_resources["PheBeeBucket"], Key=zip_key, Body=data
-            )
-        yield zip_key
-    except ClientError as e:
-        pytest.fail(f"Failed to upload ZIP to S3: {e}")
-
-    # Cleanup after tests
-    finally:
-        s3_client.delete_object(Bucket=physical_resources["PheBeeBucket"], Key=zip_key)
 
 
 # Fixture to create the test project
@@ -450,45 +451,45 @@ def create_test_project(request, cloudformation_stack, physical_resources):
         )
 
 
-# Fixture to import phenopacket data
-@pytest.fixture(scope="session")
-def import_phenopacket(
-    request,
-    upload_phenopacket_s3,
-    create_test_project,
-    physical_resources,
-    update_hpo,
-    update_mondo,
-):
-    config = PROJECT_CONFIGS[request.param]
-    s3_key = upload_phenopacket_s3
+# # Fixture to import phenopacket data
+# @pytest.fixture(scope="session")
+# def import_phenopacket(
+#     request,
+#     upload_phenopacket_s3,
+#     create_test_project,
+#     physical_resources,
+#     update_hpo,
+#     update_mondo,
+# ):
+#     config = PROJECT_CONFIGS[request.param]
+#     s3_key = upload_phenopacket_s3
 
-    # Start the step function for import
-    bucket_arn = physical_resources["PheBeeBucket"]
-    s3_path = f"s3://{bucket_arn}/{s3_key}"
-    output_s3_path = f"s3://{bucket_arn}/test_import_packets.json"
-    step_function_input = json.dumps(
-        {
-            "project_id": config["PROJECT_ID"],
-            "s3_path": s3_path,
-            "output_s3_path": output_s3_path,
-        }
-    )
+#     # Start the step function for import
+#     bucket_arn = physical_resources["PheBeeBucket"]
+#     s3_path = f"s3://{bucket_arn}/{s3_key}"
+#     output_s3_path = f"s3://{bucket_arn}/test_import_packets.json"
+#     step_function_input = json.dumps(
+#         {
+#             "project_id": config["PROJECT_ID"],
+#             "s3_path": s3_path,
+#             "output_s3_path": output_s3_path,
+#         }
+#     )
 
-    try:
-        # Start the step function and wait for completion
-        execution_arn = start_step_function(
-            physical_resources["ImportPhenopacketsSFN"],
-            step_function_input,
-        )
-        result = wait_for_step_function_completion(execution_arn, return_response=True)
-        yield result
-    except ClientError as e:
-        pytest.fail(f"Step function failed: {e}")
+#     try:
+#         # Start the step function and wait for completion
+#         execution_arn = start_step_function(
+#             physical_resources["ImportPhenopacketsSFN"],
+#             step_function_input,
+#         )
+#         result = wait_for_step_function_completion(execution_arn, return_response=True)
+#         yield result
+#     except ClientError as e:
+#         pytest.fail(f"Step function failed: {e}")
 
-    finally:
-        s3_client = get_client("s3")
-        s3_client.delete_object(Bucket=bucket_arn, Key="test_import_packets.json")
+#     finally:
+#         s3_client = get_client("s3")
+#         s3_client.delete_object(Bucket=bucket_arn, Key="test_import_packets.json")
 
 
 def pytest_collection_modifyitems(session, config, items):

@@ -121,10 +121,8 @@ Resources:
               - !GetAtt GetSourceInfoFunction.Arn
               - !GetAtt CreateProjectFunction.Arn
               - !GetAtt CreateSubjectFunction.Arn
-              - !GetAtt CreateSubjectTermLinkFunction.Arn
               - !GetAtt ExportPhenopacketsFunction.Arn
               - !GetAtt GetSubjectFunction.Arn
-              - !GetAtt GetSubjectsFunction.Arn
               - !GetAtt GetSubjectsPhenotypesFunction.Arn
               - !GetAtt RemoveSubjectFunction.Arn
               - !GetAtt RemoveProjectFunction.Arn
@@ -140,6 +138,9 @@ Resources:
               - !GetAtt CreateTextAnnotationFunction.Arn
               - !GetAtt GetTextAnnotationFunction.Arn
               - !GetAtt RemoveTextAnnotationFunction.Arn
+              - !GetAtt CreateTermLinkFunction.Arn
+              - !GetAtt GetTermLinkFunction.Arn
+              - !GetAtt RemoveTermLinkFunction.Arn
           - Effect: Allow
             Action:
               - states:StartSyncExecution
@@ -482,28 +483,6 @@ Resources:
       Policies:
         - !Ref PheBeeNeptuneReadPolicy
 
-  GetSubjectsFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: !Sub ${AWS::StackName}-GetSubjectsFunction
-      CodeUri: functions
-      Handler: get_subjects.lambda_handler
-      MemorySize: 512
-      Environment:
-        Variables:
-          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
-          Region: !Sub ${AWS::Region}
-          PheBeeDynamoTable: !Ref DynamoDBTable
-      VpcConfig:
-        SecurityGroupIds:
-          - !Ref PheBeeLambdaSecurityGroup
-        SubnetIds:
-          - !Ref SubnetId1
-          - !Ref SubnetId2
-      Policies:
-        - !Ref PheBeeNeptuneReadPolicy
-        - !Ref PheBeeDynamoDBReadPolicy
-
   CreateSubjectFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -547,38 +526,6 @@ Resources:
       Policies:
         - !Ref PheBeeNeptuneReadPolicy
         - !Ref PheBeeNeptuneDeletePolicy
-
-  CreateSubjectTermLinkFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: !Sub ${AWS::StackName}-CreateSubjectTermLinkFunction
-      CodeUri: functions
-      Handler: create_subject_term_link.lambda_handler
-      MemorySize: 512
-      Environment:
-        Variables:
-          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
-          Region: !Sub ${AWS::Region}
-          PheBeeBus: !Ref PheBeeBus
-      VpcConfig:
-        SecurityGroupIds:
-          - !Ref PheBeeLambdaSecurityGroup
-        SubnetIds:
-          - !Ref SubnetId1
-          - !Ref SubnetId2
-      Policies:
-        - !Ref PheBeeNeptuneReadPolicy
-        - !Ref PheBeeNeptuneWritePolicy
-        - !Ref PheBeeS3ReadPolicy
-        - !Ref PheBeePutEventsPolicy
-      Events:
-        CreateSubjectTermLinkEvent:
-          Type: CloudWatchEvent
-          Properties:
-            EventBusName: !Ref PheBeeBus
-            Pattern:
-              detail-type:
-                - subject_term_link_evidence
 
   CreateProjectFunction:
     Type: AWS::Serverless::Function
@@ -670,6 +617,7 @@ Resources:
       CodeUri: functions
       Handler: get_subjects_pheno.lambda_handler
       MemorySize: 2048
+      Timeout: 300
       Environment:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
@@ -711,6 +659,7 @@ Resources:
       Policies:
         - !Ref PheBeeNeptuneResetPolicy
         - !Ref PheBeeDynamoDBWritePolicy
+        - !Ref PheBeeDynamoDBReadPolicy
 
   CreateEncounterFunction:
     Type: AWS::Serverless::Function
@@ -960,6 +909,82 @@ Resources:
         - !Ref PheBeeNeptuneReadPolicy
         - !Ref PheBeeNeptuneDeletePolicy
 
+  CreateTermLinkFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-CreateTermLinkFunction
+      CodeUri: functions
+      Handler: create_term_link.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+        - !Ref PheBeeNeptuneWritePolicy
+
+  GetTermLinkFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-GetTermLinkFunction
+      CodeUri: functions
+      Handler: get_term_link.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+
+  RemoveTermLinkFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-RemoveTermLinkFunction
+      CodeUri: functions
+      Handler: remove_term_link.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+        - !Ref PheBeeNeptuneDeletePolicy
+
+  PrepareSubjectTermLinksPayloadFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-PrepareSubjectTermLinksPayloadFunction
+      CodeUri: functions
+      Handler: prepare_subject_term_links_payload.lambda_handler
+      MemorySize: 512
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+
   #################
   # Step Functions
   #################
@@ -1096,7 +1121,8 @@ Resources:
         ParsePhenopacketCollectionFunctionArn: !Ref ParsePhenopacketCollectionFunction
         ProcessPhenopacketFunctionArn: !Ref ProcessPhenopacketFunction
         CreateSubjectFunctionArn: !Ref CreateSubjectFunction
-        CreateSubjectTermLinkFunctionArn: !Ref CreateSubjectTermLinkFunction
+        CreateTermLinkFunctionArn: !Ref CreateTermLinkFunction
+        PrepareSubjectTermLinksPayloadFunctionArn: !Ref PrepareSubjectTermLinksPayloadFunction
       Type: STANDARD
       Policies:
         - !Ref PheBeeStepFunctionPolicy
@@ -1107,9 +1133,10 @@ Resources:
               - lambda:InvokeFunction
             Resource:
               - !GetAtt CreateSubjectFunction.Arn
-              - !GetAtt CreateSubjectTermLinkFunction.Arn
+              - !GetAtt CreateTermLinkFunction.Arn
               - !GetAtt ParsePhenopacketCollectionFunction.Arn
               - !GetAtt ProcessPhenopacketFunction.Arn
+              - !GetAtt PrepareSubjectTermLinksPayloadFunction.Arn
           - Effect: Allow
             Action:
               - states:StartExecution
