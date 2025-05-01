@@ -41,9 +41,9 @@ def test_clinical_note(create_test_encounter_iri, physical_resources):
     )
     assert get_resp["StatusCode"] == 200
     get_body = json.loads(json.loads(get_resp["Payload"].read())["body"])
+    print(f"get_body: {get_body}")
     assert get_body["clinical_note_id"] == clinical_note_id
     assert get_body["encounter_iri"] == encounter_iri
-    assert isinstance(get_body["properties"], dict)
 
     # --- Delete ---
     delete_resp = lambda_client.invoke(

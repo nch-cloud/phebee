@@ -60,4 +60,3 @@ def test_get_encounter(api_base_url, sigv4_auth, create_test_subject):
     assert body["encounter_iri"].endswith(encounter_id)
     assert body["subject_iri"] == test_subject_iri
     assert body["encounter_id"] == encounter_id
-    assert isinstance(body["properties"], dict)

@@ -16,7 +16,7 @@ def lambda_handler(event, context):
 
         result = get_clinical_note(encounter_iri, clinical_note_id)
 
-        if not result["properties"]:
+        if not result:
             return {
                 "statusCode": 200,
                 "body": json.dumps({"message": "ClinicalNote not found"})

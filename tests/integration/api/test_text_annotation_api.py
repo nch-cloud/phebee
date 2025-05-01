@@ -10,7 +10,7 @@ def test_create_and_delete_text_annotation(api_base_url, sigv4_auth):
         "text_source_iri": text_source_iri,
         "span_start": 5,
         "span_end": 20,
-        "metadata": "{\"source\": \"API\", \"version\": \"1.0.0\"}"
+        "metadata": '{"source": "API", "version": "1.0.0"}',
     }
 
     # --- Create ---
@@ -45,7 +45,7 @@ def test_get_text_annotation(api_base_url, sigv4_auth):
         "text_source_iri": text_source_iri,
         "span_start": 3,
         "span_end": 9,
-        "metadata": "{\"note\": \"via API test\"}"
+        "metadata": '{"note": "via API test"}',
     }
 
     # --- Create ---
@@ -70,6 +70,5 @@ def test_get_text_annotation(api_base_url, sigv4_auth):
 
     body = get_resp.json()
     assert body["annotation_iri"] == annotation_iri
-    assert isinstance(body["properties"], dict)
-    assert body["properties"].get("spanStart") == "3"
-    assert body["properties"].get("spanEnd") == "9"
+    assert body.get("span_start") == "3"
+    assert body.get("span_end") == "9"

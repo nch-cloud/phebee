@@ -66,4 +66,3 @@ def test_get_clinical_note(api_base_url, sigv4_auth, create_test_encounter_iri):
     assert body["clinical_note_iri"].endswith(clinical_note_id)
     assert body["encounter_iri"] == encounter_iri
     assert body["clinical_note_id"] == clinical_note_id
-    assert isinstance(body["properties"], dict)
