@@ -23,8 +23,11 @@ def get_current_term_source_version(source_name: str, dynamodb=None):
     source_records = get_source_records(source_name, dynamodb)
 
     # Each record has a timestamp from when it was installed.  Sort in ascending order.
+    # If there are any with a missing timestamp (e.g. failed load), ignore
     sorted_records = sorted(
-        source_records, key=lambda x: x["InstallTimestamp"]["S"], reverse=True
+        (r for r in source_records if "InstallTimestamp" in r and "S" in r["InstallTimestamp"]),
+        key=lambda x: x["InstallTimestamp"]["S"],
+        reverse=True
     )
 
     # The first record is the newest install of this source.  Get its version and return it.

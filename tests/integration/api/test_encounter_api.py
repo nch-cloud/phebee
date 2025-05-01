@@ -5,9 +5,9 @@ import requests
 pytestmark = [pytest.mark.integration, pytest.mark.api]
 
 
-def test_create_and_delete_encounter(api_base_url, sigv4_auth, create_test_subject_iri):
+def test_create_and_delete_encounter(api_base_url, sigv4_auth, create_test_subject):
     encounter_id = f"test-{uuid.uuid4().hex[:8]}"
-    payload = {"subject_iri": create_test_subject_iri(), "encounter_id": encounter_id}
+    payload = {"subject_iri": create_test_subject()["iri"], "encounter_id": encounter_id}
 
     # --- Create Encounter ---
     create_resp = requests.post(
@@ -35,9 +35,9 @@ def test_create_and_delete_encounter(api_base_url, sigv4_auth, create_test_subje
     assert delete_body["encounter_iri"] == create_body["encounter_iri"]
 
 
-def test_get_encounter(api_base_url, sigv4_auth, create_test_subject_iri):
+def test_get_encounter(api_base_url, sigv4_auth, create_test_subject):
     encounter_id = f"test-{uuid.uuid4().hex[:8]}"
-    test_subject_iri = create_test_subject_iri()
+    test_subject_iri = create_test_subject()["iri"]
     payload = {"subject_iri": test_subject_iri, "encounter_id": encounter_id}
 
     # --- Create Encounter ---

@@ -1,5 +1,4 @@
 import pytest
-import boto3
 from botocore.config import Config
 from cloudformation_utils import get_output_value_from_stack
 from phebee.utils.dynamodb import get_source_records
@@ -8,7 +7,7 @@ from phebee.utils.aws import get_client
 
 def reset_database(cloudformation_stack):
     config = Config(read_timeout=900, connect_timeout=900, retries={"max_attempts": 0})
-    lambda_client = boto3.client("lambda", config=config)
+    lambda_client = get_client("lambda", config=config)
 
     reset_database_lambda_arn = get_output_value_from_stack(
         cloudformation_stack, "ResetDatabaseFunctionArn"

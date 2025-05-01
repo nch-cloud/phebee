@@ -15,9 +15,9 @@ def lambda_handler(event, context):
     body = extract_body(event)
 
     project_id = body.get("project_id")
-    project_subject_id = body.get("project_subject_id")
+    project_subject_iri = body.get("project_subject_iri")
 
-    subject = get_subject(project_id, project_subject_id)
+    subject = get_subject(project_id, project_subject_iri)
     print(subject)
 
     # TODO - Check for statements that will currently be orphaned.  Perhaps add a cascade flag to either prevent subject deletion or propagate it.

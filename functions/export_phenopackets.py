@@ -17,7 +17,7 @@ metrics = Metrics()
 
 s3_client = get_client("s3")
 
-
+# TODO: We may be able to remove this now that export code has been integrated with get_subjects_pheno.py
 # Build a phenopacket given the input data of a single subject
 def lambda_handler(event, context):
 
