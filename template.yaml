@@ -46,10 +46,33 @@ Parameters:
     Description: Optional. Prefix (folder path) for the logs in the log bucket.
     Default: phebee-access-logs/
 
+  RunOntologyUpdatesOnSchedule:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: Whether to enable scheduled ontology updates
+
+  HPOScheduleExpression:
+    Type: String
+    Default: "cron(0 9 * * ? *)"  # 4 AM EST = 9 UTC
+    Description: Cron expression for HPO update
+
+  MondoScheduleExpression:
+    Type: String
+    Default: "cron(10 9 * * ? *)"  # 4:10 AM EST = 9:10 UTC
+    Description: Cron expression for Mondo update
+
+  ECOScheduleExpression:
+    Type: String
+    Default: "cron(20 9 * * ? *)"  # 4:20 AM EST = 9:20 UTC
+    Description: Cron expression for ECO update
+
 Conditions:
   ShouldCreateS3Bucket: !Equals [!Ref CreateS3Bucket, true]
 
   ShouldEnableS3Logging: !Not [!Equals [!Ref S3AccessLogBucketName, ""]]
+
+  EnableScheduledOntologyUpdate: !Equals [!Ref RunOntologyUpdatesOnSchedule, "true"]
 
 Resources:
   SAMLogs:
@@ -300,6 +323,30 @@ Resources:
           Action: sts:AssumeRole
       ManagedPolicyArns:
         - !Ref PheBeeS3ReadPolicy
+
+  UpdateOntologyInvokeRole:
+    Type: AWS::IAM::Role
+    Condition: EnableScheduledOntologyUpdate
+    Properties:
+      RoleName: "PheBeeEventBridgeInvokeOntologyUpdatersRole"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: "AllowEventBridgeToStartUpdaters"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: "states:StartExecution"
+                Resource:
+                  - !GetAtt UpdateHPOSFN.Arn
+                  - !GetAtt UpdateMondoSFN.Arn
+                  - !GetAtt UpdateECOSFN.Arn
 
   #################
   # Neptune Cluster
@@ -1046,7 +1093,7 @@ Resources:
             Resource:
               - !GetAtt InstallRDFXMLSFN.Arn
 
-  UpdateMONDOSFN:
+  UpdateMondoSFN:
     Type: AWS::Serverless::StateMachine
     Properties:
       DefinitionUri: statemachine/update_mondo.asl.json
@@ -1144,6 +1191,7 @@ Resources:
             Resource:
               - !Sub arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:ImportPhenopacketsSFN-${AWS::StackName}
 
+
   #################
   # DynamoDB
   #################
@@ -1231,12 +1279,52 @@ Resources:
     Properties:
       Name: !Sub phebee-bus-${AWS::StackName}
 
+  ####################
+  # Scheduled Updates
+  ####################
+
+  UpdateHPOScheduleRule:
+    Type: AWS::Events::Rule
+    Condition: EnableScheduledOntologyUpdate
+    Properties:
+      Name: "UpdateHPO-OnSchedule"
+      ScheduleExpression: !Ref HPOScheduleExpression
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt UpdateHPOSFN.Arn
+          Id: "UpdateHPO"
+          RoleArn: !GetAtt UpdateOntologyInvokeRole.Arn
+  
+  UpdateMondoScheduleRule:
+    Type: AWS::Events::Rule
+    Condition: EnableScheduledOntologyUpdate
+    Properties:
+      Name: "UpdateMondo-OnSchedule"
+      ScheduleExpression: !Ref MondoScheduleExpression
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt UpdateMondoSFN.Arn
+          Id: "UpdateMondo"
+          RoleArn: !GetAtt UpdateOntologyInvokeRole.Arn
+
+  UpdateECOScheduleRule:
+    Type: AWS::Events::Rule
+    Condition: EnableScheduledOntologyUpdate
+    Properties:
+      Name: "UpdateECO-OnSchedule"
+      ScheduleExpression: !Ref ECOScheduleExpression
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt UpdateECOSFN.Arn
+          Id: "UpdateECO"
+          RoleArn: !GetAtt UpdateOntologyInvokeRole.Arn
+
 Outputs:
   UpdateHPOSFNArn:
     Value: !Ref UpdateHPOSFN
 
-  UpdateMONDOSFNArn:
-    Value: !Ref UpdateMONDOSFN
+  UpdateMondoSFNArn:
+    Value: !Ref UpdateMondoSFN
 
   UpdateECOSFNArn:
     Value: !Ref UpdateECOSFN
