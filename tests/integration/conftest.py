@@ -15,13 +15,15 @@ from s3_utils import delete_s3_prefix
 from update_source_utils import update_source
 from constants import PROJECT_CONFIGS
 
+
 def pytest_addoption(parser):
     parser.addoption(
         "--skip-ontology-updates",
         action="store_true",
         default=False,
-        help="Skip slow HPO and MONDO graph updates during tests."
+        help="Skip slow HPO and MONDO graph updates during tests.",
     )
+
 
 @pytest.fixture(scope="session")
 def profile_name(request):
@@ -90,11 +92,7 @@ def cloudformation_stack(request, aws_session, profile_name):
     existing_stack = request.config.getoption("--existing-stack")
     config_env = request.config.getoption("--config-env")
     stack_uuid = str(uuid.uuid4())[-3:]
-    stack_name = (
-        f"phebee-it-{stack_uuid}"
-        if not existing_stack
-        else existing_stack
-    )
+    stack_name = f"phebee-it-{stack_uuid}" if not existing_stack else existing_stack
 
     template_path = "template.yaml"
 
@@ -164,7 +162,13 @@ def cloudformation_stack(request, aws_session, profile_name):
     if not existing_stack:
         # Tear down the stack after tests
         try:
-            teardown_args = ["sam", "delete", "--stack-name", stack_name, "--no-prompts"]
+            teardown_args = [
+                "sam",
+                "delete",
+                "--stack-name",
+                stack_name,
+                "--no-prompts",
+            ]
             if profile_name:
                 teardown_args.append("--profile")
                 teardown_args.append(profile_name)
@@ -264,13 +268,29 @@ def update_hpo(request, cloudformation_stack, physical_resources):
 @pytest.fixture(scope="session")
 def update_mondo(request, cloudformation_stack, physical_resources):
     if request.config.getoption("--skip-ontology-updates"):
-        print("Skipping Mondo update as requested via --skip-ontology-updates parameter")
+        print(
+            "Skipping Mondo update as requested via --skip-ontology-updates parameter"
+        )
         yield
     else:
-        test_start_time = update_source(cloudformation_stack, "mondo", "UpdateMONDOSFNArn")
+        test_start_time = update_source(
+            cloudformation_stack, "mondo", "UpdateMONDOSFNArn"
+        )
         yield test_start_time
 
         delete_s3_prefix(physical_resources["PheBeeBucket"], "sources/mondo")
+
+
+@pytest.fixture(scope="session")
+def update_eco(request, cloudformation_stack, physical_resources):
+    if request.config.getoption("--skip-ontology-updates"):
+        print("Skipping ECO update as requested via --skip-ontology-updates parameter")
+        yield
+    else:
+        test_start_time = update_source(cloudformation_stack, "eco", "UpdateECOSFNArn")
+        yield test_start_time
+
+        delete_s3_prefix(physical_resources["PheBeeBucket"], "sources/eco")
 
 
 @pytest.fixture
@@ -315,16 +335,20 @@ def create_test_subject(physical_resources):
     # Create project
     project_response = lambda_client.invoke(
         FunctionName=physical_resources["CreateProjectFunction"],
-        Payload=json.dumps({"body": json.dumps({"project_id": project_id, "project_label": project_id})}).encode(
-            "utf-8"
-        ),
+        Payload=json.dumps(
+            {
+                "body": json.dumps(
+                    {"project_id": project_id, "project_label": project_id}
+                )
+            }
+        ).encode("utf-8"),
         InvocationType="RequestResponse",
     )
     project_body = json.loads(
         json.loads(project_response["Payload"].read().decode("utf-8"))["body"]
     )
     print(project_body)
-    
+
     def _make_subject():
         project_subject_id = f"test-subj-{uuid.uuid4().hex[:6]}"
         payload = {"project_id": project_id, "project_subject_id": project_subject_id}
@@ -334,7 +358,7 @@ def create_test_subject(physical_resources):
             Payload=json.dumps({"body": json.dumps(payload)}).encode("utf-8"),
             InvocationType="RequestResponse",
         )
- 
+
         body = json.loads(response["Payload"].read())
 
         print(body)

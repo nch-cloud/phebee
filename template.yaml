@@ -389,6 +389,7 @@ Resources:
       Policies:
         - !Ref PheBeeS3ReadPolicy
         - !Ref PheBeeDynamoDBWritePolicy
+        - !Ref PheBeeDynamoDBReadPolicy
         - Statement:
           - Effect: Allow
             Action: states:StartExecution
@@ -1236,6 +1237,9 @@ Outputs:
 
   UpdateMONDOSFNArn:
     Value: !Ref UpdateMONDOSFN
+
+  UpdateECOSFNArn:
+    Value: !Ref UpdateECOSFN
 
   CreateProjectFunctionArn:
     Value: !Ref CreateProjectFunction
