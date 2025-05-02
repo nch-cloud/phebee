@@ -677,10 +677,28 @@ def create_text_annotation(
     annotation_iri = f"{text_source_iri}/annotation/{annotation_id}"
     created = get_current_timestamp()
 
+    # Lookup rdf:type of the source and creator
+    creator_type = get_rdf_type(creator_iri) if creator_iri else None
+    text_source_type = get_rdf_type(text_source_iri)
+
+    # Infer ECO terms
+    evidence_type_iri = (
+        infer_evidence_type(creator_type, text_source_type)
+        if creator_type and text_source_type
+        else "http://purl.obolibrary.org/obo/ECO_0000000"
+    )
+    assertion_type_iri = (
+        infer_assertion_type(creator_type)
+        if creator_type
+        else "http://purl.obolibrary.org/obo/ECO_0000217"
+    )
+
     triples = [
         f"<{annotation_iri}> rdf:type phebee:TextAnnotation",
         f"<{annotation_iri}> phebee:textSource <{text_source_iri}>",
         f'<{annotation_iri}> dc:created "{created}"^^xsd:dateTime',
+        f"<{annotation_iri}> phebee:evidenceType <{evidence_type_iri}>",
+        f"<{annotation_iri}> phebee:assertionType <{assertion_type_iri}>",
     ]
 
     if span_start is not None:
@@ -710,6 +728,70 @@ def create_text_annotation(
     """
     execute_update(sparql)
     return annotation_iri
+
+
+def get_rdf_type(node_iri: str) -> str:
+    """
+    Returns the rdf:type of the given node IRI, or None if not found.
+    Assumes the node has only one rdf:type.
+    """
+    sparql = f"""
+    SELECT ?type WHERE {{
+        <{node_iri}> rdf:type ?type .
+    }} LIMIT 1
+    """
+    results = execute_query(sparql)
+    bindings = results.get("results", {}).get("bindings", [])
+    if bindings:
+        return bindings[0]["type"]["value"]
+    return None
+
+
+def infer_evidence_type(creator_type: str, text_source_type: str) -> str:
+    """
+    Returns an ECO evidenceType IRI based on the type of creator and source.
+
+    Parameters:
+        creator_type (str): RDF type of the creator (e.g., 'phebee:AutomatedCreator').
+        text_source_type (str): RDF type of the text source (e.g., 'phebee:ClinicalNote').
+
+    Returns:
+        str: ECO term IRI indicating the evidence type.
+    """
+    # Case: Automatically generated from a clinical note
+    if creator_type == "http://ods.nationwidechildrens.org/phebee#AutomatedCreator":
+        if text_source_type == "http://ods.nationwidechildrens.org/phebee#ClinicalNote":
+            return "http://purl.obolibrary.org/obo/ECO_0006162"  # medical practitioner statement used in automatic assertion
+
+    # Case: Human curated from a clinical note
+    elif creator_type == "http://ods.nationwidechildrens.org/phebee#HumanCreator":
+        if text_source_type == "http://ods.nationwidechildrens.org/phebee#ClinicalNote":
+            return "http://purl.obolibrary.org/obo/ECO_0006161"  # medical practitioner statement evidence used in manual assertion
+
+    # Fallback: Generic evidence (unspecified)
+    return "http://purl.obolibrary.org/obo/ECO_0000000"
+
+
+def infer_assertion_type(creator_type: str) -> str:
+    """
+    Returns an ECO assertionType IRI based on the type of creator.
+
+    Parameters:
+        creator_type (str): RDF type of the creator (e.g., 'phebee:AutomatedCreator').
+
+    Returns:
+        str: ECO term IRI indicating the assertion type.
+    """
+    # Case: Automated assertion
+    if creator_type == "http://ods.nationwidechildrens.org/phebee#AutomatedCreator":
+        return "http://purl.obolibrary.org/obo/ECO_0000203"  # automatic assertion
+
+    # Case: Manual assertion
+    elif creator_type == "http://ods.nationwidechildrens.org/phebee#HumanCreator":
+        return "http://purl.obolibrary.org/obo/ECO_0000218"  # manual assertion
+
+    # Fallback: Generic assertion evidence
+    return "http://purl.obolibrary.org/obo/ECO_0000217"
 
 
 def get_text_annotation(annotation_iri: str) -> dict:

@@ -11,6 +11,7 @@ integration-test:
         - SubnetId1=
         - SubnetId2=
         - S3AccessLogBucketName=
+        - RunOntologyUpdatesOnSchedule=false
       tags:
         - app=phebee
 
@@ -26,6 +27,7 @@ dev:
         - SubnetId1=
         - SubnetId2=
         - S3AccessLogBucketName=
+        - RunOntologyUpdatesOnSchedule=false
       tags:
         - app=phebee
 
@@ -40,6 +42,7 @@ staging:
         - VpcId=
         - SubnetId1=
         - SubnetId2=
+        - RunOntologyUpdatesOnSchedule=true
       tags:
         - app=phebee
 
@@ -54,5 +57,6 @@ prod:
         - VpcId=
         - SubnetId1=
         - SubnetId2=
+        - RunOntologyUpdatesOnSchedule=true
       tags:
         - app=phebee

@@ -256,3 +256,5 @@ blah*
 dev/*
 tests/integration/data/phenopackets/sample_phenopackets/*
 samconfig.yaml
+samconfig.yaml.bak
+

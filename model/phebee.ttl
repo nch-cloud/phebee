@@ -190,3 +190,15 @@ phebee:hasTerm a owl:ObjectProperty ;
     rdfs:range rdfs:Resource ;
     rdfs:label "Has Term" ;
     rdfs:comment "Links a subject term link to a term, with the term being an unspecified non-literal node." .
+
+phebee:evidenceType a rdf:Property ;
+    rdfs:label "Evidence Type" ;
+    rdfs:comment "Specifies the type of evidence using a term from the ECO ontology." ;
+    rdfs:domain phebee:Evidence ;
+    rdfs:range eco:ECO_0000000 .
+
+phebee:assertionType a rdf:Property ;
+    rdfs:label "assertion type" ;
+    rdfs:comment "Specifies the type of assertion made by the evidence, using a term from the ECO ontology." ;
+    rdfs:domain phebee:Evidence ;
+    rdfs:range eco:ECO_0000217 .
