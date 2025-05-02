@@ -274,7 +274,7 @@ def update_mondo(request, cloudformation_stack, physical_resources):
         yield
     else:
         test_start_time = update_source(
-            cloudformation_stack, "mondo", "UpdateMONDOSFNArn"
+            cloudformation_stack, "mondo", "UpdateMondoSFNArn"
         )
         yield test_start_time
 
