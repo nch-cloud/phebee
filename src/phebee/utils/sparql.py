@@ -151,6 +151,73 @@ def get_subject(project_iri: str, project_subject_iri: str) -> dict:
         }
 
 
+def subject_exists(subject_iri: str) -> bool:
+    sparql = f"""
+    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+    PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+
+    ASK WHERE {{
+        GRAPH <http://ods.nationwidechildrens.org/phebee/subjects> {{
+            <{subject_iri}> rdf:type phebee:Subject .
+        }}
+    }}
+    """
+    result = execute_query(sparql)
+    return result.get("boolean", False)
+
+
+def create_subject(project_id: str, project_subject_id: str) -> str:
+    subject_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{uuid.uuid4()}"
+    project_iri = f"http://ods.nationwidechildrens.org/phebee/projects/{project_id}"
+    project_subject_iri = f"{project_iri}/{project_subject_id}"
+    timestamp = get_current_timestamp()
+
+    sparql = f"""
+    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+    PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+    PREFIX dc: <http://purl.org/dc/terms/>
+    PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+
+    INSERT DATA {{
+        GRAPH <http://ods.nationwidechildrens.org/phebee/subjects> {{
+            <{subject_iri}> rdf:type phebee:Subject .
+        }}
+        GRAPH <{project_iri}> {{
+            <{subject_iri}> phebee:hasProjectSubjectId <{project_subject_iri}> .
+            <{project_subject_iri}> rdf:type phebee:ProjectSubjectId ;
+                                     phebee:hasProject <{project_iri}> ;
+                                     dc:created \"{timestamp}\"^^xsd:dateTime .
+        }}
+    }}
+    """
+    execute_update(sparql)
+    return subject_iri
+
+
+def link_subject_to_project(
+    subject_iri: str, project_id: str, project_subject_id: str
+) -> None:
+    project_iri = f"http://ods.nationwidechildrens.org/phebee/projects/{project_id}"
+    project_subject_iri = f"{project_iri}/{project_subject_id}"
+    timestamp = get_current_timestamp()
+
+    sparql = f"""
+    PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+    PREFIX dc: <http://purl.org/dc/terms/>
+    PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+
+    INSERT DATA {{
+        GRAPH <{project_iri}> {{
+            <{subject_iri}> phebee:hasProjectSubjectId <{project_subject_iri}> .
+            <{project_subject_iri}> rdf:type phebee:ProjectSubjectId ;
+                                     phebee:hasProject <{project_iri}> ;
+                                     dc:created \"{timestamp}\"^^xsd:dateTime .
+        }}
+    }}
+    """
+    execute_update(sparql)
+
+
 def camel_to_snake(name: str) -> str:
     s1 = re.sub("(.)([A-Z][a-z]+)", r"\1_\2", name)
     return re.sub("([a-z0-9])([A-Z])", r"\1_\2", s1).lower()

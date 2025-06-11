@@ -1033,6 +1033,46 @@ Resources:
           - !Ref SubnetId1
           - !Ref SubnetId2
 
+  PrepareBulkUploadFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-PrepareBulkUploadFunction
+      CodeUri: functions
+      Handler: prepare_bulk_upload.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          PheBeeBucketName: !Ref PheBeeBucket
+      Policies:
+        - !Ref PheBeeS3WritePolicy
+
+  PerformBulkUploadFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-PerformBulkUploadFunction
+      CodeUri: functions
+      Handler: perform_bulk_upload.lambda_handler
+      MemorySize: 1024
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+          PheBeeBucketName: !Ref PheBeeBucket
+          LoaderRoleArn: !GetAtt NeptuneLoaderRole.Arn
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneLoadPolicy
+        - !Ref PheBeeNeptuneReadPolicy
+        - !Ref PheBeeNeptuneWritePolicy
+        - !Ref PheBeeNeptuneDeletePolicy
+        - !Ref PheBeeS3ReadPolicy
+
+
   #################
   # Step Functions
   #################
