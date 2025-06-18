@@ -125,11 +125,8 @@ paths:
             schema:
               type: object
               required:
-                - project_id
                 - project_subject_iri
               properties:
-                project_id:
-                  type: string
                 project_subject_iri:
                   type: string
       security:
@@ -158,11 +155,8 @@ paths:
             schema:
               type: object
               required:
-                - project_id
                 - project_subject_iri
               properties:
-                project_id:
-                  type: string
                 project_subject_iri:
                   type: string
       security:

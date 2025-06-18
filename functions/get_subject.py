@@ -14,28 +14,41 @@ def lambda_handler(event, context):
 
     body = extract_body(event)
 
-    project_id = body.get("project_id")
     project_subject_iri = body.get("project_subject_iri")
 
-    subject = get_subject_info(project_id, project_subject_iri)
-    
-    return {
-        "statusCode": 200,
-        "body": json.dumps(subject),
-        "headers": {"Content-Type": "application/json"},
-    }
+    subject = get_subject_info(project_subject_iri)
+    logger.info(subject)
+
+    if subject is None:
+        response = {
+            "statusCode": 404,
+            "body": json.dumps({"message": "Subject not found"}),
+            "headers": {"Content-Type": "application/json"},
+        }
+    else:
+        response = {
+            "statusCode": 200,
+            "body": json.dumps(subject),
+            "headers": {"Content-Type": "application/json"},
+        }
+
+    logger.info(response)
+
+    return response
 
 
-def get_subject_info(project_id: str, project_subject_iri: str):
+def get_subject_info(project_subject_iri: str):
     # Retrieve the IRI for the subject node in our graph associated to the given project with the given project-subject id
-    subject = get_subject(project_id, project_subject_iri)
-
+    subject = get_subject(project_subject_iri)
+    if subject is None:
+        return None
+    
     # Query for subject-term links, their terms, and evidence
     hpo_version = get_current_term_source_version("hpo")
     mondo_version = get_current_term_source_version("mondo")
 
     # TODO: Maybe the versions should be in a dictionary?
-    terms = get_term_links_for_node(subject["iri"], hpo_version, mondo_version)
+    terms = get_term_links_for_node(subject["subject_iri"], hpo_version, mondo_version)
     subject["terms"] = terms
 
     return subject

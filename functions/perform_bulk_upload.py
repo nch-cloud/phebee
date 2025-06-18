@@ -57,7 +57,9 @@ def get_or_create_subject(project_id: str, project_subject_id: str) -> str:
     if not project_exists(project_id):
         raise ValueError(f"Project ID not found: {project_id}")
 
-    subject = get_subject(project_id, project_subject_id)
+    project_subject_iri = f"http://ods.nationwidechildrens.org/phebee/projects/{project_id}/{project_subject_id}"
+
+    subject = get_subject(project_subject_iri)
     if subject:
         subject_iri = subject["subject_iri"]
     else:

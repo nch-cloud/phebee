@@ -523,6 +523,7 @@ Resources:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
           Region: !Sub ${AWS::Region}
+          PheBeeDynamoTable: !Ref DynamoDBTable
       VpcConfig:
         SecurityGroupIds:
           - !Ref PheBeeLambdaSecurityGroup
@@ -531,6 +532,7 @@ Resources:
           - !Ref SubnetId2
       Policies:
         - !Ref PheBeeNeptuneReadPolicy
+        - !Ref PheBeeDynamoDBReadPolicy
 
   CreateSubjectFunction:
     Type: AWS::Serverless::Function

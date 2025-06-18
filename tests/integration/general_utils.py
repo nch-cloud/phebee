@@ -1,5 +1,25 @@
 from phebee.utils.aws import get_current_timestamp
-
+import json
 
 def check_timestamp_in_test(timestamp, test_start_time):
     return timestamp and timestamp > test_start_time and timestamp < get_current_timestamp()
+
+def parse_lambda_response(response):
+    """
+    Parses a boto3 Lambda invoke response structured for API Gateway proxy integration.
+    
+    Returns:
+        status_code (int): The HTTP statusCode from the Lambda's return value.
+        body (dict): The parsed JSON body from the Lambda's return value.
+    """
+    raw_payload = response["Payload"].read()
+    lambda_response = json.loads(raw_payload)
+
+    status_code = lambda_response.get("statusCode", 500)  # default to 500 if missing
+    body_str = lambda_response.get("body", "{}")
+    try:
+        body = json.loads(body_str)
+    except json.JSONDecodeError:
+        body = {"raw_body": body_str}
+
+    return status_code, body

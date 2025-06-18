@@ -113,7 +113,7 @@ def create_project(project_id: str, project_label: str) -> bool:
     return True
 
 
-def get_subject(project_iri: str, project_subject_iri: str) -> dict:
+def get_subject(project_subject_iri: str) -> dict:
     # Get project node with IRI matching project_id
     # Get project-subject id nodes pointing at project node
     # Create a project-subject id IRI matching our project's namespace and provided project_subject_iri
@@ -121,14 +121,9 @@ def get_subject(project_iri: str, project_subject_iri: str) -> dict:
     sparql = f"""
         PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
 
-        SELECT ?subject ?project ?projectSubjectId
+        SELECT ?subject
         WHERE {{
-            ?projectParam phebee:hasProjectIri "{project_iri}" .
-            
-            ?subject phebee:hasProjectSubjectIri <{project_subject_iri}> .
-            
-            ?subject phebee:hasProjectSubjectIri ?projectSubjectId .
-            ?projectSubjectId phebee:hasProject ?project
+            ?subject phebee:hasProjectSubjectId <{project_subject_iri}> .
         }}
     """
 

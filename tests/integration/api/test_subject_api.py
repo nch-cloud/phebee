@@ -5,17 +5,8 @@ import requests
 pytestmark = [pytest.mark.integration, pytest.mark.api]
 
 
-def test_create_subject(api_base_url, sigv4_auth):
-    project_id = f"test-proj-{uuid.uuid4().hex[:6]}"
-
-    # --- Create the project first ---
-    create_project_resp = requests.post(
-        f"{api_base_url}/project/create",
-        json={"project_id": project_id, "project_label": "Test Project"},
-        auth=sigv4_auth,
-    )
-    assert create_project_resp.status_code == 200
-
+def test_create_subject(api_base_url, sigv4_auth, test_project):
+    project_id = test_project
     project_subject_id = f"test-subj-{uuid.uuid4().hex[:6]}"
 
     # --- Create the subject ---
@@ -36,18 +27,69 @@ def test_create_subject(api_base_url, sigv4_auth):
     assert body["subject"]["projects"][project_id] == project_subject_id
 
 
-def test_link_existing_subject(api_base_url, sigv4_auth):
-    project_id = f"test-proj-{uuid.uuid4().hex[:6]}"
-    subj_id_1 = f"test-subj-{uuid.uuid4().hex[:6]}"
-    subj_id_2 = f"test-subj-{uuid.uuid4().hex[:6]}"
+def test_get_subject(api_base_url, sigv4_auth, test_project):
+    project_id = test_project
+    project_subject_id = f"test-subj-{uuid.uuid4().hex[:6]}"
+    project_subject_iri = f"http://ods.nationwidechildrens.org/phebee/projects/{project_id}/{project_subject_id}"
 
-    # --- Create the project first ---
-    create_project_resp = requests.post(
-        f"{api_base_url}/project/create",
-        json={"project_id": project_id, "project_label": "Test Project"},
+    # --- Create subject ---
+    resp = requests.post(
+        f"{api_base_url}/subject/create",
+        json={"project_id": project_id, "project_subject_id": project_subject_id},
         auth=sigv4_auth,
     )
-    assert create_project_resp.status_code == 200
+    assert resp.status_code == 200
+    subject_iri = resp.json()["subject"]["iri"]
+
+    # --- Get subject via project_subject_iri ---
+    resp = requests.post(
+        f"{api_base_url}/subject",
+        json={"project_subject_iri": project_subject_iri},
+        auth=sigv4_auth,
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["project_subject_iri"] == project_subject_iri
+    assert body["subject_iri"] == subject_iri
+
+
+def test_remove_subject(api_base_url, sigv4_auth, test_project):
+    project_id = test_project
+    project_subject_id = f"test-subj-{uuid.uuid4().hex[:6]}"
+    project_subject_iri = f"http://ods.nationwidechildrens.org/phebee/projects/{project_id}/{project_subject_id}"
+
+    # --- Create subject ---
+    resp = requests.post(
+        f"{api_base_url}/subject/create",
+        json={"project_id": project_id, "project_subject_id": project_subject_id},
+        auth=sigv4_auth,
+    )
+    assert resp.status_code == 200
+
+    # --- Remove subject via project_subject_iri ---
+    resp = requests.post(
+        f"{api_base_url}/subject/remove",
+        json={"project_subject_iri": project_subject_iri},
+        auth=sigv4_auth,
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["message"].startswith("Subject removed")
+
+    # --- Confirm subject is gone ---
+    resp = requests.post(
+        f"{api_base_url}/subject",
+        json={"project_subject_iri": project_subject_iri},
+        auth=sigv4_auth,
+    )
+    assert resp.status_code == 404
+    assert resp.json()["message"] == "Subject not found"
+
+
+def test_link_existing_subject(api_base_url, sigv4_auth, test_project):
+    project_id = test_project
+    subj_id_1 = f"test-subj-{uuid.uuid4().hex[:6]}"
+    subj_id_2 = f"test-subj-{uuid.uuid4().hex[:6]}"
 
     # --- First subject creation ---
     create_resp_1 = requests.post(

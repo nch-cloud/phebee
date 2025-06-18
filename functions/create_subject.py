@@ -58,7 +58,8 @@ def lambda_handler(event, context):
         subject_iri = known_subject_iri
 
     elif known_project_id and known_project_subject_id:
-        known_subject = get_subject(known_project_id, known_project_subject_id)
+        known_project_subject_iri = f"http://ods.nationwidechildrens.org/phebee/projects/{known_project_id}/{known_project_subject_id}"
+        known_subject = get_subject(known_project_subject_iri)
         if not known_subject:
             return create_error_response(
                 400,
@@ -67,7 +68,8 @@ def lambda_handler(event, context):
         subject_iri = known_subject["subject_iri"]
 
     else:
-        known_subject = get_subject(project_id, project_subject_id)
+        known_project_subject_iri = f"http://ods.nationwidechildrens.org/phebee/projects/{project_id}/{project_subject_id}"
+        known_subject = get_subject(known_project_subject_iri)
         if known_subject:
             subject_iri = known_subject["subject_iri"]
         else:
