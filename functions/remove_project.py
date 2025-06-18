@@ -27,7 +27,7 @@ def lambda_handler(event, context):
         execute_update(sparql)
         return {
             "statusCode": 200,
-            "body": f"Project {project_id} successfully removed.",
+            "body": json.dumps({"message": f"Project {project_id} successfully removed."}),
             "headers": {"Content-Type": "application/json"},
         }
 
