@@ -15,7 +15,9 @@ from phebee.utils.sparql import (
     project_exists,
     term_link_exists,
     create_subject,
-    link_subject_to_project
+    link_subject_to_project,
+    node_exists,
+    create_creator
 )
 from phebee.utils.aws import get_current_timestamp, extract_body
 
@@ -40,6 +42,10 @@ class ClinicalNoteEvidence(BaseModel):
     type: Literal["clinical_note"]
     clinical_note_id: str
     encounter_iri: str
+    creator_id: str
+    creator_type: str
+    creator_name: Optional[str] = None
+    creator_version: Optional[str] = None
     note_timestamp: Optional[str] = None
 
 class TermLinkInput(BaseModel):
@@ -47,6 +53,9 @@ class TermLinkInput(BaseModel):
     project_subject_id: str
     term_iri: str
     creator_id: str
+    creator_type: str
+    creator_name: Optional[str] = None
+    creator_version: Optional[str] = None
     evidence: List[ClinicalNoteEvidence] = []
 
 # -------------------
@@ -79,6 +88,10 @@ def generate_rdf(entries: List[TermLinkInput]) -> str:
     g.bind("obo", OBO)
     g.bind("dc", DCTERMS)
 
+    # Keep track of what creators we've already verified exist.
+    # Bulk uploads are likely to use the same creator repeatedly, so this cuts down on unnecessary Neptune checks.
+    creator_exists_cache = []
+
     for entry in entries:
         subject_iri = URIRef(get_or_create_subject(entry.project_id, entry.project_subject_id))
         g.add((subject_iri, RDF.type, PHEBEE_NS.Subject))
@@ -97,13 +110,32 @@ def generate_rdf(entries: List[TermLinkInput]) -> str:
         g.add((term_link_iri, PHEBEE_NS.hasTerm, term_iri))
         g.add((subject_iri, PHEBEE_NS.hasTermLink, term_link_iri))
 
-        creator_iri = URIRef(f"{PHEBEE}/creators/{entry.creator_id}")
+        creator_iri = URIRef(f"{PHEBEE}/creator/{entry.creator_id}")
+        # Check if creator already exists.  If not, we need to create it.
+        logger.info(f"Checking if creator exists: {creator_iri}")
+        if creator_iri not in creator_exists_cache and not node_exists(creator_iri):
+            logger.info(f"Creating {entry.creator_type} creator: {entry.creator_id}")
+            create_creator(entry.creator_id, entry.creator_type, entry.creator_name, entry.creator_version)
+        else:
+            logger.info("Creator already exists.")
+        creator_exists_cache.append(creator_iri)
+
         g.add((term_link_iri, PHEBEE_NS.creator, creator_iri))
         g.add((term_link_iri, DCTERMS.created, RdfLiteral(get_current_timestamp(), datatype=XSD.dateTime)))
 
         for evidence in entry.evidence:
+            creator_iri = URIRef(f"{PHEBEE}/creator/{evidence.creator_id}")
+            # Check if creator already exists.  If not, we need to create it.
+            logger.info(f"Checking if creator exists: {creator_iri}")
+            if creator_iri not in creator_exists_cache and not node_exists(creator_iri):
+                logger.info(f"Creating {evidence.creator_type} creator: {evidence.creator_id}")
+                create_creator(evidence.creator_id, evidence.creator_type, evidence.creator_name, evidence.creator_version)
+            else:
+                logger.info("Creator already exists.")
+            creator_exists_cache.append(creator_iri)
+            
             if evidence.type == "clinical_note":
-                note_iri = URIRef(f"{evidence.encounter_iri}/clinical-note/{evidence.clinical_note_id}")
+                note_iri = URIRef(f"{evidence.encounter_iri}/note/{evidence.clinical_note_id}")
                 g.add((note_iri, RDF.type, PHEBEE_NS.ClinicalNote))
                 g.add((note_iri, PHEBEE_NS.clinicalNoteId, RdfLiteral(evidence.clinical_note_id)))
                 g.add((note_iri, PHEBEE_NS.hasEncounter, URIRef(evidence.encounter_iri)))
@@ -111,8 +143,13 @@ def generate_rdf(entries: List[TermLinkInput]) -> str:
                 if evidence.note_timestamp:
                     g.add((note_iri, PHEBEE_NS.noteTimestamp, RdfLiteral(evidence.note_timestamp, datatype=XSD.dateTime)))
                 g.add((term_link_iri, PHEBEE_NS.hasEvidence, note_iri))
+                g.add((note_iri, PHEBEE_NS.creator, creator_iri))
 
-    return g.serialize(format="turtle")
+    graph_ttl = g.serialize(format="turtle")
+
+    logger.info(graph_ttl)
+
+    return graph_ttl
 
 # -------------------
 # Lambda Handler

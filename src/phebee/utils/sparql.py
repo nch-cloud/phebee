@@ -355,41 +355,23 @@ def get_term_links_for_node(
     PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
 
     SELECT 
-      ?link ?term ?term_label
-      ?termlink_creator_type ?termlink_creator_name ?termlink_creator_version
-      ?evidence ?evidence_type
-      ?evidence_creator_type ?evidence_creator_name ?evidence_creator_version
+      ?link ?term ?term_label ?termlink_creator
+      ?evidence ?evidence_type ?evidence_creator
       ?p ?o
     FROM <http://ods.nationwidechildrens.org/phebee/subjects>
     FROM <http://ods.nationwidechildrens.org/phebee/hpo~{hpo_version}>
     FROM <http://ods.nationwidechildrens.org/phebee/mondo~{mondo_version}>
     WHERE {{
       ?link rdf:type phebee:TermLink ;
-            phebee:sourceNode <{source_node_iri}> ;
-            phebee:hasTerm ?term ;
-            phebee:creator ?termlink_creator .
-
+      phebee:sourceNode <{source_node_iri}> ;
+      phebee:hasTerm ?term ;
+      
       OPTIONAL {{ ?term rdfs:label ?term_label . }}
-
-      OPTIONAL {{
-        ?link phebee:hasEvidence ?evidence .
-
-        OPTIONAL {{ ?evidence rdf:type ?evidence_type . }}
-        OPTIONAL {{ ?evidence phebee:creator ?evidence_creator . }}
-        OPTIONAL {{ ?evidence ?p ?o . }}
-
-        OPTIONAL {{
-          ?evidence_creator rdf:type ?evidence_creator_type .
-          ?evidence_creator dc:title ?evidence_creator_name .
-          ?evidence_creator phebee:version ?evidence_creator_version .
-        }}
-      }}
-
-      OPTIONAL {{
-        ?termlink_creator rdf:type ?termlink_creator_type .
-        ?termlink_creator dc:title ?termlink_creator_name .
-        ?termlink_creator phebee:version ?termlink_creator_version .
-      }}
+      OPTIONAL {{ ?link phebee:hasEvidence ?evidence . }}
+      OPTIONAL {{ ?evidence rdf:type ?evidence_type . }}
+      OPTIONAL {{ ?evidence phebee:creator ?evidence_creator . }}
+      OPTIONAL {{ ?evidence ?p ?o . }}
+      OPTIONAL {{ ?link phebee:creator ?termlink_creator . }}
     }}
     """
 
@@ -402,12 +384,7 @@ def get_term_links_for_node(
         term_label = row.get("term_label", {}).get("value")
 
         # TermLink creator
-        creator = {
-            "creator_iri": row.get("termlink_creator", {}).get("value"),
-            "creator_type": row.get("termlink_creator_type", {}).get("value"),
-            "name": row.get("termlink_creator_name", {}).get("value"),
-            "version": row.get("termlink_creator_version", {}).get("value"),
-        }
+        creator = row.get("termlink_creator", {}).get("value")
 
         # Initialize top-level link record
         link = links.setdefault(
@@ -436,25 +413,20 @@ def get_term_links_for_node(
                     "evidence_iri": evidence_iri,
                     "evidence_type": row.get("evidence_type", {}).get("value"),
                     "creator": None,
-                    "properties": [],
+                    "properties": {},
                 },
             )
 
             # Add creator if present
             evidence_creator_iri = row.get("evidence_creator", {}).get("value")
             if evidence_creator_iri:
-                ev["creator"] = {
-                    "creator_iri": evidence_creator_iri,
-                    "creator_type": row.get("evidence_creator_type", {}).get("value"),
-                    "name": row.get("evidence_creator_name", {}).get("value"),
-                    "version": row.get("evidence_creator_version", {}).get("value"),
-                }
+                ev["creator"] = evidence_creator_iri
 
             # Add any extra evidence properties
             p = row.get("p", {}).get("value")
             o = row.get("o", {}).get("value")
             if p and o:
-                ev["properties"].append({"predicate": p, "object": o})
+                ev["properties"][p] = o
 
     return [
         {

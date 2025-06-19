@@ -1,5 +1,6 @@
 from phebee.utils.aws import get_current_timestamp
 import json
+from datetime import datetime
 
 def check_timestamp_in_test(timestamp, test_start_time):
     return timestamp and timestamp > test_start_time and timestamp < get_current_timestamp()
@@ -23,3 +24,13 @@ def parse_lambda_response(response):
         body = {"raw_body": body_str}
 
     return status_code, body
+
+def parse_iso8601(s):
+    # Accepts either with or without milliseconds
+    if s.endswith("Z"):
+        s = s[:-1]
+    try:
+        return datetime.fromisoformat(s)
+    except ValueError:
+        # Fallback if needed
+        return datetime.strptime(s, "%Y-%m-%dT%H:%M:%S.%f")

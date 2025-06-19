@@ -47,10 +47,14 @@ def test_remove_subject(physical_resources, test_project_id):
     assert remove_status_code == 200
     assert remove_body.get("message").startswith("Subject removed")
 
+    get_payload = {
+        "project_subject_iri": project_subject_iri
+    }
+
     # Step 3: Confirm subject no longer exists
     get_response = lambda_client.invoke(
         FunctionName=physical_resources["GetSubjectFunction"],
-        Payload=json.dumps({"body": json.dumps(remove_payload)}).encode("utf-8"),
+        Payload=json.dumps({"body": json.dumps(get_payload)}).encode("utf-8"),
         InvocationType="RequestResponse"
     )
     print(f"get_response: {get_response}")
