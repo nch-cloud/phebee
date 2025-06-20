@@ -5,3 +5,5 @@ botocore>=1.29.153
 aws-lambda-powertools
 aws-xray-sdk
 aws-requests-auth
+pydantic
+rdflib

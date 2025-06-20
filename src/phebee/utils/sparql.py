@@ -113,7 +113,7 @@ def create_project(project_id: str, project_label: str) -> bool:
     return True
 
 
-def get_subject(project_iri: str, project_subject_iri: str) -> dict:
+def get_subject(project_subject_iri: str) -> dict:
     # Get project node with IRI matching project_id
     # Get project-subject id nodes pointing at project node
     # Create a project-subject id IRI matching our project's namespace and provided project_subject_iri
@@ -121,14 +121,9 @@ def get_subject(project_iri: str, project_subject_iri: str) -> dict:
     sparql = f"""
         PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
 
-        SELECT ?subject ?project ?projectSubjectId
+        SELECT ?subject
         WHERE {{
-            ?projectParam phebee:hasProjectIri "{project_iri}" .
-            
-            ?subject phebee:hasProjectSubjectIri <{project_subject_iri}> .
-            
-            ?subject phebee:hasProjectSubjectIri ?projectSubjectId .
-            ?projectSubjectId phebee:hasProject ?project
+            ?subject phebee:hasProjectSubjectId <{project_subject_iri}> .
         }}
     """
 
@@ -149,6 +144,73 @@ def get_subject(project_iri: str, project_subject_iri: str) -> dict:
             # Yes, we passsed this value in, but this keeps the return format consistent with get_subjects
             "project_subject_iri": project_subject_iri,
         }
+
+
+def subject_exists(subject_iri: str) -> bool:
+    sparql = f"""
+    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+    PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+
+    ASK WHERE {{
+        GRAPH <http://ods.nationwidechildrens.org/phebee/subjects> {{
+            <{subject_iri}> rdf:type phebee:Subject .
+        }}
+    }}
+    """
+    result = execute_query(sparql)
+    return result.get("boolean", False)
+
+
+def create_subject(project_id: str, project_subject_id: str) -> str:
+    subject_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{uuid.uuid4()}"
+    project_iri = f"http://ods.nationwidechildrens.org/phebee/projects/{project_id}"
+    project_subject_iri = f"{project_iri}/{project_subject_id}"
+    timestamp = get_current_timestamp()
+
+    sparql = f"""
+    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+    PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+    PREFIX dc: <http://purl.org/dc/terms/>
+    PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+
+    INSERT DATA {{
+        GRAPH <http://ods.nationwidechildrens.org/phebee/subjects> {{
+            <{subject_iri}> rdf:type phebee:Subject .
+        }}
+        GRAPH <{project_iri}> {{
+            <{subject_iri}> phebee:hasProjectSubjectId <{project_subject_iri}> .
+            <{project_subject_iri}> rdf:type phebee:ProjectSubjectId ;
+                                     phebee:hasProject <{project_iri}> ;
+                                     dc:created \"{timestamp}\"^^xsd:dateTime .
+        }}
+    }}
+    """
+    execute_update(sparql)
+    return subject_iri
+
+
+def link_subject_to_project(
+    subject_iri: str, project_id: str, project_subject_id: str
+) -> None:
+    project_iri = f"http://ods.nationwidechildrens.org/phebee/projects/{project_id}"
+    project_subject_iri = f"{project_iri}/{project_subject_id}"
+    timestamp = get_current_timestamp()
+
+    sparql = f"""
+    PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+    PREFIX dc: <http://purl.org/dc/terms/>
+    PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+
+    INSERT DATA {{
+        GRAPH <{project_iri}> {{
+            <{subject_iri}> phebee:hasProjectSubjectId <{project_subject_iri}> .
+            <{project_subject_iri}> rdf:type phebee:ProjectSubjectId ;
+                                     phebee:hasProject <{project_iri}> ;
+                                     dc:created \"{timestamp}\"^^xsd:dateTime .
+        }}
+    }}
+    """
+    execute_update(sparql)
 
 
 def camel_to_snake(name: str) -> str:
@@ -293,41 +355,23 @@ def get_term_links_for_node(
     PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
 
     SELECT 
-      ?link ?term ?term_label
-      ?termlink_creator_type ?termlink_creator_name ?termlink_creator_version
-      ?evidence ?evidence_type
-      ?evidence_creator_type ?evidence_creator_name ?evidence_creator_version
+      ?link ?term ?term_label ?termlink_creator
+      ?evidence ?evidence_type ?evidence_creator
       ?p ?o
     FROM <http://ods.nationwidechildrens.org/phebee/subjects>
     FROM <http://ods.nationwidechildrens.org/phebee/hpo~{hpo_version}>
     FROM <http://ods.nationwidechildrens.org/phebee/mondo~{mondo_version}>
     WHERE {{
       ?link rdf:type phebee:TermLink ;
-            phebee:sourceNode <{source_node_iri}> ;
-            phebee:hasTerm ?term ;
-            phebee:creator ?termlink_creator .
-
+      phebee:sourceNode <{source_node_iri}> ;
+      phebee:hasTerm ?term ;
+      
       OPTIONAL {{ ?term rdfs:label ?term_label . }}
-
-      OPTIONAL {{
-        ?link phebee:hasEvidence ?evidence .
-
-        OPTIONAL {{ ?evidence rdf:type ?evidence_type . }}
-        OPTIONAL {{ ?evidence phebee:creator ?evidence_creator . }}
-        OPTIONAL {{ ?evidence ?p ?o . }}
-
-        OPTIONAL {{
-          ?evidence_creator rdf:type ?evidence_creator_type .
-          ?evidence_creator dc:title ?evidence_creator_name .
-          ?evidence_creator phebee:version ?evidence_creator_version .
-        }}
-      }}
-
-      OPTIONAL {{
-        ?termlink_creator rdf:type ?termlink_creator_type .
-        ?termlink_creator dc:title ?termlink_creator_name .
-        ?termlink_creator phebee:version ?termlink_creator_version .
-      }}
+      OPTIONAL {{ ?link phebee:hasEvidence ?evidence . }}
+      OPTIONAL {{ ?evidence rdf:type ?evidence_type . }}
+      OPTIONAL {{ ?evidence phebee:creator ?evidence_creator . }}
+      OPTIONAL {{ ?evidence ?p ?o . }}
+      OPTIONAL {{ ?link phebee:creator ?termlink_creator . }}
     }}
     """
 
@@ -340,12 +384,7 @@ def get_term_links_for_node(
         term_label = row.get("term_label", {}).get("value")
 
         # TermLink creator
-        creator = {
-            "creator_iri": row.get("termlink_creator", {}).get("value"),
-            "creator_type": row.get("termlink_creator_type", {}).get("value"),
-            "name": row.get("termlink_creator_name", {}).get("value"),
-            "version": row.get("termlink_creator_version", {}).get("value"),
-        }
+        creator = row.get("termlink_creator", {}).get("value")
 
         # Initialize top-level link record
         link = links.setdefault(
@@ -374,25 +413,20 @@ def get_term_links_for_node(
                     "evidence_iri": evidence_iri,
                     "evidence_type": row.get("evidence_type", {}).get("value"),
                     "creator": None,
-                    "properties": [],
+                    "properties": {},
                 },
             )
 
             # Add creator if present
             evidence_creator_iri = row.get("evidence_creator", {}).get("value")
             if evidence_creator_iri:
-                ev["creator"] = {
-                    "creator_iri": evidence_creator_iri,
-                    "creator_type": row.get("evidence_creator_type", {}).get("value"),
-                    "name": row.get("evidence_creator_name", {}).get("value"),
-                    "version": row.get("evidence_creator_version", {}).get("value"),
-                }
+                ev["creator"] = evidence_creator_iri
 
             # Add any extra evidence properties
             p = row.get("p", {}).get("value")
             o = row.get("o", {}).get("value")
             if p and o:
-                ev["properties"].append({"predicate": p, "object": o})
+                ev["properties"][p] = o
 
     return [
         {

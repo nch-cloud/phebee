@@ -328,7 +328,7 @@ Resources:
     Type: AWS::IAM::Role
     Condition: EnableScheduledOntologyUpdate
     Properties:
-      RoleName: "PheBeeEventBridgeInvokeOntologyUpdatersRole"
+      RoleName: !Sub PheBeeInvokeOntologyUpdatersRole-${AWS::StackName}
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -376,6 +376,7 @@ Resources:
   PheBeeNeptuneCluster:
     Type: AWS::Neptune::DBCluster
     Properties:
+      DBClusterIdentifier: !Sub ${AWS::StackName}-neptune-cluster
       StorageEncrypted: true
       # Associating the role here is necessary to pass it as the role to use for our bulk loader
       AssociatedRoles:
@@ -522,6 +523,7 @@ Resources:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
           Region: !Sub ${AWS::Region}
+          PheBeeDynamoTable: !Ref DynamoDBTable
       VpcConfig:
         SecurityGroupIds:
           - !Ref PheBeeLambdaSecurityGroup
@@ -530,6 +532,7 @@ Resources:
           - !Ref SubnetId2
       Policies:
         - !Ref PheBeeNeptuneReadPolicy
+        - !Ref PheBeeDynamoDBReadPolicy
 
   CreateSubjectFunction:
     Type: AWS::Serverless::Function
@@ -1033,6 +1036,46 @@ Resources:
           - !Ref SubnetId1
           - !Ref SubnetId2
 
+  PrepareBulkUploadFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-PrepareBulkUploadFunction
+      CodeUri: functions
+      Handler: prepare_bulk_upload.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          PheBeeBucketName: !Ref PheBeeBucket
+      Policies:
+        - !Ref PheBeeS3WritePolicy
+
+  PerformBulkUploadFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-PerformBulkUploadFunction
+      CodeUri: functions
+      Handler: perform_bulk_upload.lambda_handler
+      MemorySize: 1024
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+          PheBeeBucketName: !Ref PheBeeBucket
+          LoaderRoleArn: !GetAtt NeptuneLoaderRole.Arn
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneLoadPolicy
+        - !Ref PheBeeNeptuneReadPolicy
+        - !Ref PheBeeNeptuneWritePolicy
+        - !Ref PheBeeNeptuneDeletePolicy
+        - !Ref PheBeeS3ReadPolicy
+
+
   #################
   # Step Functions
   #################
@@ -1287,7 +1330,7 @@ Resources:
     Type: AWS::Events::Rule
     Condition: EnableScheduledOntologyUpdate
     Properties:
-      Name: "UpdateHPO-OnSchedule"
+      Name: !Sub UpdateHPO-OnSchedule-${AWS::StackName}
       ScheduleExpression: !Ref HPOScheduleExpression
       State: ENABLED
       Targets:
@@ -1299,7 +1342,7 @@ Resources:
     Type: AWS::Events::Rule
     Condition: EnableScheduledOntologyUpdate
     Properties:
-      Name: "UpdateMondo-OnSchedule"
+      Name: !Sub UpdateMondo-OnSchedule-${AWS::StackName}
       ScheduleExpression: !Ref MondoScheduleExpression
       State: ENABLED
       Targets:
@@ -1311,7 +1354,7 @@ Resources:
     Type: AWS::Events::Rule
     Condition: EnableScheduledOntologyUpdate
     Properties:
-      Name: "UpdateECO-OnSchedule"
+      Name: !Sub UpdateECO-OnSchedule-${AWS::StackName}
       ScheduleExpression: !Ref ECOScheduleExpression
       State: ENABLED
       Targets:

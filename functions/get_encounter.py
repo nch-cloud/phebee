@@ -1,9 +1,17 @@
 import json
 from phebee.utils.sparql import get_encounter
+from phebee.utils.aws import extract_body
+from aws_lambda_powertools import Metrics, Logger, Tracer
+
+logger = Logger()
+tracer = Tracer()
+metrics = Metrics()
 
 def lambda_handler(event, context):
     try:
-        body = json.loads(event["body"])
+        body = extract_body(event)
+
+        logger.info(body)
 
         subject_iri = body.get("subject_iri")
         encounter_id = body.get("encounter_id")
