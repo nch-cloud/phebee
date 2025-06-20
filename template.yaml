@@ -244,6 +244,10 @@ Resources:
             Resource: !Sub
               - arn:${AWS::Partition}:neptune-db:${AWS::Region}:${AWS::AccountId}:${ClusterId}/*
               - ClusterId: !GetAtt PheBeeNeptuneCluster.ClusterResourceId
+          - Effect: Allow
+            Action:
+              - rds:DescribeDBClusters
+            Resource: !Sub arn:${AWS::Partition}:rds:${AWS::Region}:${AWS::AccountId}:cluster:${AWS::StackName}-neptune-cluster
   
   PheBeeNeptuneLoadPolicy:
     Type: AWS::IAM::ManagedPolicy
@@ -695,6 +699,7 @@ Resources:
       CodeUri: functions
       Handler: reset_database.lambda_handler
       MemorySize: 512
+      Timeout: 300
       Environment:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
@@ -709,6 +714,7 @@ Resources:
           - !Ref SubnetId2
       Policies:
         - !Ref PheBeeNeptuneResetPolicy
+        - !Ref PheBeeNeptuneReadPolicy
         - !Ref PheBeeDynamoDBWritePolicy
         - !Ref PheBeeDynamoDBReadPolicy
 
