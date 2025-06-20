@@ -5,6 +5,7 @@ import boto3
 import uuid
 import json
 from botocore.exceptions import ClientError
+from botocore.config import Config
 from requests_aws4auth import AWS4Auth
 
 from phebee.utils.aws import get_client
@@ -37,11 +38,13 @@ def aws_session(request, profile_name):
     # Create a client for each service, so that they are ready to use.
     # If any other clients are needed, add them here so they are instantiated as well.
     get_client("s3", profile_name)
-    get_client("lambda", profile_name)
     get_client("cloudformation", profile_name)
     get_client("stepfunctions", profile_name)
     get_client("dynamodb", profile_name)
 
+    lambda_config = Config(read_timeout=900, connect_timeout=900, retries={"max_attempts": 0})
+    get_client("lambda", profile_name, lambda_config)
+    
     session = boto3.Session(profile_name=profile_name)
 
     return session
