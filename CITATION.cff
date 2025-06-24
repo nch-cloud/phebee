@@ -1,0 +1,12 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "PheBee"
+authors:
+  - family-names: Gordon
+    given-names: David
+    affiliation: Nationwide Children's Hospital
+  - family-names: Homilius
+    given-names: Max
+    affiliation: Nationwide Children's Hospital
+version: 0.1.0
+date-released: 2025-06-24
