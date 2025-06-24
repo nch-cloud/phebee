@@ -1,12 +1,11 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
-title: "PheBee"
+authors:
+- family-names: "Gordon"
+  given-names: "David"
+- family-names: "Homilius"
+  given-names: "Max"
+title: "PheBee""
 version: 0.1.0
 date-released: 2025-06-24
-authors:
-  - family-names: Gordon
-    given-names: David
-    affiliation: "Nationwide Children's Hospital"
-  - family-names: Homilius
-    given-names: Max
-    affiliation: "Nationwide Children's Hospital"
+url: "https://github.com/nch-cloud/phebee"
