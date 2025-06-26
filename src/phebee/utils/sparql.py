@@ -354,24 +354,49 @@ def get_term_links_for_node(
     PREFIX dc: <http://purl.org/dc/terms/>
     PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
 
-    SELECT 
-      ?link ?term ?term_label ?termlink_creator
-      ?evidence ?evidence_type ?evidence_creator
-      ?p ?o
-    FROM <http://ods.nationwidechildrens.org/phebee/subjects>
-    FROM <http://ods.nationwidechildrens.org/phebee/hpo~{hpo_version}>
-    FROM <http://ods.nationwidechildrens.org/phebee/mondo~{mondo_version}>
+    SELECT DISTINCT
+    ?link ?term ?term_label ?termlink_creator
+    ?termlink_creator_id ?termlink_creator_version ?termlink_creator_title ?termlink_creator_type
+    ?evidence ?evidence_type ?evidence_creator
+    ?evidence_creator_id ?evidence_creator_version ?evidence_creator_title ?evidence_creator_type
+
     WHERE {{
-      ?link rdf:type phebee:TermLink ;
-      phebee:sourceNode <{source_node_iri}> ;
-      phebee:hasTerm ?term ;
-      
-      OPTIONAL {{ ?term rdfs:label ?term_label . }}
-      OPTIONAL {{ ?link phebee:hasEvidence ?evidence . }}
-      OPTIONAL {{ ?evidence rdf:type ?evidence_type . }}
-      OPTIONAL {{ ?evidence phebee:creator ?evidence_creator . }}
-      OPTIONAL {{ ?evidence ?p ?o . }}
-      OPTIONAL {{ ?link phebee:creator ?termlink_creator . }}
+        GRAPH <http://ods.nationwidechildrens.org/phebee/subjects> {{
+            ?link rdf:type phebee:TermLink ;
+                phebee:sourceNode <{source_node_iri}> ;
+                phebee:hasTerm ?term .
+
+            OPTIONAL {{ ?link phebee:hasEvidence ?evidence . }}
+            OPTIONAL {{ ?link phebee:creator ?termlink_creator . }}
+
+            OPTIONAL {{ ?termlink_creator rdf:type ?termlink_creator_type . }}
+            OPTIONAL {{ ?termlink_creator dc:title ?termlink_creator_title . }}
+            OPTIONAL {{ ?termlink_creator dc:hasVersion ?termlink_creator_version . }}
+            OPTIONAL {{ ?termlink_creator phebee:creatorId ?termlink_creator_id . }}
+        }}
+
+        OPTIONAL {{
+            GRAPH <http://ods.nationwidechildrens.org/phebee/hpo~{hpo_version}> {{
+                ?term rdfs:label ?term_label .
+            }}
+        }}
+        OPTIONAL {{
+            GRAPH <http://ods.nationwidechildrens.org/phebee/mondo~{mondo_version}> {{
+                ?term rdfs:label ?term_label .
+            }}
+        }}
+
+        OPTIONAL {{
+            GRAPH <http://ods.nationwidechildrens.org/phebee/subjects> {{
+                ?evidence rdf:type ?evidence_type .
+                ?evidence phebee:creator ?evidence_creator .
+
+                OPTIONAL {{ ?evidence_creator rdf:type ?evidence_creator_type . }}
+                OPTIONAL {{ ?evidence_creator dc:title ?evidence_creator_title . }}
+                OPTIONAL {{ ?evidence_creator dc:hasVersion ?evidence_creator_version . }}
+                OPTIONAL {{ ?evidence_creator phebee:creatorId ?evidence_creator_id . }}
+            }}
+        }}
     }}
     """
 
@@ -384,7 +409,19 @@ def get_term_links_for_node(
         term_label = row.get("term_label", {}).get("value")
 
         # TermLink creator
-        creator = row.get("termlink_creator", {}).get("value")
+        termlink_creator_iri = row.get("termlink_creator", {}).get("value")
+        termlink_creator_id = row.get("termlink_creator_id", {}).get("value")
+        termlink_creator_title = row.get("termlink_creator_title", {}).get("value")
+        termlink_creator_version = row.get("termlink_creator_version", {}).get("value")
+        if termlink_creator_iri:
+            creator = {
+                "creator_iri": termlink_creator_iri,
+                "creator_id": termlink_creator_id,
+                "creator_title": termlink_creator_title,
+                "creator_version": termlink_creator_version
+            }
+        else:
+            creator = None
 
         # Initialize top-level link record
         link = links.setdefault(
@@ -419,8 +456,16 @@ def get_term_links_for_node(
 
             # Add creator if present
             evidence_creator_iri = row.get("evidence_creator", {}).get("value")
+            evidence_creator_id = row.get("evidence_creator_id", {}).get("value")
+            evidence_creator_title = row.get("evidence_creator_title", {}).get("value")
+            evidence_creator_version = row.get("evidence_creator_version", {}).get("value")
             if evidence_creator_iri:
-                ev["creator"] = evidence_creator_iri
+                ev["creator"] = {
+                    "creator_iri": evidence_creator_iri,
+                    "creator_id": evidence_creator_id,
+                    "creator_title": evidence_creator_title,
+                    "creator_version": evidence_creator_version
+                }
 
             # Add any extra evidence properties
             p = row.get("p", {}).get("value")
@@ -470,10 +515,12 @@ def create_encounter(subject_iri: str, encounter_id: str):
     PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
 
     INSERT DATA {{
-        <{encounter_iri}> rdf:type phebee:Encounter ;
-                          phebee:encounterId "{encounter_id}" ;
-                          dcterms:created "{now_iso}" ;
-                          phebee:subject <{subject_iri}> .
+        GRAPH <http://ods.nationwidechildrens.org/phebee/subjects> {{
+            <{encounter_iri}> rdf:type phebee:Encounter ;
+                            phebee:encounterId "{encounter_id}" ;
+                            dcterms:created "{now_iso}" ;
+                            phebee:subject <{subject_iri}> .
+        }}
     }}
     """
     execute_update(sparql)
@@ -558,7 +605,9 @@ def create_clinical_note(
     PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
 
     INSERT DATA {{
-        {triples_block} .
+        GRAPH <http://ods.nationwidechildrens.org/phebee/subjects> {{
+            {triples_block} .
+        }}
     }}
     """
 
@@ -627,6 +676,7 @@ def create_creator(
         raise ValueError("Invalid creator_type. Must be 'human' or 'automated'.")
 
     triples = [
+        f'<{creator_iri}> phebee:creatorId "{creator_id}"',
         f"<{creator_iri}> rdf:type {rdf_type}",
         f'<{creator_iri}> dc:created "{now_iso}"^^xsd:dateTime',
     ]
@@ -647,7 +697,9 @@ def create_creator(
     PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
 
     INSERT DATA {{
-        {triples_block}
+        GRAPH <http://ods.nationwidechildrens.org/phebee/subjects> {{
+            {triples_block}
+        }}
     }}
     """
     execute_update(sparql)
@@ -679,7 +731,7 @@ def get_creator(creator_id: str) -> dict:
 
     if len(bindings) > 0:
         return flatten_response(
-            {"creator_iri": creator_iri, "creator_id": creator_id}, properties
+            {"creator_iri": creator_iri}, properties
         )
     else:
         return None
@@ -757,7 +809,9 @@ def create_text_annotation(
     PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
 
     INSERT DATA {{
-        {triples_block}
+        GRAPH <http://ods.nationwidechildrens.org/phebee/subjects> {{
+            {triples_block}
+        }}
     }}
     """
     execute_update(sparql)
