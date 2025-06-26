@@ -30,6 +30,7 @@ def subjects_to_phenopackets(subject_data: list[dict], project_iri: str, hpo_ver
 
             evidence_list = []
             for evidence in term_link.get("evidence", []):
+                print(f"evidence: {evidence}")
                 ev = {}
                 if "type" in evidence or "evidence_type" in evidence:
                     ev["type"] = {
@@ -39,8 +40,8 @@ def subjects_to_phenopackets(subject_data: list[dict], project_iri: str, hpo_ver
                     ev["date"] = evidence["created"]
                 if "creator" in evidence:
                     ev["reference"] = {
-                        "id": evidence["creator"].get("creator_iri"),
-                        "label": evidence["creator"].get("title") or evidence["creator"].get("type")
+                        "id": evidence.get("creator", {}).get("creator_iri"),
+                        "label": evidence.get("creator", {}).get("title") or evidence.get("creator", {}).get("type")
                     }
                 if ev:
                     evidence_list.append(ev)

@@ -1,5 +1,6 @@
 import json
 from phebee.utils.sparql import create_creator
+from urllib.parse import quote
 
 def lambda_handler(event, context):
     try:
@@ -35,11 +36,13 @@ def lambda_handler(event, context):
             version=version
         )
 
+        creator_id_safe = quote(creator_id, safe="")
+        
         return {
             "statusCode": 200,
             "body": json.dumps({
                 "message": "Creator created",
-                "creator_iri": f"http://ods.nationwidechildrens.org/phebee/creator/{creator_id}"
+                "creator_iri": f"http://ods.nationwidechildrens.org/phebee/creator/{creator_id_safe}"
             })
         }
 

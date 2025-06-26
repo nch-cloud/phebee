@@ -2,6 +2,7 @@ import uuid
 import json
 import pytest
 from phebee.utils.aws import get_client
+from urllib.parse import quote
 
 pytestmark = [pytest.mark.integration]
 
@@ -33,7 +34,8 @@ def test_creator_lifecycle(physical_resources, creator_type, extra):
     )
     assert create_resp["StatusCode"] == 200
     create_body = json.loads(json.loads(create_resp["Payload"].read())["body"])
-    assert create_body["creator_iri"].endswith(creator_id)
+    creator_id_safe = quote(creator_id, safe="")
+    assert create_body["creator_iri"].endswith(creator_id_safe)
 
     # --- Get ---
     get_resp = lambda_client.invoke(
@@ -43,6 +45,7 @@ def test_creator_lifecycle(physical_resources, creator_type, extra):
     )
     assert get_resp["StatusCode"] == 200
     get_body = json.loads(json.loads(get_resp["Payload"].read())["body"])
+    print(get_body)
     assert get_body["creator_id"] == creator_id
     assert "created" in get_body
 
