@@ -1,9 +1,10 @@
 import json
 from phebee.utils.sparql import get_term_link
+from phebee.utils.aws import extract_body
 
 def lambda_handler(event, context):
     try:
-        body = json.loads(event["body"])
+        body = extract_body(event)
         termlink_iri = body.get("termlink_iri")
 
         if not termlink_iri:

@@ -1,9 +1,10 @@
 import json
 from phebee.utils.sparql import delete_clinical_note
+from phebee.utils.aws import extract_body
 
 def lambda_handler(event, context):
     try:
-        body = json.loads(event["body"])
+        body = extract_body(event)
 
         encounter_iri = body.get("encounter_iri")
         clinical_note_id = body.get("clinical_note_id")

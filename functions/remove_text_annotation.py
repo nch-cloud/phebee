@@ -1,9 +1,10 @@
 import json
 from phebee.utils.sparql import delete_text_annotation
+from phebee.utils.aws import extract_body
 
 def lambda_handler(event, context):
     try:
-        body = json.loads(event["body"])
+        body = extract_body(event)
         annotation_iri = body.get("annotation_iri")
 
         if not annotation_iri:

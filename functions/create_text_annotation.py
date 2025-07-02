@@ -1,9 +1,10 @@
 import json
 from phebee.utils.sparql import create_text_annotation
+from phebee.utils.aws import extract_body
 
 def lambda_handler(event, context):
     try:
-        body = json.loads(event["body"])
+        body = extract_body(event)
 
         text_source_iri = body.get("text_source_iri")
         span_start = body.get("span_start")

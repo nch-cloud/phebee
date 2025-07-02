@@ -1,10 +1,11 @@
 import json
 from phebee.utils.sparql import create_creator
+from phebee.utils.aws import extract_body
 from urllib.parse import quote
 
 def lambda_handler(event, context):
     try:
-        body = json.loads(event["body"])
+        body = extract_body(event)
 
         creator_id = body.get("creator_id")
         creator_type = body.get("creator_type")

@@ -1,9 +1,10 @@
 import json
 from phebee.utils.sparql import delete_creator
+from phebee.utils.aws import extract_body
 
 def lambda_handler(event, context):
     try:
-        body = json.loads(event["body"])
+        body = extract_body(event)
         creator_id = body.get("creator_id")
 
         if not creator_id:

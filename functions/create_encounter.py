@@ -1,9 +1,10 @@
 import json
 from phebee.utils.sparql import create_encounter
+from phebee.utils.aws import extract_body
 
 def lambda_handler(event, context):
     try:
-        body = json.loads(event["body"])
+        body = extract_body(event)
 
         subject_iri = body.get("subject_iri")
         encounter_id = body.get("encounter_id")
