@@ -4,7 +4,7 @@ SPARQL Query Conventions for PheBee Graph
 Prefix Usage:
 - PREFIX rdf:    http://www.w3.org/1999/02/22-rdf-syntax-ns#
 - PREFIX rdfs:   http://www.w3.org/2000/01/rdf-schema#
-- PREFIX dc:     http://purl.org/dc/terms/
+- PREFIX dcterms: http://purl.org/dc/terms/
 - PREFIX xsd:    http://www.w3.org/2001/XMLSchema#
 - PREFIX phebee: http://ods.nationwidechildrens.org/phebee#
 
@@ -170,7 +170,7 @@ def create_subject(project_id: str, project_subject_id: str) -> str:
     sparql = f"""
     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
     PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-    PREFIX dc: <http://purl.org/dc/terms/>
+    PREFIX dcterms: <http://purl.org/dc/terms/>
     PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
 
     INSERT DATA {{
@@ -181,7 +181,7 @@ def create_subject(project_id: str, project_subject_id: str) -> str:
             <{subject_iri}> phebee:hasProjectSubjectId <{project_subject_iri}> .
             <{project_subject_iri}> rdf:type phebee:ProjectSubjectId ;
                                      phebee:hasProject <{project_iri}> ;
-                                     dc:created \"{timestamp}\"^^xsd:dateTime .
+                                     dcterms:created \"{timestamp}\"^^xsd:dateTime .
         }}
     }}
     """
@@ -198,7 +198,7 @@ def link_subject_to_project(
 
     sparql = f"""
     PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-    PREFIX dc: <http://purl.org/dc/terms/>
+    PREFIX dcterms: <http://purl.org/dc/terms/>
     PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
 
     INSERT DATA {{
@@ -206,7 +206,7 @@ def link_subject_to_project(
             <{subject_iri}> phebee:hasProjectSubjectId <{project_subject_iri}> .
             <{project_subject_iri}> rdf:type phebee:ProjectSubjectId ;
                                      phebee:hasProject <{project_iri}> ;
-                                     dc:created \"{timestamp}\"^^xsd:dateTime .
+                                     dcterms:created \"{timestamp}\"^^xsd:dateTime .
         }}
     }}
     """
@@ -322,7 +322,7 @@ def dump_graph_contents(
 
 def get_creator_info(creator_iri: str) -> dict:
     sparql = f"""
-    PREFIX dc: <http://purl.org/dc/terms/>
+    PREFIX dcterms: <http://purl.org/dc/terms/>
     SELECT ?p ?o WHERE {{
         <{creator_iri}> ?p ?o .
     }}
@@ -351,7 +351,7 @@ def get_term_links_for_node(
     sparql = f"""
     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
     PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-    PREFIX dc: <http://purl.org/dc/terms/>
+    PREFIX dcterms: <http://purl.org/dc/terms/>
     PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
 
     SELECT DISTINCT
@@ -370,8 +370,8 @@ def get_term_links_for_node(
             OPTIONAL {{ ?link phebee:creator ?termlink_creator . }}
 
             OPTIONAL {{ ?termlink_creator rdf:type ?termlink_creator_type . }}
-            OPTIONAL {{ ?termlink_creator dc:title ?termlink_creator_title . }}
-            OPTIONAL {{ ?termlink_creator dc:hasVersion ?termlink_creator_version . }}
+            OPTIONAL {{ ?termlink_creator dcterms:title ?termlink_creator_title . }}
+            OPTIONAL {{ ?termlink_creator dcterms:hasVersion ?termlink_creator_version . }}
             OPTIONAL {{ ?termlink_creator phebee:creatorId ?termlink_creator_id . }}
         }}
 
@@ -392,8 +392,8 @@ def get_term_links_for_node(
                 ?evidence phebee:creator ?evidence_creator .
 
                 OPTIONAL {{ ?evidence_creator rdf:type ?evidence_creator_type . }}
-                OPTIONAL {{ ?evidence_creator dc:title ?evidence_creator_title . }}
-                OPTIONAL {{ ?evidence_creator dc:hasVersion ?evidence_creator_version . }}
+                OPTIONAL {{ ?evidence_creator dcterms:title ?evidence_creator_title . }}
+                OPTIONAL {{ ?evidence_creator dcterms:hasVersion ?evidence_creator_version . }}
                 OPTIONAL {{ ?evidence_creator phebee:creatorId ?evidence_creator_id . }}
             }}
         }}
@@ -519,7 +519,7 @@ def create_encounter(subject_iri: str, encounter_id: str):
             <{encounter_iri}> rdf:type phebee:Encounter ;
                             phebee:encounterId "{encounter_id}" ;
                             dcterms:created "{now_iso}" ;
-                            phebee:subject <{subject_iri}> .
+                            phebee:hasSubject <{subject_iri}> .
         }}
     }}
     """
@@ -531,7 +531,7 @@ def get_encounter(subject_iri: str, encounter_id: str) -> dict:
     sparql = f"""
     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
     PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-    PREFIX dc: <http://purl.org/dc/terms/>
+    PREFIX dcterms: <http://purl.org/dc/terms/>
     PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
 
     SELECT ?p ?o WHERE {{
@@ -580,6 +580,8 @@ def create_clinical_note(
     encounter_iri: str,
     clinical_note_id: str,
     note_timestamp: str = None,
+    provider_type: str = None,
+    author_specialty: str = None,
 ):
     clinical_note_iri = f"{encounter_iri}/note/{clinical_note_id}"
     now_iso = get_current_timestamp()
@@ -588,12 +590,22 @@ def create_clinical_note(
         f"<{clinical_note_iri}> rdf:type phebee:ClinicalNote",
         f'<{clinical_note_iri}> phebee:clinicalNoteId "{clinical_note_id}"',
         f"<{clinical_note_iri}> phebee:hasEncounter <{encounter_iri}>",
-        f'<{clinical_note_iri}> dc:created "{now_iso}"^^xsd:dateTime',
+        f'<{clinical_note_iri}> dcterms:created "{now_iso}"^^xsd:dateTime',
     ]
 
     if note_timestamp:
         triples.append(
             f'<{clinical_note_iri}> phebee:noteTimestamp "{note_timestamp}"^^xsd:dateTime'
+        )
+        
+    if provider_type:
+        triples.append(
+            f'<{clinical_note_iri}> phebee:providerType "{provider_type}"'
+        )
+        
+    if author_specialty:
+        triples.append(
+            f'<{clinical_note_iri}> phebee:authorSpecialty "{author_specialty}"'
         )
 
     triples_block = " .\n        ".join(triples)
@@ -601,7 +613,7 @@ def create_clinical_note(
     sparql = f"""
     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
     PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-    PREFIX dc: <http://purl.org/dc/terms/>
+    PREFIX dcterms: <http://purl.org/dc/terms/>
     PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
 
     INSERT DATA {{
@@ -619,7 +631,7 @@ def get_clinical_note(encounter_iri: str, clinical_note_id: str) -> dict:
     sparql = f"""
     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
     PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-    PREFIX dc: <http://purl.org/dc/terms/>
+    PREFIX dcterms: <http://purl.org/dc/terms/>
     PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
 
     SELECT ?p ?o WHERE {{
@@ -678,22 +690,22 @@ def create_creator(
     triples = [
         f'<{creator_iri}> phebee:creatorId "{creator_id}"',
         f"<{creator_iri}> rdf:type {rdf_type}",
-        f'<{creator_iri}> dc:created "{now_iso}"^^xsd:dateTime',
+        f'<{creator_iri}> dcterms:created "{now_iso}"^^xsd:dateTime',
     ]
 
     if name:
-        triples.append(f'<{creator_iri}> dc:title "{name}"')
+        triples.append(f'<{creator_iri}> dcterms:title "{name}"')
     if creator_type == "automated":
         if not version:
             raise ValueError("version is required for automated creators")
-        triples.append(f'<{creator_iri}> dc:hasVersion "{version}"')
+        triples.append(f'<{creator_iri}> dcterms:hasVersion "{version}"')
 
     triples_block = " .\n    ".join(triples) + " ."
 
     sparql = f"""
     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
     PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-    PREFIX dc: <http://purl.org/dc/terms/>
+    PREFIX dcterms: <http://purl.org/dc/terms/>
     PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
 
     INSERT DATA {{
@@ -712,7 +724,7 @@ def get_creator(creator_id: str) -> dict:
     sparql = f"""
     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
     PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-    PREFIX dc: <http://purl.org/dc/terms/>
+    PREFIX dcterms: <http://purl.org/dc/terms/>
     PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
 
     SELECT ?p ?o WHERE {{
@@ -782,7 +794,7 @@ def create_text_annotation(
     triples = [
         f"<{annotation_iri}> rdf:type phebee:TextAnnotation",
         f"<{annotation_iri}> phebee:textSource <{text_source_iri}>",
-        f'<{annotation_iri}> dc:created "{created}"^^xsd:dateTime',
+        f'<{annotation_iri}> dcterms:created "{created}"^^xsd:dateTime',
         f"<{annotation_iri}> phebee:evidenceType <{evidence_type_iri}>",
         f"<{annotation_iri}> phebee:assertionType <{assertion_type_iri}>",
     ]
@@ -805,7 +817,7 @@ def create_text_annotation(
     sparql = f"""
     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
     PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-    PREFIX dc: <http://purl.org/dc/terms/>
+    PREFIX dcterms: <http://purl.org/dc/terms/>
     PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
 
     INSERT DATA {{
@@ -886,7 +898,7 @@ def get_text_annotation(annotation_iri: str) -> dict:
     sparql = f"""
     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
     PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-    PREFIX dc: <http://purl.org/dc/terms/>
+    PREFIX dcterms: <http://purl.org/dc/terms/>
     PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
 
     SELECT ?p ?o WHERE {{
@@ -933,7 +945,7 @@ def create_term_link(
         f"<{termlink_iri}> phebee:sourceNode <{source_node_iri}>",
         f"<{termlink_iri}> phebee:hasTerm <{term_iri}>",
         f"<{termlink_iri}> phebee:creator <{creator_iri}>",
-        f'<{termlink_iri}> dc:created "{created}"^^xsd:dateTime',
+        f'<{termlink_iri}> dcterms:created "{created}"^^xsd:dateTime',
     ]
 
     if evidence_iris:
@@ -945,7 +957,7 @@ def create_term_link(
     sparql = f"""
     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
     PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-    PREFIX dc: <http://purl.org/dc/terms/>
+    PREFIX dcterms: <http://purl.org/dc/terms/>
     PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
 
     INSERT DATA {{
@@ -962,7 +974,7 @@ def get_term_link(termlink_iri: str) -> dict:
     sparql = f"""
     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
     PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-    PREFIX dc: <http://purl.org/dc/terms/>
+    PREFIX dcterms: <http://purl.org/dc/terms/>
     PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
     
     SELECT ?p ?o WHERE {{

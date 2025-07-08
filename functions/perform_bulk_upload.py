@@ -18,7 +18,9 @@ from phebee.utils.sparql import (
     create_subject,
     link_subject_to_project,
     node_exists,
-    create_creator
+    create_creator,
+    infer_evidence_type,
+    infer_assertion_type
 )
 from phebee.utils.aws import get_current_timestamp, extract_body
 
@@ -54,6 +56,7 @@ class ClinicalNoteEvidence(BaseModel):
     span_start: Optional[int] = None
     span_end: Optional[int] = None
     qualifying_terms: Optional[List[str]] = None  # List of qualifying term names (e.g., "negated", "hypothetical")
+    contexts: Optional[dict] = None  # Context flags from JSON input (e.g., {"negated": 1, "family": 0, "hypothetical": 0})
 
 class TermLinkInput(BaseModel):
     project_id: str
@@ -89,7 +92,7 @@ def generate_rdf(entries: List[TermLinkInput]) -> str:
     g = Graph()
     g.bind("phebee", PHEBEE_NS)
     g.bind("obo", OBO)
-    g.bind("dc", DCTERMS)
+    g.bind("dcterms", DCTERMS)  # Changed from "dc" to "dcterms" for consistency
 
     # Keep track of what creators we've already verified exist.
     # Bulk uploads are likely to use the same creator repeatedly, so this cuts down on unnecessary Neptune checks.
@@ -132,6 +135,10 @@ def generate_rdf(entries: List[TermLinkInput]) -> str:
                 g.add((note_iri, DCTERMS.created, RdfLiteral(get_current_timestamp(), datatype=XSD.dateTime)))
                 if evidence.note_timestamp:
                     g.add((note_iri, PHEBEE_NS.noteTimestamp, RdfLiteral(evidence.note_timestamp, datatype=XSD.dateTime)))
+                if evidence.author_prov_type:
+                    g.add((note_iri, PHEBEE_NS.providerType, RdfLiteral(evidence.author_prov_type)))
+                if evidence.author_specialty:
+                    g.add((note_iri, PHEBEE_NS.authorSpecialty, RdfLiteral(evidence.author_specialty)))
                 
                 # Connect the note to the term link
                 g.add((note_iri, PHEBEE_NS.hasTermLink, term_link_iri))
@@ -145,6 +152,14 @@ def generate_rdf(entries: List[TermLinkInput]) -> str:
                 g.add((annotation_iri, PHEBEE_NS.textSource, note_iri))
                 g.add((annotation_iri, DCTERMS.created, RdfLiteral(get_current_timestamp(), datatype=XSD.dateTime)))
                 g.add((annotation_iri, PHEBEE_NS.creator, evidence_creator_iri))
+                
+                # Add evidence type and assertion type based on creator type
+                creator_type = f"http://ods.nationwidechildrens.org/phebee#{evidence.evidence_creator_type.capitalize()}Creator"
+                text_source_type = "http://ods.nationwidechildrens.org/phebee#ClinicalNote"
+                evidence_type_iri = infer_evidence_type(creator_type, text_source_type)
+                assertion_type_iri = infer_assertion_type(creator_type)
+                g.add((annotation_iri, PHEBEE_NS.evidenceType, URIRef(evidence_type_iri)))
+                g.add((annotation_iri, PHEBEE_NS.assertionType, URIRef(assertion_type_iri)))
                 
                 # Add span information if provided
                 if evidence.span_start is not None:
@@ -166,8 +181,15 @@ def generate_rdf(entries: List[TermLinkInput]) -> str:
                         # Add the qualifying term to the term link
                         g.add((term_link_iri, PHEBEE_NS.hasQualifyingTerm, qualifier_iri))
                 
+                # Add context flags as qualifying terms if they're set to 1
+                if evidence.contexts:
+                    for context_type, value in evidence.contexts.items():
+                        if value == 1:
+                            qualifier_iri = URIRef(f"{PHEBEE}/qualifier/{context_type}")
+                            g.add((term_link_iri, PHEBEE_NS.hasQualifyingTerm, qualifier_iri))
+                
 
-    graph_ttl = g.serialize(format="turtle")
+    graph_ttl = g.serialize(format="turtle", prefixes={"phebee": PHEBEE_NS, "obo": OBO, "dcterms": DCTERMS})
 
     logger.info(graph_ttl)
 

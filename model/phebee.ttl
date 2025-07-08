@@ -4,9 +4,14 @@
 @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
 @prefix dcterms: <http://purl.org/dc/terms/> .
 @prefix phebee: <http://ods.nationwidechildrens.org/phebee#> .
+@prefix obo: <http://purl.obolibrary.org/obo/> .
 
 <http://ods.nationwidechildrens.org/phebee> a owl:Ontology ;
-    owl:versionIRI <http://ods.nationwidechildrens.org/phebee/0.9> .
+    owl:versionIRI <http://ods.nationwidechildrens.org/phebee/0.9> ;
+    owl:imports <http://purl.org/dc/terms/> .
+
+# Documentation of imported properties
+dcterms:created rdfs:comment "Creation timestamp for PheBee resources. Used across all major entities in the PheBee graph." .
 
 # Classes
 phebee:Project a owl:Class ;
@@ -80,7 +85,7 @@ phebee:hasProject a owl:ObjectProperty ;
     rdfs:label "Has Project" ;
     rdfs:comment "Links a project-specific subject ID to a project." .
 
-phebee:hasSubject a owl:DatatypeProperty ;
+phebee:hasSubject a owl:ObjectProperty ;
     rdfs:domain phebee:Encounter ;
     rdfs:range phebee:Subject ;
     rdfs:label "Encounter Subject" ;
@@ -116,7 +121,7 @@ phebee:noteTimestamp a owl:DatatypeProperty ;
     rdfs:label "Note Timestamp" ;
     rdfs:comment "The date and time the note was created in the original source." .
 
-phebee:hasEncounter a owl:DatatypeProperty ;
+phebee:hasEncounter a owl:ObjectProperty ;
     rdfs:domain phebee:ClinicalNote ;
     rdfs:range phebee:Encounter ;
     rdfs:label "Clinical Note Encounter" ;
@@ -127,6 +132,12 @@ phebee:providerType a owl:DatatypeProperty ;
     rdfs:range xsd:string ;
     rdfs:label "Provider Type" ;
     rdfs:comment "The role or specialty of the provider who authored the note." .
+
+phebee:authorSpecialty a owl:DatatypeProperty ;
+    rdfs:domain phebee:ClinicalNote ;
+    rdfs:range xsd:string ;
+    rdfs:label "Author Specialty" ;
+    rdfs:comment "The medical specialty of the provider who authored the note." .
 
 phebee:spanStart a owl:DatatypeProperty ;
     rdfs:domain phebee:TextAnnotation ;
@@ -157,12 +168,6 @@ phebee:creatorId a owl:DatatypeProperty ;
     rdfs:range xsd:string ;
     rdfs:label "Creator ID" ;
     rdfs:comment "The identifier of the entity responsible for creating a node in the PheBee graph." .
-
-phebee:creatorId a owl:DatatypeProperty ;
-    rdfs:domain phebee:AutomatedCreator ;
-    rdfs:range xsd:string ;
-    rdfs:label "Creator ID" ;
-    rdfs:comment "The identifier of the system or algorithm that created the annotation." .
 
 phebee:version a owl:DatatypeProperty ;
     rdfs:domain phebee:AutomatedCreator ;
@@ -207,10 +212,10 @@ phebee:evidenceType a rdf:Property ;
     rdfs:label "Evidence Type" ;
     rdfs:comment "Specifies the type of evidence using a term from the ECO ontology." ;
     rdfs:domain phebee:Evidence ;
-    rdfs:range eco:ECO_0000000 .
+    rdfs:range obo:ECO_0000000 .
 
 phebee:assertionType a rdf:Property ;
     rdfs:label "assertion type" ;
     rdfs:comment "Specifies the type of assertion made by the evidence, using a term from the ECO ontology." ;
     rdfs:domain phebee:Evidence ;
-    rdfs:range eco:ECO_0000217 .
+    rdfs:range obo:ECO_0000217 .
