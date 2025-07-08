@@ -7,6 +7,7 @@ from typing import List, Optional, Literal
 from pydantic import BaseModel, ValidationError
 from rdflib import Graph, URIRef, Namespace, RDF, Literal as RdfLiteral
 from rdflib.namespace import DCTERMS, XSD
+import uuid
 
 from phebee.constants import PHEBEE
 from phebee.utils.neptune import start_load
@@ -41,21 +42,23 @@ OBO = "http://purl.obolibrary.org/obo/"
 class ClinicalNoteEvidence(BaseModel):
     type: Literal["clinical_note"]
     clinical_note_id: str
-    encounter_iri: str
-    creator_id: str
-    creator_type: str
-    creator_name: Optional[str] = None
-    creator_version: Optional[str] = None
+    encounter_id: str
+    evidence_creator_id: str
+    evidence_creator_type: str
+    evidence_creator_name: Optional[str] = None
+    evidence_creator_version: Optional[str] = None
     note_timestamp: Optional[str] = None
+    note_type: Optional[str] = None
+    author_prov_type: Optional[str] = None
+    author_specialty: Optional[str] = None
+    span_start: Optional[int] = None
+    span_end: Optional[int] = None
+    qualifying_terms: Optional[List[str]] = None  # List of qualifying term names (e.g., "negated", "hypothetical")
 
 class TermLinkInput(BaseModel):
     project_id: str
     project_subject_id: str
     term_iri: str
-    creator_id: str
-    creator_type: str
-    creator_name: Optional[str] = None
-    creator_version: Optional[str] = None
     evidence: List[ClinicalNoteEvidence] = []
 
 # -------------------
@@ -106,50 +109,83 @@ def generate_rdf(entries: List[TermLinkInput]) -> str:
         term_link_iri = URIRef(term_link_iri_str)
 
         g.add((term_link_iri, RDF.type, PHEBEE_NS.TermLink))
-        g.add((term_link_iri, PHEBEE_NS.sourceNode, subject_iri))
         g.add((term_link_iri, PHEBEE_NS.hasTerm, term_iri))
-        g.add((subject_iri, PHEBEE_NS.hasTermLink, term_link_iri))
-
-        creator_iri = URIRef(f"{PHEBEE}/creator/{entry.creator_id}")
-        # Check if creator already exists.  If not, we need to create it.
-        logger.info(f"Checking if creator exists: {creator_iri}")
-        if creator_iri not in creator_exists_cache and not node_exists(creator_iri):
-            logger.info(f"Creating {entry.creator_type} creator: {entry.creator_id}")
-            create_creator(entry.creator_id, entry.creator_type, entry.creator_name, entry.creator_version)
-        else:
-            logger.info("Creator already exists.")
-        creator_exists_cache.append(creator_iri)
-
-        g.add((term_link_iri, PHEBEE_NS.creator, creator_iri))
         g.add((term_link_iri, DCTERMS.created, RdfLiteral(get_current_timestamp(), datatype=XSD.dateTime)))
 
         for evidence in entry.evidence:
-            creator_iri = URIRef(f"{PHEBEE}/creator/{evidence.creator_id}")
-            # Check if creator already exists.  If not, we need to create it.
-            logger.info(f"Checking if creator exists: {creator_iri}")
-            if creator_iri not in creator_exists_cache and not node_exists(creator_iri):
-                logger.info(f"Creating {evidence.creator_type} creator: {evidence.creator_id}")
-                create_creator(evidence.creator_id, evidence.creator_type, evidence.creator_name, evidence.creator_version)
-            else:
-                logger.info("Creator already exists.")
-            creator_exists_cache.append(creator_iri)
+            evidence_creator_iri = create_or_find_creator(evidence.evidence_creator_id, evidence.evidence_creator_version, evidence.evidence_creator_name, evidence.evidence_creator_type, creator_exists_cache)
             
             if evidence.type == "clinical_note":
-                note_iri = URIRef(f"{evidence.encounter_iri}/note/{evidence.clinical_note_id}")
+                encounter_iri = URIRef(f"{subject_iri}/encounter/{evidence.encounter_id}")
+                note_iri = URIRef(f"{encounter_iri}/note/{evidence.clinical_note_id}")
+                
+                # Create the encounter node
+                g.add((encounter_iri, RDF.type, PHEBEE_NS.Encounter))
+                g.add((encounter_iri, PHEBEE_NS.encounterId, RdfLiteral(evidence.encounter_id)))
+                g.add((encounter_iri, PHEBEE_NS.hasSubject, subject_iri))
+                g.add((encounter_iri, DCTERMS.created, RdfLiteral(get_current_timestamp(), datatype=XSD.dateTime)))
+                
+                # Add clinical note properties
                 g.add((note_iri, RDF.type, PHEBEE_NS.ClinicalNote))
                 g.add((note_iri, PHEBEE_NS.clinicalNoteId, RdfLiteral(evidence.clinical_note_id)))
-                g.add((note_iri, PHEBEE_NS.hasEncounter, URIRef(evidence.encounter_iri)))
+                g.add((note_iri, PHEBEE_NS.hasEncounter, URIRef(encounter_iri)))
                 g.add((note_iri, DCTERMS.created, RdfLiteral(get_current_timestamp(), datatype=XSD.dateTime)))
                 if evidence.note_timestamp:
                     g.add((note_iri, PHEBEE_NS.noteTimestamp, RdfLiteral(evidence.note_timestamp, datatype=XSD.dateTime)))
-                g.add((term_link_iri, PHEBEE_NS.hasEvidence, note_iri))
-                g.add((note_iri, PHEBEE_NS.creator, creator_iri))
+                
+                # Connect the note to the term link
+                g.add((note_iri, PHEBEE_NS.hasTermLink, term_link_iri))
+
+                # Create a TextAnnotation node
+                annotation_id = str(uuid.uuid4())
+                annotation_iri = URIRef(f"{note_iri}/annotation/{annotation_id}")
+                
+                # Add TextAnnotation properties
+                g.add((annotation_iri, RDF.type, PHEBEE_NS.TextAnnotation))
+                g.add((annotation_iri, PHEBEE_NS.textSource, note_iri))
+                g.add((annotation_iri, DCTERMS.created, RdfLiteral(get_current_timestamp(), datatype=XSD.dateTime)))
+                g.add((annotation_iri, PHEBEE_NS.creator, evidence_creator_iri))
+                
+                # Add span information if provided
+                if evidence.span_start is not None:
+                    g.add((annotation_iri, PHEBEE_NS.spanStart, RdfLiteral(evidence.span_start, datatype=XSD.integer)))
+                if evidence.span_end is not None:
+                    g.add((annotation_iri, PHEBEE_NS.spanEnd, RdfLiteral(evidence.span_end, datatype=XSD.integer)))
+                
+                # Link the TextAnnotation to the term
+                g.add((annotation_iri, PHEBEE_NS.hasTerm, term_iri))
+                
+                # Connect the TermLink to the TextAnnotation as evidence
+                g.add((term_link_iri, PHEBEE_NS.hasEvidence, annotation_iri))
+                
+                # Add qualifying terms if provided
+                if evidence.qualifying_terms:
+                    for qualifier in evidence.qualifying_terms:
+                        # Create a fully qualified IRI using the phebee namespace with "qualifier" in the path
+                        qualifier_iri = URIRef(f"{PHEBEE}/qualifier/{qualifier}")
+                        # Add the qualifying term to the term link
+                        g.add((term_link_iri, PHEBEE_NS.hasQualifyingTerm, qualifier_iri))
+                
 
     graph_ttl = g.serialize(format="turtle")
 
     logger.info(graph_ttl)
 
     return graph_ttl
+
+def create_or_find_creator(creator_id, creator_version, creator_name, creator_type, creator_exists_cache):
+    creator_iri = URIRef(f"{PHEBEE}/creator/{creator_id}")
+
+    # Check if creator already exists.  If not, we need to create it.
+    logger.info(f"Checking if evidence creator exists: {creator_iri}")
+    if creator_iri not in creator_exists_cache and not node_exists(creator_iri):
+        logger.info(f"Creating {creator_type} creator: {creator_id}")
+        create_creator(creator_id, creator_type, creator_name, creator_version)
+    else:
+        logger.info("Creator already exists.")
+    creator_exists_cache.append(creator_iri)
+
+    return creator_iri
 
 # -------------------
 # Lambda Handler

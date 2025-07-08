@@ -12,8 +12,8 @@ def test_payload(test_project_id):
     subject_id_2 = f"subj-{uuid.uuid4()}"
     term_iri_1 = "http://purl.obolibrary.org/obo/HP_0004322"
     term_iri_2 = "http://purl.obolibrary.org/obo/HP_0002297"
-    encounter_iri_1 = f"http://example.org/encounter/{uuid.uuid4()}"
-    encounter_iri_2 = f"http://example.org/encounter/{uuid.uuid4()}"
+    encounter_id_1 = {uuid.uuid4()}
+    encounter_id_2 = {uuid.uuid4()}
 
     return [
         {
@@ -26,7 +26,7 @@ def test_payload(test_project_id):
             "evidence": [
                 {
                     "type": "clinical_note",
-                    "encounter_iri": encounter_iri_1,
+                    "encounter_id": encounter_id_1,
                     "clinical_note_id": "note-001",
                     "note_timestamp": "2025-06-06T12:00:00Z",
                     "creator_id": "robot-creator",
@@ -46,7 +46,7 @@ def test_payload(test_project_id):
             "evidence": [
                 {
                     "type": "clinical_note",
-                    "encounter_iri": encounter_iri_1,
+                    "encounter_id": encounter_id_1,
                     "clinical_note_id": "note-002",
                     "note_timestamp": "2025-06-06T12:00:00Z",
                     "creator_id": "robot-creator",
@@ -66,7 +66,7 @@ def test_payload(test_project_id):
             "evidence": [
                 {
                     "type": "clinical_note",
-                    "encounter_iri": encounter_iri_2,
+                    "encounter_id": encounter_id_2,
                     "clinical_note_id": "note-003",
                     "note_timestamp": "2025-06-06T12:00:00Z",
                     "creator_id": "robot-creator",

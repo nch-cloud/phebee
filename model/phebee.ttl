@@ -80,6 +80,12 @@ phebee:hasProject a owl:ObjectProperty ;
     rdfs:label "Has Project" ;
     rdfs:comment "Links a project-specific subject ID to a project." .
 
+phebee:hasSubject a owl:DatatypeProperty ;
+    rdfs:domain phebee:Encounter ;
+    rdfs:range phebee:Subject ;
+    rdfs:label "Encounter Subject" ;
+    rdfs:comment "The subject an Encounter is associated with." .
+
 phebee:encounterId a owl:DatatypeProperty ;
     rdfs:domain phebee:Encounter ;
     rdfs:range xsd:string ;
@@ -190,6 +196,12 @@ phebee:hasTerm a owl:ObjectProperty ;
     rdfs:range rdfs:Resource ;
     rdfs:label "Has Term" ;
     rdfs:comment "Links a subject term link to a term, with the term being an unspecified non-literal node." .
+
+phebee:hasQualifyingTerm a owl:ObjectProperty ;
+    rdfs:domain phebee:TermLink ;
+    rdfs:range rdfs:Resource ;
+    rdfs:label "Has Qualifying Term" ;
+    rdfs:comment "Links a term link to a qualifying term that modifies the interpretation of the term link (e.g., negated, hypothetical)." .
 
 phebee:evidenceType a rdf:Property ;
     rdfs:label "Evidence Type" ;

@@ -1384,6 +1384,21 @@ Outputs:
   ResetDatabaseFunctionArn:
     Value: !Ref ResetDatabaseFunction
 
+  PrepareBulkUploadFunctionArn:
+    Value: !GetAtt PrepareBulkUploadFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-PrepareBulkUploadFunctionArn"
+
+  PerformBulkUploadFunctionArn:
+    Value: !GetAtt PerformBulkUploadFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-PerformBulkUploadFunctionArn"
+
+  GetLoadStatusFunctionArn:
+    Value: !GetAtt GetLoadStatusFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-GetLoadStatusFunctionArn"
+
   DynamoDBTableName:
     Description: Table name of the PheBee DynamoDB table
     Value: !Ref DynamoDBTable
