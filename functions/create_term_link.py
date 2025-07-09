@@ -16,6 +16,7 @@ def lambda_handler(event, context):
         term_iri = body.get("term_iri")
         creator_iri = body.get("creator_iri")
         evidence_iris = body.get("evidence_iris")
+        qualifiers = body.get("qualifiers", [])  # Add support for qualifiers
 
         if not source_node_iri or not term_iri or not creator_iri or "evidence_iris" not in body:
             return {
@@ -26,19 +27,28 @@ def lambda_handler(event, context):
             }
 
         logger.info(f"Creating link from source {source_node_iri} to term: {term_iri}")
+        if qualifiers:
+            logger.info(f"With qualifiers: {qualifiers}")
 
-        termlink_iri = create_term_link(
+        result = create_term_link(
             source_node_iri=source_node_iri,
             term_iri=term_iri,
             creator_iri=creator_iri,
-            evidence_iris=evidence_iris
+            evidence_iris=evidence_iris,
+            qualifiers=qualifiers  # Pass qualifiers to the function
         )
+        
+        termlink_iri = result["termlink_iri"]
+        is_new = result["created"]
+        
+        message = "TermLink created" if is_new else "Existing TermLink reused"
 
         return {
             "statusCode": 200,
             "body": json.dumps({
-                "message": "TermLink created",
-                "termlink_iri": termlink_iri
+                "message": message,
+                "termlink_iri": termlink_iri,
+                "created": is_new
             })
         }
 

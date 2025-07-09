@@ -3,6 +3,7 @@ import json
 import logging
 import boto3
 import hashlib
+import time
 from typing import List, Optional, Literal
 from pydantic import BaseModel, ValidationError
 from rdflib import Graph, URIRef, Namespace, RDF, Literal as RdfLiteral
@@ -20,7 +21,9 @@ from phebee.utils.sparql import (
     node_exists,
     create_creator,
     infer_evidence_type,
-    infer_assertion_type
+    infer_assertion_type,
+    generate_termlink_hash,
+    check_existing_term_links
 )
 from phebee.utils.aws import get_current_timestamp, extract_body
 
@@ -83,12 +86,23 @@ def get_or_create_subject(project_id: str, project_subject_id: str) -> str:
     link_subject_to_project(subject_iri, project_id, project_subject_id)
     return subject_iri
 
-def get_term_link_iri(source_node_iri: str, term_iri: str) -> str:
-    key = f"{source_node_iri}|{term_iri}"
-    digest = hashlib.sha256(key.encode()).hexdigest()
-    return f"{source_node_iri}/term-link/{digest}"
+def get_term_link_iri(source_node_iri: str, term_iri: str, qualifiers=None) -> str:
+    """
+    Generate a deterministic term link IRI based on source node, term, and qualifiers.
+    
+    Args:
+        source_node_iri (str): The IRI of the source node
+        term_iri (str): The IRI of the term
+        qualifiers (list): List of qualifier IRIs
+        
+    Returns:
+        str: A deterministic term link IRI
+    """
+    termlink_hash = generate_termlink_hash(source_node_iri, term_iri, qualifiers)
+    return f"{source_node_iri}/term-link/{termlink_hash}"
 
 def generate_rdf(entries: List[TermLinkInput]) -> str:
+    start_total_time = time.time()
     g = Graph()
     g.bind("phebee", PHEBEE_NS)
     g.bind("obo", OBO)
@@ -97,25 +111,99 @@ def generate_rdf(entries: List[TermLinkInput]) -> str:
     # Keep track of what creators we've already verified exist.
     # Bulk uploads are likely to use the same creator repeatedly, so this cuts down on unnecessary Neptune checks.
     creator_exists_cache = []
-
+    
+    # Pre-compute all potential term link IRIs and build mapping
+    start_precompute_time = time.time()
+    potential_termlinks = []
+    termlink_to_annotation_map = {}
+    
     for entry in entries:
-        subject_iri = URIRef(get_or_create_subject(entry.project_id, entry.project_subject_id))
+        subject_iri = get_or_create_subject(entry.project_id, entry.project_subject_id)
+        
+        for evidence in entry.evidence:
+            # Extract qualifiers from context
+            qualifiers = []
+            if evidence.contexts:
+                for context_type, value in evidence.contexts.items():
+                    if value == 1:
+                        qualifiers.append(f"{PHEBEE}/qualifier/{context_type}")
+            
+            # Add explicit qualifying terms if provided
+            if evidence.qualifying_terms:
+                for qualifier in evidence.qualifying_terms:
+                    qualifier_iri = f"{PHEBEE}/qualifier/{qualifier}"
+                    if qualifier_iri not in qualifiers:
+                        qualifiers.append(qualifier_iri)
+            
+            # Generate the term link IRI
+            termlink_iri = get_term_link_iri(subject_iri, entry.term_iri, qualifiers)
+            potential_termlinks.append(termlink_iri)
+            
+            # Group annotations by term link IRI
+            if termlink_iri not in termlink_to_annotation_map:
+                termlink_to_annotation_map[termlink_iri] = {
+                    'subject_iri': subject_iri,
+                    'term_iri': entry.term_iri,
+                    'qualifiers': qualifiers,
+                    'evidence': []
+                }
+            
+            termlink_to_annotation_map[termlink_iri]['evidence'].append(evidence)
+    
+    precompute_duration = time.time() - start_precompute_time
+    logger.info(f"Pre-computation completed in {precompute_duration:.2f} seconds. Generated {len(potential_termlinks)} potential term links.")
+    
+    # Log qualifier statistics
+    qualifier_counts = {}
+    for termlink_iri, group in termlink_to_annotation_map.items():
+        for qualifier in group['qualifiers']:
+            qualifier_counts[qualifier] = qualifier_counts.get(qualifier, 0) + 1
+    
+    if qualifier_counts:
+        logger.info(f"Qualifier distribution: {qualifier_counts}")
+    
+    # Check which term links already exist
+    start_check_time = time.time()
+    try:
+        existing_termlinks = check_existing_term_links(potential_termlinks)
+        check_duration = time.time() - start_check_time
+        logger.info(f"Existence check completed in {check_duration:.2f} seconds. Found {len(existing_termlinks)} existing term links out of {len(potential_termlinks)} potential links.")
+    except Exception as e:
+        logger.error(f"Critical error checking existing term links after {time.time() - start_check_time:.2f} seconds: {str(e)}")
+        # Re-raise the exception to fail the process
+        raise Exception(f"Failed to check existing term links: {str(e)}") from e
+
+    # Start RDF generation
+    start_rdf_time = time.time()
+    new_links_count = 0
+    skipped_links_count = 0
+    
+    for termlink_iri, group in termlink_to_annotation_map.items():
+        subject_iri = URIRef(group['subject_iri'])
+        term_iri = URIRef(group['term_iri'])
+        qualifiers = group['qualifiers']
+        
         g.add((subject_iri, RDF.type, PHEBEE_NS.Subject))
-
-        term_iri = URIRef(entry.term_iri)
-        term_link_iri_str = get_term_link_iri(str(subject_iri), str(term_iri))
-
-        if term_link_exists(str(subject_iri), str(term_iri))["link_exists"]:
-            logger.info(f"Skipping existing TermLink: {term_link_iri_str}")
+        
+        # Skip if this term link already exists
+        if termlink_iri in existing_termlinks:
+            logger.debug(f"Skipping existing TermLink: {termlink_iri}")
+            skipped_links_count += 1
             continue
-
-        term_link_iri = URIRef(term_link_iri_str)
-
+        
+        new_links_count += 1
+        term_link_iri = URIRef(termlink_iri)
+        
         g.add((term_link_iri, RDF.type, PHEBEE_NS.TermLink))
+        g.add((term_link_iri, PHEBEE_NS.sourceNode, subject_iri))
         g.add((term_link_iri, PHEBEE_NS.hasTerm, term_iri))
         g.add((term_link_iri, DCTERMS.created, RdfLiteral(get_current_timestamp(), datatype=XSD.dateTime)))
+        
+        # Add qualifier triples if any
+        for qualifier in qualifiers:
+            g.add((term_link_iri, PHEBEE_NS.hasQualifyingTerm, URIRef(qualifier)))
 
-        for evidence in entry.evidence:
+        for evidence in group['evidence']:
             evidence_creator_iri = create_or_find_creator(evidence.evidence_creator_id, evidence.evidence_creator_version, evidence.evidence_creator_name, evidence.evidence_creator_type, creator_exists_cache)
             
             if evidence.type == "clinical_note":
@@ -172,26 +260,15 @@ def generate_rdf(entries: List[TermLinkInput]) -> str:
                 
                 # Connect the TermLink to the TextAnnotation as evidence
                 g.add((term_link_iri, PHEBEE_NS.hasEvidence, annotation_iri))
-                
-                # Add qualifying terms if provided
-                if evidence.qualifying_terms:
-                    for qualifier in evidence.qualifying_terms:
-                        # Create a fully qualified IRI using the phebee namespace with "qualifier" in the path
-                        qualifier_iri = URIRef(f"{PHEBEE}/qualifier/{qualifier}")
-                        # Add the qualifying term to the term link
-                        g.add((term_link_iri, PHEBEE_NS.hasQualifyingTerm, qualifier_iri))
-                
-                # Add context flags as qualifying terms if they're set to 1
-                if evidence.contexts:
-                    for context_type, value in evidence.contexts.items():
-                        if value == 1:
-                            qualifier_iri = URIRef(f"{PHEBEE}/qualifier/{context_type}")
-                            g.add((term_link_iri, PHEBEE_NS.hasQualifyingTerm, qualifier_iri))
-                
+
+    rdf_duration = time.time() - start_rdf_time
+    triple_count = len(g)
+    logger.info(f"RDF generation completed in {rdf_duration:.2f} seconds. Generated {triple_count} triples for {new_links_count} new term links. Skipped {skipped_links_count} existing links.")
 
     graph_ttl = g.serialize(format="turtle", prefixes={"phebee": PHEBEE_NS, "obo": OBO, "dcterms": DCTERMS})
-
-    logger.info(graph_ttl)
+    
+    total_duration = time.time() - start_total_time
+    logger.info(f"Total RDF generation process completed in {total_duration:.2f} seconds")
 
     return graph_ttl
 

@@ -25,6 +25,8 @@ Utilities:
 
 import re
 import uuid
+import hashlib
+import time
 from collections import defaultdict
 from typing import List
 from aws_lambda_powertools import Metrics, Logger, Tracer
@@ -934,10 +936,26 @@ def delete_text_annotation(annotation_iri: str):
 
 
 def create_term_link(
-    source_node_iri: str, term_iri: str, creator_iri: str, evidence_iris: list[str]
-) -> str:
-    termlink_id = str(uuid.uuid4())
-    termlink_iri = f"{source_node_iri}/term-link/{termlink_id}"
+    source_node_iri: str, term_iri: str, creator_iri: str, evidence_iris: list[str], qualifiers=None
+) -> dict:
+    # Generate deterministic hash based on source node, term, and qualifiers
+    termlink_hash = generate_termlink_hash(source_node_iri, term_iri, qualifiers)
+    termlink_iri = f"{source_node_iri}/term-link/{termlink_hash}"
+    
+    # Check if the term link already exists
+    link_exists = node_exists(termlink_iri)
+    
+    if link_exists:
+        logger.info(f"Term link already exists: {termlink_iri}")
+        
+        # If evidence_iris is provided, attach them to the existing term link
+        if evidence_iris:
+            for evidence_iri in evidence_iris:
+                attach_evidence_to_term_link(termlink_iri, evidence_iri)
+                    
+        return {"termlink_iri": termlink_iri, "created": False}
+    
+    # Create the term link if it doesn't exist
     created = get_current_timestamp()
 
     triples = [
@@ -951,6 +969,11 @@ def create_term_link(
     if evidence_iris:
         for evidence_iri in evidence_iris:
             triples.append(f"<{termlink_iri}> phebee:hasEvidence <{evidence_iri}>")
+            
+    # Add qualifier triples if any
+    if qualifiers:
+        for qualifier in qualifiers:
+            triples.append(f"<{termlink_iri}> phebee:hasQualifyingTerm <{qualifier}>")
 
     triples_block = " .\n    ".join(triples) + " ."
 
@@ -967,7 +990,7 @@ def create_term_link(
     }}
     """
     execute_update(sparql)
-    return termlink_iri
+    return {"termlink_iri": termlink_iri, "created": True}
 
 
 def get_term_link(termlink_iri: str) -> dict:
@@ -997,6 +1020,33 @@ def get_term_link(termlink_iri: str) -> dict:
         return None
 
 
+def attach_evidence_to_term_link(termlink_iri: str, evidence_iri: str) -> None:
+    """
+    Attach evidence to a term link if it's not already attached.
+    
+    Args:
+        termlink_iri (str): The IRI of the term link
+        evidence_iri (str): The IRI of the evidence to attach
+    """
+    # Check if the evidence is already attached
+    if triple_exists(termlink_iri, "http://ods.nationwidechildrens.org/phebee#hasEvidence", evidence_iri):
+        logger.debug(f"Evidence {evidence_iri} already attached to {termlink_iri}")
+        return
+        
+    # Attach the evidence
+    sparql = f"""
+    PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+    
+    INSERT DATA {{
+        GRAPH <http://ods.nationwidechildrens.org/phebee/subjects> {{
+            <{termlink_iri}> phebee:hasEvidence <{evidence_iri}> .
+        }}
+    }}
+    """
+    execute_update(sparql)
+    logger.info(f"Attached evidence {evidence_iri} to {termlink_iri}")
+
+
 def flatten_response(fixed: dict, properties: dict) -> dict:
     overlap = fixed.keys() & properties.keys()
     if overlap:
@@ -1014,6 +1064,79 @@ def delete_term_link(termlink_iri: str):
     }}
     """
     execute_update(sparql)
+
+
+def generate_termlink_hash(source_node_iri: str, term_iri: str, qualifiers=None):
+    """
+    Generate a deterministic hash for a term link based on its components.
+    
+    Args:
+        source_node_iri (str): The IRI of the source node (subject, encounter, etc.)
+        term_iri (str): The IRI of the term being linked
+        qualifiers (list): List of qualifier IRIs, e.g., negated, hypothetical
+        
+    Returns:
+        str: A deterministic hash that can be used as part of the term link IRI
+    """
+    # Sort qualifiers to ensure consistent ordering
+    sorted_qualifiers = sorted(qualifiers) if qualifiers else []
+    
+    # Create a composite key
+    key_parts = [source_node_iri, term_iri] + sorted_qualifiers
+    key_string = '|'.join(key_parts)
+    
+    # Generate a deterministic hash
+    return hashlib.sha256(key_string.encode()).hexdigest()
+
+
+def check_existing_term_links(termlink_iris, batch_size=1000):
+    """
+    Check which term links from a list already exist in the database.
+    Uses batching to handle large numbers of IRIs efficiently.
+    
+    Args:
+        termlink_iris (list): List of term link IRIs to check
+        batch_size (int): Maximum number of IRIs to check in a single query
+        
+    Returns:
+        set: Set of existing term link IRIs
+    """
+    if not termlink_iris:
+        return set()
+    
+    existing = set()
+    batch_count = (len(termlink_iris) + batch_size - 1) // batch_size  # Ceiling division
+    logger.info(f"Checking {len(termlink_iris)} term links in {batch_count} batches of up to {batch_size} each")
+    
+    # Process in batches to avoid query size limitations
+    for i in range(0, len(termlink_iris), batch_size):
+        batch_start_time = time.time()
+        batch = termlink_iris[i:i+batch_size]
+        batch_num = i // batch_size + 1
+        
+        # Convert batch to VALUES clause
+        values_clause = " ".join(f"<{iri}>" for iri in batch)
+        
+        sparql = f"""
+        PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+        PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+        
+        SELECT ?termlink WHERE {{
+            VALUES ?termlink {{ {values_clause} }}
+            ?termlink a phebee:TermLink .
+        }}
+        """
+        
+        result = execute_query(sparql)
+        
+        # Extract existing IRIs from results
+        for binding in result["results"]["bindings"]:
+            existing.add(binding["termlink"]["value"])
+        
+        batch_duration = time.time() - batch_start_time
+        logger.info(f"Batch {batch_num}/{batch_count} processed in {batch_duration:.2f} seconds. Found {len(result['results']['bindings'])} existing term links.")
+    
+    return existing
 
 
 def flatten_sparql_results(sparql_json, include_datatype=False, group_subjects=False):
