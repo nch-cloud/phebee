@@ -35,7 +35,17 @@ def test_creator_lifecycle(physical_resources, creator_type, extra):
     assert create_resp["StatusCode"] == 200
     create_body = json.loads(json.loads(create_resp["Payload"].read())["body"])
     creator_id_safe = quote(creator_id, safe="")
-    assert create_body["creator_iri"].endswith(creator_id_safe)
+    
+    # Check for the creator ID in the IRI
+    # For automated creators, the IRI now includes /version/{version}
+    if creator_type == "automated":
+        assert creator_id_safe in create_body["creator_iri"], f"Creator ID {creator_id_safe} not found in IRI {create_body['creator_iri']}"
+        assert "/version/" in create_body["creator_iri"], f"Version path not found in IRI {create_body['creator_iri']}"
+        version_safe = quote(extra["version"], safe="")
+        assert f"/version/{version_safe}" in create_body["creator_iri"], f"Version {version_safe} not found in IRI {create_body['creator_iri']}"
+    else:
+        # For human creators, the IRI still ends with the creator ID
+        assert create_body["creator_iri"].endswith(creator_id_safe)
 
     # --- Get ---
     get_resp = lambda_client.invoke(

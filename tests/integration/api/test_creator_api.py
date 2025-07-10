@@ -29,7 +29,17 @@ def test_create_and_delete_creator(api_base_url, sigv4_auth, creator_type, extra
 
     create_body = create_resp.json()
     assert "creator_iri" in create_body
-    assert create_body["creator_iri"].endswith(creator_id)
+    
+    # Check for the creator ID in the IRI
+    # For automated creators, the IRI now includes /version/{version}
+    if creator_type == "automated":
+        assert creator_id in create_body["creator_iri"], f"Creator ID {creator_id} not found in IRI {create_body['creator_iri']}"
+        assert "/version/" in create_body["creator_iri"], f"Version path not found in IRI {create_body['creator_iri']}"
+        version = extra["version"]
+        assert f"/version/{version}" in create_body["creator_iri"], f"Version {version} not found in IRI {create_body['creator_iri']}"
+    else:
+        # For human creators, the IRI still ends with the creator ID
+        assert create_body["creator_iri"].endswith(creator_id)
 
     # --- Delete ---
     delete_resp = requests.post(
