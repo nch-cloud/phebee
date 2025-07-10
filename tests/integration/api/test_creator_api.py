@@ -52,7 +52,14 @@ def test_create_and_delete_creator(api_base_url, sigv4_auth, creator_type, extra
     )
 
     delete_body = delete_resp.json()
-    assert delete_body["creator_iri"].endswith(creator_id)
+    if creator_type == "automated":
+        assert creator_id in delete_body["creator_iri"], f"Creator ID {creator_id} not found in IRI {delete_body['creator_iri']}"
+        assert "/version/" in delete_body["creator_iri"], f"Version path not found in IRI {delete_body['creator_iri']}"
+        version = extra["version"]
+        assert f"/version/{version}" in delete_body["creator_iri"], f"Version {version} not found in IRI {delete_body['creator_iri']}"
+    else:
+        # For human creators, the IRI still ends with the creator ID
+        assert delete_body["creator_iri"].endswith(creator_id)
 
 
 def test_get_creator(api_base_url, sigv4_auth):
