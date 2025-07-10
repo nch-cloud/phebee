@@ -1,215 +1,273 @@
-import json
-import uuid
-import time
-import pytest
-import requests
-from phebee.utils.aws import get_client
-from general_utils import parse_iso8601
-
 @pytest.fixture
-def test_payload(test_project_id):
-    subject_id_1 = f"subj-{uuid.uuid4()}"
-    subject_id_2 = f"subj-{uuid.uuid4()}"
-    term_iri_1 = "http://purl.obolibrary.org/obo/HP_0004322"
-    term_iri_2 = "http://purl.obolibrary.org/obo/HP_0002297"
-    encounter_id_1 = {uuid.uuid4()}
-    encounter_id_2 = {uuid.uuid4()}
-
+def test_duplicate_encounters_in_batch_payload(test_project_id):
+    """Fixture for testing encounter duplicate detection within the same batch"""
+    subject_id = f"subj-{uuid.uuid4()}"
+    term_iri = "http://purl.obolibrary.org/obo/HP_0004322"
+    encounter_id = str(uuid.uuid4())  # Same encounter ID used for multiple notes
+    
     return [
+        # Single entry with multiple notes using the same encounter
         {
             "project_id": test_project_id,
-            "project_subject_id": subject_id_1,
-            "term_iri": term_iri_1,
-            "creator_id": "test-creator",
-            "creator_type": "human",
-            "creator_name": "Test Creator",
+            "project_subject_id": subject_id,
+            "term_iri": term_iri,
             "evidence": [
                 {
                     "type": "clinical_note",
-                    "encounter_id": encounter_id_1,
-                    "clinical_note_id": "note-001",
+                    "encounter_id": encounter_id,  # Same encounter ID
+                    "clinical_note_id": "note-batch-1",
                     "note_timestamp": "2025-06-06T12:00:00Z",
-                    "creator_id": "robot-creator",
-                    "creator_type": "automated",
-                    "creator_name": "Robot Creator",
-                    "creator_version": "1.2"
-                }
-            ]
-        },
-        {
-            "project_id": test_project_id,
-            "project_subject_id": subject_id_1,
-            "term_iri": term_iri_2,
-            "creator_id": "test-creator",
-            "creator_type": "human",
-            "creator_name": "Test Creator",
-            "evidence": [
+                    "evidence_creator_id": "robot-creator",
+                    "evidence_creator_type": "automated",
+                    "evidence_creator_name": "Robot Creator",
+                    "evidence_creator_version": "1.2"
+                },
                 {
                     "type": "clinical_note",
-                    "encounter_id": encounter_id_1,
-                    "clinical_note_id": "note-002",
-                    "note_timestamp": "2025-06-06T12:00:00Z",
-                    "creator_id": "robot-creator",
-                    "creator_type": "automated",
-                    "creator_name": "Robot Creator",
-                    "creator_version": "1.2"
-                }
-            ]
-        },
-        {
-            "project_id": test_project_id,
-            "project_subject_id": subject_id_2,
-            "term_iri": term_iri_2,
-            "creator_id": "test-creator",
-            "creator_type": "human",
-            "creator_name": "Test Creator",
-            "evidence": [
+                    "encounter_id": encounter_id,  # Same encounter ID
+                    "clinical_note_id": "note-batch-2",
+                    "note_timestamp": "2025-06-06T14:00:00Z",
+                    "evidence_creator_id": "robot-creator",
+                    "evidence_creator_type": "automated",
+                    "evidence_creator_name": "Robot Creator",
+                    "evidence_creator_version": "1.2"
+                },
                 {
                     "type": "clinical_note",
-                    "encounter_id": encounter_id_2,
-                    "clinical_note_id": "note-003",
-                    "note_timestamp": "2025-06-06T12:00:00Z",
-                    "creator_id": "robot-creator",
-                    "creator_type": "automated",
-                    "creator_name": "Robot Creator",
-                    "creator_version": "1.2"
+                    "encounter_id": encounter_id,  # Same encounter ID
+                    "clinical_note_id": "note-batch-3",
+                    "note_timestamp": "2025-06-06T16:00:00Z",
+                    "evidence_creator_id": "robot-creator",
+                    "evidence_creator_type": "automated",
+                    "evidence_creator_name": "Robot Creator",
+                    "evidence_creator_version": "1.2"
                 }
             ]
-        }        
+        }
     ]
 
-def verify_creator_metadata(creator_iri, expected_id, expected_type, expected_name, expected_version, physical_resources):
-    get_creator_fn = physical_resources["GetCreatorFunction"]
-    response = invoke_lambda(get_creator_fn, {"creator_id": creator_iri.rsplit("/", 1)[-1]})
-    print(f"Creator {creator_iri} metadata: {response}")
-
-    assert response["creator_iri"] == creator_iri
-    assert response["creator_id"] == expected_id
-    assert response.get("has_version") == expected_version
+def test_bulk_upload_encounter_in_batch_duplicate_handling(test_duplicate_encounters_in_batch_payload, test_project_id, physical_resources):
+    """Test that duplicate encounters within the same batch are correctly detected and handled"""
+    # Upload the payload with multiple notes using the same encounter
+    load_id = perform_bulk_upload(test_duplicate_encounters_in_batch_payload, physical_resources)
     
-    if expected_type == "human":
-        expected_type = "HumanCreator"
-    else:
-        expected_type = "AutomatedCreator"
-
-    assert response["type"] == f"http://ods.nationwidechildrens.org/phebee#{expected_type}"
-    assert response["title"] == expected_name
-
-def invoke_lambda(name, payload):
-    lambda_client = get_client("lambda")
-
-    response = lambda_client.invoke(
-        FunctionName=name,
-        Payload=json.dumps(payload).encode()
-    )
-    payload = json.loads(response["Payload"].read())
-    return json.loads(payload["body"]) if isinstance(payload, dict) and "body" in payload else payload
-
-def wait_for_loader_success(load_id, physical_resources, timeout_seconds=300):
-    print(f"Waiting for load success for job {load_id}")
-    start = time.time()
-    while True:
-        result = invoke_lambda(physical_resources["GetLoadStatusFunction"], { "load_job_id": load_id })
-        print(result)
-        status = result.get("payload").get("overallStatus").get("status").lower()
-        print(f"Loader status: {status}")
-
-        if status in {"load_completed", "load_completed_with_errors"}:
-            return result
-
-        if status in {"load_failed", "cancelled", "error"}:
-            raise RuntimeError(f"Neptune bulk load failed: {status}")
-
-        if time.time() - start > timeout_seconds:
-            raise TimeoutError(f"Neptune bulk loader did not finish in {timeout_seconds} seconds")
-
-        time.sleep(10)
-
-def test_perform_bulk_upload_flow(test_payload, test_project_id, physical_resources):
-    # Step 1: Call prepare_bulk_upload Lambda to get signed URL and S3 key
-    prepare_fn = physical_resources["PrepareBulkUploadFunction"]
-    prep_response = invoke_lambda(prepare_fn, {})
-    upload_url = prep_response["upload_url"]
-    s3_key = prep_response["s3_key"]
-
-    print(f"upload_url: {upload_url}")
-    print(f"s3_key: {s3_key}")
-
-    # Step 2: Upload JSON to the signed S3 URL
-    headers = {"Content-Type": "application/json"}
-    put_resp = requests.put(upload_url, data=json.dumps(test_payload), headers=headers)
-    assert put_resp.status_code == 200
-
-    # Step 3: Call perform_bulk_upload Lambda
-    perform_fn = physical_resources["PerformBulkUploadFunction"]
-    response = invoke_lambda(perform_fn, {"s3_key": s3_key})
-    print(response)
-    assert response["message"] == "Bulk load started"
-    assert "load_id" in response
-
-    load_id = response["load_id"]
-    print(f"load_id: {load_id}")
-
-    # Step 3.5 Wait for the Neptune loader to finish
-    wait_for_loader_success(load_id, physical_resources)
-
-    # Step 4: Resolve subjects and validate TermLinks and Evidence
+    # Get the subject
+    payload = test_duplicate_encounters_in_batch_payload[0]
+    project_subject_iri = f"http://ods.nationwidechildrens.org/phebee/projects/{payload['project_id']}/{payload['project_subject_id']}"
     get_subject_fn = physical_resources["GetSubjectFunction"]
+    subject_result = invoke_lambda(get_subject_fn, {"project_subject_iri": project_subject_iri})
+    subject_iri = subject_result["subject_iri"]
+    
+    # Verify one term link was created
+    assert len(subject_result["terms"]) == 1
+    
+    # Get the encounter
+    encounter_id = payload["evidence"][0]["encounter_id"]
+    encounter_iri = f"{subject_iri}/encounter/{encounter_id}"
+    
+    # Get the clinical notes
+    get_note_fn = physical_resources["GetClinicalNoteFunction"]
+    
+    # Check all three notes
+    for i in range(1, 4):
+        note_iri = f"{encounter_iri}/note/note-batch-{i}"
+        note_result = invoke_lambda(get_note_fn, {"clinical_note_iri": note_iri})
+        assert note_result["clinical_note_id"] == f"note-batch-{i}"
+    
+    # Now let's verify the encounter doesn't have duplicate created timestamps
+    # We need to query the encounter directly to check its properties
+    get_encounter_fn = physical_resources["GetEncounterFunction"]
+    encounter_result = invoke_lambda(get_encounter_fn, {
+        "subject_iri": subject_iri,
+        "encounter_id": encounter_id
+    })
+    
+    # Check that there's only one created timestamp
+    # The created property might be a list or a single value depending on how it's returned
+    created_timestamps = encounter_result.get("created", [])
+    if not isinstance(created_timestamps, list):
+        created_timestamps = [created_timestamps]
+    
+    # There should be exactly one created timestamp
+    assert len(created_timestamps) == 1, f"Expected 1 created timestamp, found {len(created_timestamps)}: {created_timestamps}"
 
-    for payload in test_payload:
-        project_subject_iri = f"http://ods.nationwidechildrens.org/phebee/projects/{payload['project_id']}/{payload['project_subject_id']}"
-        subject_query = { "project_subject_iri": project_subject_iri }
-
-        subject_result = invoke_lambda(get_subject_fn, subject_query)
-        print(subject_result)
-
-        subject_iri = subject_result["subject_iri"]
-        assert subject_iri.startswith("http://ods.nationwidechildrens.org/phebee/subjects/")
-        assert "terms" in subject_result
-
-        # Verify the expected term exists
-        matching_terms = [term for term in subject_result["terms"] if term["term_iri"] == payload["term_iri"]]
-        assert matching_terms, f"No TermLink found for {payload['term_iri']}"
-        assert len(matching_terms) == 1
-        termlink = matching_terms[0]
-
-        # TermLink creator check
-        creator_iri = termlink["creator"]
-        assert creator_iri.endswith(payload["creator_id"])
-        verify_creator_metadata(
-            creator_iri=creator_iri,
-            expected_id=payload["creator_id"],
-            expected_type=payload["creator_type"],
-            expected_name=payload["creator_name"],
-            expected_version=payload.get("creator_version"),
-            physical_resources=physical_resources
-        )
-
-        # Evidence checks
-        expected_evidences = payload["evidence"]
-        assert len(termlink["evidence"]) == len(expected_evidences)
-
-        for expected_evidence in expected_evidences:
-            ev = next((e for e in termlink["evidence"]
-                    if e["properties"]["http://ods.nationwidechildrens.org/phebee#clinicalNoteId"] == expected_evidence["clinical_note_id"]), None)
-            assert ev is not None, f"Evidence not found for {expected_evidence['clinical_note_id']}"
-
-            print(f"ev: {ev}")
-
-            props = ev["properties"]
-            assert parse_iso8601(props["http://ods.nationwidechildrens.org/phebee#noteTimestamp"]) == parse_iso8601(expected_evidence["note_timestamp"])
-            assert props["http://ods.nationwidechildrens.org/phebee#hasEncounter"] == expected_evidence["encounter_iri"]
-
-            # Evidence-level creator
-            if "creator_id" in expected_evidence:
-                ev_creator_iri = ev["creator"]
-                
-                assert ev_creator_iri.endswith(expected_evidence["creator_id"])
-                verify_creator_metadata(
-                    creator_iri=ev_creator_iri,
-                    expected_id=expected_evidence["creator_id"],
-                    expected_type=expected_evidence["creator_type"],
-                    expected_name=expected_evidence["creator_name"],
-                    expected_version=expected_evidence.get("creator_version"),
-                    physical_resources=physical_resources
-                )
+def test_bulk_upload_encounter_duplicate_handling(test_duplicate_encounters_payload, test_project_id, physical_resources):
+    """Test that duplicate encounters are correctly detected and handled"""
+    # First upload to create the encounters
+    load_id = perform_bulk_upload(test_duplicate_encounters_payload, physical_resources)
+    
+    # Get the subject
+    payload = test_duplicate_encounters_payload[0]
+    project_subject_iri = f"http://ods.nationwidechildrens.org/phebee/projects/{payload['project_id']}/{payload['project_subject_id']}"
+    get_subject_fn = physical_resources["GetSubjectFunction"]
+    subject_result = invoke_lambda(get_subject_fn, {"project_subject_iri": project_subject_iri})
+    subject_iri = subject_result["subject_iri"]
+    
+    # Verify two term links were created (one for each term)
+    assert len(subject_result["terms"]) == 2
+    
+    # Get the encounter
+    encounter_id = payload["evidence"][0]["encounter_id"]
+    encounter_iri = f"{subject_iri}/encounter/{encounter_id}"
+    
+    # Get the clinical notes
+    get_note_fn = physical_resources["GetClinicalNoteFunction"]
+    
+    # Check first note
+    note1_iri = f"{encounter_iri}/note/note-enc-1"
+    note1_result = invoke_lambda(get_note_fn, {"clinical_note_iri": note1_iri})
+    assert note1_result["clinical_note_id"] == "note-enc-1"
+    
+    # Check second note
+    note2_iri = f"{encounter_iri}/note/note-enc-2"
+    note2_result = invoke_lambda(get_note_fn, {"clinical_note_iri": note2_iri})
+    assert note2_result["clinical_note_id"] == "note-enc-2"
+    
+    # Now upload the same payload again - this should reuse the existing encounter
+    second_load_id = perform_bulk_upload(test_duplicate_encounters_payload, physical_resources)
+    
+    # The encounter should still exist and have the same properties
+    # We can verify this by checking that both notes are still accessible
+    note1_result_again = invoke_lambda(get_note_fn, {"clinical_note_iri": note1_iri})
+    assert note1_result_again["clinical_note_id"] == "note-enc-1"
+    
+    note2_result_again = invoke_lambda(get_note_fn, {"clinical_note_iri": note2_iri})
+    assert note2_result_again["clinical_note_id"] == "note-enc-2"
+    
+    # Check that there's only one created timestamp
+    get_encounter_fn = physical_resources["GetEncounterFunction"]
+    encounter_result = invoke_lambda(get_encounter_fn, {
+        "subject_iri": subject_iri,
+        "encounter_id": encounter_id
+    })
+    
+    created_timestamps = encounter_result.get("created", [])
+    if not isinstance(created_timestamps, list):
+        created_timestamps = [created_timestamps]
+    
+    # There should be exactly one created timestamp
+    assert len(created_timestamps) == 1, f"Expected 1 created timestamp, found {len(created_timestamps)}: {created_timestamps}"
+@pytest.fixture
+def test_duplicate_notes_in_batch_payload(test_project_id):
+    """Fixture for testing clinical note duplicate detection within the same batch"""
+    subject_id = f"subj-{uuid.uuid4()}"
+    term_iri_1 = "http://purl.obolibrary.org/obo/HP_0004322"
+    term_iri_2 = "http://purl.obolibrary.org/obo/HP_0002297"
+    encounter_id = str(uuid.uuid4())
+    clinical_note_id = f"note-{uuid.uuid4()}"  # Same clinical note ID used for multiple term links
+    
+    return [
+        # First entry with clinical note
+        {
+            "project_id": test_project_id,
+            "project_subject_id": subject_id,
+            "term_iri": term_iri_1,
+            "evidence": [
+                {
+                    "type": "clinical_note",
+                    "encounter_id": encounter_id,
+                    "clinical_note_id": clinical_note_id,  # Same clinical note ID
+                    "note_timestamp": "2025-06-06T12:00:00Z",
+                    "evidence_creator_id": "robot-creator",
+                    "evidence_creator_type": "automated",
+                    "evidence_creator_name": "Robot Creator",
+                    "evidence_creator_version": "1.2",
+                    "author_specialty": "Neurology"
+                }
+            ]
+        },
+        # Second entry with same clinical note
+        {
+            "project_id": test_project_id,
+            "project_subject_id": subject_id,
+            "term_iri": term_iri_2,
+            "evidence": [
+                {
+                    "type": "clinical_note",
+                    "encounter_id": encounter_id,
+                    "clinical_note_id": clinical_note_id,  # Same clinical note ID
+                    "note_timestamp": "2025-06-06T12:00:00Z",
+                    "evidence_creator_id": "robot-creator",
+                    "evidence_creator_type": "automated",
+                    "evidence_creator_name": "Robot Creator",
+                    "evidence_creator_version": "1.2",
+                    "author_specialty": "Neurology"
+                }
+            ]
+        }
+    ]
+def test_bulk_upload_clinical_note_duplicate_handling(test_duplicate_notes_in_batch_payload, test_project_id, physical_resources):
+    """Test that duplicate clinical notes within the same batch are correctly detected and handled"""
+    # Upload the payload with multiple term links using the same clinical note
+    load_id = perform_bulk_upload(test_duplicate_notes_in_batch_payload, physical_resources)
+    
+    # Get the subject
+    payload = test_duplicate_notes_in_batch_payload[0]
+    project_subject_iri = f"http://ods.nationwidechildrens.org/phebee/projects/{payload['project_id']}/{payload['project_subject_id']}"
+    get_subject_fn = physical_resources["GetSubjectFunction"]
+    subject_result = invoke_lambda(get_subject_fn, {"project_subject_iri": project_subject_iri})
+    subject_iri = subject_result["subject_iri"]
+    
+    # Verify two term links were created (one for each term)
+    assert len(subject_result["terms"]) == 2
+    
+    # Get the encounter and clinical note
+    encounter_id = payload["evidence"][0]["encounter_id"]
+    clinical_note_id = payload["evidence"][0]["clinical_note_id"]
+    encounter_iri = f"{subject_iri}/encounter/{encounter_id}"
+    note_iri = f"{encounter_iri}/note/{clinical_note_id}"
+    
+    # Get the clinical note details
+    get_note_fn = physical_resources["GetClinicalNoteFunction"]
+    note_result = invoke_lambda(get_note_fn, {"clinical_note_iri": note_iri})
+    
+    # Verify the clinical note exists and has the correct properties
+    assert note_result["clinical_note_id"] == clinical_note_id
+    assert note_result["author_specialty"] == "Neurology"
+    
+    # Check that the note has links to both term links
+    term_links = note_result.get("has_term_link", [])
+    assert len(term_links) == 2, f"Expected 2 term links, found {len(term_links)}"
+    
+    # Now check that there's only one created timestamp
+    created_timestamps = note_result.get("created", [])
+    if not isinstance(created_timestamps, list):
+        created_timestamps = [created_timestamps]
+    
+    # There should be exactly one created timestamp
+    assert len(created_timestamps) == 1, f"Expected 1 created timestamp, found {len(created_timestamps)}: {created_timestamps}"
+def test_term_link_source_node(test_payload, test_project_id, physical_resources):
+    """Test that term links use the appropriate source node (clinical note) as their base IRI"""
+    load_id = perform_bulk_upload(test_payload, physical_resources)
+    
+    # Get the subject
+    payload = test_payload[0]
+    project_subject_iri = f"http://ods.nationwidechildrens.org/phebee/projects/{payload['project_id']}/{payload['project_subject_id']}"
+    get_subject_fn = physical_resources["GetSubjectFunction"]
+    subject_result = invoke_lambda(get_subject_fn, {"project_subject_iri": project_subject_iri})
+    subject_iri = subject_result["subject_iri"]
+    
+    # Get the clinical note
+    encounter_id = payload["evidence"][0]["encounter_id"]
+    clinical_note_id = payload["evidence"][0]["clinical_note_id"]
+    encounter_iri = f"{subject_iri}/encounter/{encounter_id}"
+    note_iri = f"{encounter_iri}/note/{clinical_note_id}"
+    
+    get_note_fn = physical_resources["GetClinicalNoteFunction"]
+    note_result = invoke_lambda(get_note_fn, {"clinical_note_iri": note_iri})
+    
+    # Verify the note has hasTermLink property
+    assert "has_term_link" in note_result, "Clinical note should have hasTermLink property"
+    
+    # Get the term link
+    term_link_iri = note_result["has_term_link"][0]
+    
+    # Verify the term link IRI is based on the clinical note IRI
+    assert note_iri in term_link_iri, f"Term link IRI {term_link_iri} should be based on clinical note IRI {note_iri}"
+    
+    # Get the term link details
+    get_termlink_fn = physical_resources["GetTermLinkFunction"]
+    termlink_result = invoke_lambda(get_termlink_fn, {"termlink_iri": term_link_iri})
+    
+    # Verify the term link has the correct source node
+    assert termlink_result["source_node"] == note_iri, f"Term link source node should be {note_iri}, got {termlink_result['source_node']}"

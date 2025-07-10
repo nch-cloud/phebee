@@ -679,8 +679,16 @@ def create_creator(
     creator_id: str, creator_type: str, name: str = None, version: str = None
 ):
     now_iso = get_current_timestamp()
+    
+    # Create the creator IRI
     creator_id_safe = quote(creator_id, safe="")
-    creator_iri = f"http://ods.nationwidechildrens.org/phebee/creator/{creator_id_safe}"
+    
+    # Include version in the creator IRI for automated creators using /version/ path
+    if creator_type == "automated" and version:
+        version_safe = quote(version, safe="")
+        creator_iri = f"http://ods.nationwidechildrens.org/phebee/creator/{creator_id_safe}/version/{version_safe}"
+    else:
+        creator_iri = f"http://ods.nationwidechildrens.org/phebee/creator/{creator_id_safe}"
 
     if creator_type == "human":
         rdf_type = "phebee:HumanCreator"
@@ -717,12 +725,46 @@ def create_creator(
     }}
     """
     execute_update(sparql)
+    
+    return creator_iri
 
 
 def get_creator(creator_id: str) -> dict:
-    creator_id_safe = quote(creator_id, safe="")
-    creator_iri = f"http://ods.nationwidechildrens.org/phebee/creator/{creator_id_safe}"
+    """
+    Get creator by ID. This function supports both direct creator_id lookup
+    and full creator_iri lookup.
+    
+    Args:
+        creator_id (str): Either the creator ID or the full creator IRI
+        
+    Returns:
+        dict: Creator information or None if not found
+    """
+    # Check if the input is a full IRI
+    if creator_id.startswith("http://"):
+        creator_iri = creator_id
+    else:
+        # Try to find the creator by ID (might be multiple if versioned)
+        sparql = f"""
+        PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+        
+        SELECT ?creator WHERE {{
+            ?creator phebee:creatorId "{creator_id}" .
+        }}
+        LIMIT 1
+        """
+        
+        result = execute_query(sparql)
+        bindings = result.get("results", {}).get("bindings", [])
+        
+        if not bindings:
+            # Fall back to the old method if no results
+            creator_id_safe = quote(creator_id, safe="")
+            creator_iri = f"http://ods.nationwidechildrens.org/phebee/creator/{creator_id_safe}"
+        else:
+            creator_iri = bindings[0]["creator"]["value"]
 
+    # Get creator properties
     sparql = f"""
     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
     PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
@@ -751,9 +793,37 @@ def get_creator(creator_id: str) -> dict:
         return None
 
 
-def delete_creator(creator_id: str):
-    creator_id_safe = quote(creator_id, safe="")
-    creator_iri = f"http://ods.nationwidechildrens.org/phebee/creator/{creator_id_safe}"
+def delete_creator(creator_id_or_iri: str):
+    """
+    Delete a creator by ID or IRI.
+    
+    Args:
+        creator_id_or_iri (str): Either the creator ID or the full creator IRI
+    """
+    # Check if the input is a full IRI
+    if creator_id_or_iri.startswith("http://"):
+        creator_iri = creator_id_or_iri
+    else:
+        # Try to find the creator by ID (might be multiple if versioned)
+        sparql = f"""
+        PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+        
+        SELECT ?creator WHERE {{
+            ?creator phebee:creatorId "{creator_id_or_iri}" .
+        }}
+        LIMIT 1
+        """
+        
+        result = execute_query(sparql)
+        bindings = result.get("results", {}).get("bindings", [])
+        
+        if not bindings:
+            # Fall back to the old method if no results
+            creator_id_safe = quote(creator_id_or_iri, safe="")
+            creator_iri = f"http://ods.nationwidechildrens.org/phebee/creator/{creator_id_safe}"
+        else:
+            creator_iri = bindings[0]["creator"]["value"]
+    
     sparql = f"""
     DELETE WHERE {{
         <{creator_iri}> ?p ?o .
@@ -763,6 +833,8 @@ def delete_creator(creator_id: str):
     }}
     """
     execute_update(sparql)
+    
+    return creator_iri
 
 
 def create_text_annotation(
@@ -938,6 +1010,19 @@ def delete_text_annotation(annotation_iri: str):
 def create_term_link(
     source_node_iri: str, term_iri: str, creator_iri: str, evidence_iris: list[str], qualifiers=None
 ) -> dict:
+    """
+    Create a term link between a source node (subject, encounter, or clinical note) and a term.
+    
+    Args:
+        source_node_iri (str): The IRI of the source node (subject, encounter, or clinical note)
+        term_iri (str): The IRI of the term
+        creator_iri (str): The IRI of the creator
+        evidence_iris (list[str]): List of evidence IRIs
+        qualifiers (list): List of qualifier IRIs
+        
+    Returns:
+        dict: Dictionary with the term link IRI and whether it was created
+    """
     # Generate deterministic hash based on source node, term, and qualifiers
     termlink_hash = generate_termlink_hash(source_node_iri, term_iri, qualifiers)
     termlink_iri = f"{source_node_iri}/term-link/{termlink_hash}"
@@ -964,6 +1049,7 @@ def create_term_link(
         f"<{termlink_iri}> phebee:hasTerm <{term_iri}>",
         f"<{termlink_iri}> phebee:creator <{creator_iri}>",
         f'<{termlink_iri}> dcterms:created "{created}"^^xsd:dateTime',
+        f"<{source_node_iri}> phebee:hasTermLink <{termlink_iri}>",
     ]
 
     if evidence_iris:
@@ -1071,7 +1157,7 @@ def generate_termlink_hash(source_node_iri: str, term_iri: str, qualifiers=None)
     Generate a deterministic hash for a term link based on its components.
     
     Args:
-        source_node_iri (str): The IRI of the source node (subject, encounter, etc.)
+        source_node_iri (str): The IRI of the source node (subject, encounter, or clinical note)
         term_iri (str): The IRI of the term being linked
         qualifiers (list): List of qualifier IRIs, e.g., negated, hypothetical
         
@@ -1127,7 +1213,9 @@ def check_existing_term_links(termlink_iris, batch_size=1000):
         }}
         """
         
-        result = execute_query(sparql)
+        # Use POST method to avoid URL length limitations
+        from .neptune import execute_query_post
+        result = execute_query_post(sparql)
         
         # Extract existing IRIs from results
         for binding in result["results"]["bindings"]:
@@ -1135,6 +1223,58 @@ def check_existing_term_links(termlink_iris, batch_size=1000):
         
         batch_duration = time.time() - batch_start_time
         logger.info(f"Batch {batch_num}/{batch_count} processed in {batch_duration:.2f} seconds. Found {len(result['results']['bindings'])} existing term links.")
+    
+    return existing
+
+
+def check_existing_encounters(encounter_iris, batch_size=1000):
+    """
+    Check which encounters from a list already exist in the database.
+    Uses batching to handle large numbers of IRIs efficiently.
+    
+    Args:
+        encounter_iris (list): List of encounter IRIs to check
+        batch_size (int): Maximum number of IRIs to check in a single query
+        
+    Returns:
+        set: Set of existing encounter IRIs
+    """
+    if not encounter_iris:
+        return set()
+    
+    existing = set()
+    batch_count = (len(encounter_iris) + batch_size - 1) // batch_size  # Ceiling division
+    logger.info(f"Checking {len(encounter_iris)} encounters in {batch_count} batches of up to {batch_size} each")
+    
+    # Process in batches to avoid query size limitations
+    for i in range(0, len(encounter_iris), batch_size):
+        batch_start_time = time.time()
+        batch = encounter_iris[i:i+batch_size]
+        batch_num = i // batch_size + 1
+        
+        # Convert batch to VALUES clause
+        values_clause = " ".join(f"<{iri}>" for iri in batch)
+        
+        sparql = f"""
+        PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+        PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+        
+        SELECT ?encounter WHERE {{
+            VALUES ?encounter {{ {values_clause} }}
+            ?encounter a phebee:Encounter .
+        }}
+        """
+        
+        # Use POST method to avoid URL length limitations
+        from .neptune import execute_query_post
+        result = execute_query_post(sparql)
+        
+        # Extract existing IRIs from results
+        for binding in result["results"]["bindings"]:
+            existing.add(binding["encounter"]["value"])
+        
+        batch_duration = time.time() - batch_start_time
+        logger.info(f"Batch {batch_num}/{batch_count} processed in {batch_duration:.2f} seconds. Found {len(result['results']['bindings'])} existing encounters.")
     
     return existing
 
@@ -1185,3 +1325,53 @@ def flatten_sparql_results(sparql_json, include_datatype=False, group_subjects=F
         return dict(grouped_results)
     else:
         return simplified_results
+def check_existing_clinical_notes(note_iris, batch_size=1000):
+    """
+    Check which clinical notes from a list already exist in the database.
+    Uses batching to handle large numbers of IRIs efficiently.
+    
+    Args:
+        note_iris (list): List of clinical note IRIs to check
+        batch_size (int): Maximum number of IRIs to check in a single query
+        
+    Returns:
+        set: Set of existing clinical note IRIs
+    """
+    if not note_iris:
+        return set()
+    
+    existing = set()
+    batch_count = (len(note_iris) + batch_size - 1) // batch_size  # Ceiling division
+    logger.info(f"Checking {len(note_iris)} clinical notes in {batch_count} batches of up to {batch_size} each")
+    
+    # Process in batches to avoid query size limitations
+    for i in range(0, len(note_iris), batch_size):
+        batch_start_time = time.time()
+        batch = note_iris[i:i+batch_size]
+        batch_num = i // batch_size + 1
+        
+        # Convert batch to VALUES clause
+        values_clause = " ".join(f"<{iri}>" for iri in batch)
+        
+        sparql = f"""
+        PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+        PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+        
+        SELECT ?note WHERE {{
+            VALUES ?note {{ {values_clause} }}
+            ?note a phebee:ClinicalNote .
+        }}
+        """
+        
+        # Use POST method to avoid URL length limitations
+        from .neptune import execute_query_post
+        result = execute_query_post(sparql)
+        
+        # Extract existing IRIs from results
+        for binding in result["results"]["bindings"]:
+            existing.add(binding["note"]["value"])
+        
+        batch_duration = time.time() - batch_start_time
+        logger.info(f"Batch {batch_num}/{batch_count} processed in {batch_duration:.2f} seconds. Found {len(result['results']['bindings'])} existing clinical notes.")
+    
+    return existing

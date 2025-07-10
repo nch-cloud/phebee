@@ -35,6 +35,17 @@ def execute_query(query: str):
     return json.loads(response)
 
 
+def execute_query_post(query: str):
+    """Execute a SPARQL query using POST method to handle large queries"""
+    logger.info(query)
+
+    response = make_signed_request("POST", "sparql", query)
+
+    logger.info(response)
+
+    return json.loads(response)
+
+
 def start_load(load_params: dict):
     logger.info("Starting Neptune load...")
     logger.info(load_params)

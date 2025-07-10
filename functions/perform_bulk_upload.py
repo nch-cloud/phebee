@@ -9,6 +9,7 @@ from pydantic import BaseModel, ValidationError
 from rdflib import Graph, URIRef, Namespace, RDF, Literal as RdfLiteral
 from rdflib.namespace import DCTERMS, XSD
 import uuid
+from urllib.parse import quote
 
 from phebee.constants import PHEBEE
 from phebee.utils.neptune import start_load
@@ -23,7 +24,9 @@ from phebee.utils.sparql import (
     infer_evidence_type,
     infer_assertion_type,
     generate_termlink_hash,
-    check_existing_term_links
+    check_existing_term_links,
+    check_existing_encounters,
+    check_existing_clinical_notes
 )
 from phebee.utils.aws import get_current_timestamp, extract_body
 
@@ -89,9 +92,10 @@ def get_or_create_subject(project_id: str, project_subject_id: str) -> str:
 def get_term_link_iri(source_node_iri: str, term_iri: str, qualifiers=None) -> str:
     """
     Generate a deterministic term link IRI based on source node, term, and qualifiers.
+    The source node can be a subject, encounter, or clinical note.
     
     Args:
-        source_node_iri (str): The IRI of the source node
+        source_node_iri (str): The IRI of the source node (subject, encounter, or clinical note)
         term_iri (str): The IRI of the term
         qualifiers (list): List of qualifier IRIs
         
@@ -117,6 +121,12 @@ def generate_rdf(entries: List[TermLinkInput]) -> str:
     potential_termlinks = []
     termlink_to_annotation_map = {}
     
+    # Pre-compute all potential encounter IRIs
+    potential_encounters = set()  # Use a set to avoid duplicates
+    
+    # Pre-compute all potential clinical note IRIs
+    potential_notes = set()  # Use a set to avoid duplicates
+    
     for entry in entries:
         subject_iri = get_or_create_subject(entry.project_id, entry.project_subject_id)
         
@@ -135,14 +145,27 @@ def generate_rdf(entries: List[TermLinkInput]) -> str:
                     if qualifier_iri not in qualifiers:
                         qualifiers.append(qualifier_iri)
             
+            # Determine the appropriate source node based on evidence type
+            if evidence.type == "clinical_note":
+                encounter_iri = f"{subject_iri}/encounter/{evidence.encounter_id}"
+                note_iri = f"{encounter_iri}/note/{evidence.clinical_note_id}"
+                source_node_iri = note_iri  # Use the clinical note as the source node
+                
+                # Add to potential encounters and notes
+                potential_encounters.add(encounter_iri)
+                potential_notes.add(note_iri)
+            else:
+                # Default to subject if not a clinical note
+                source_node_iri = subject_iri
+            
             # Generate the term link IRI
-            termlink_iri = get_term_link_iri(subject_iri, entry.term_iri, qualifiers)
+            termlink_iri = get_term_link_iri(source_node_iri, entry.term_iri, qualifiers)
             potential_termlinks.append(termlink_iri)
             
             # Group annotations by term link IRI
             if termlink_iri not in termlink_to_annotation_map:
                 termlink_to_annotation_map[termlink_iri] = {
-                    'subject_iri': subject_iri,
+                    'source_node_iri': source_node_iri,
                     'term_iri': entry.term_iri,
                     'qualifiers': qualifiers,
                     'evidence': []
@@ -151,7 +174,7 @@ def generate_rdf(entries: List[TermLinkInput]) -> str:
             termlink_to_annotation_map[termlink_iri]['evidence'].append(evidence)
     
     precompute_duration = time.time() - start_precompute_time
-    logger.info(f"Pre-computation completed in {precompute_duration:.2f} seconds. Generated {len(potential_termlinks)} potential term links.")
+    logger.info(f"Pre-computation completed in {precompute_duration:.2f} seconds. Generated {len(potential_termlinks)} potential term links, {len(potential_encounters)} potential encounters, and {len(potential_notes)} potential clinical notes.")
     
     # Log qualifier statistics
     qualifier_counts = {}
@@ -167,23 +190,56 @@ def generate_rdf(entries: List[TermLinkInput]) -> str:
     try:
         existing_termlinks = check_existing_term_links(potential_termlinks)
         check_duration = time.time() - start_check_time
-        logger.info(f"Existence check completed in {check_duration:.2f} seconds. Found {len(existing_termlinks)} existing term links out of {len(potential_termlinks)} potential links.")
+        logger.info(f"Term link existence check completed in {check_duration:.2f} seconds. Found {len(existing_termlinks)} existing term links out of {len(potential_termlinks)} potential links.")
     except Exception as e:
         logger.error(f"Critical error checking existing term links after {time.time() - start_check_time:.2f} seconds: {str(e)}")
         # Re-raise the exception to fail the process
         raise Exception(f"Failed to check existing term links: {str(e)}") from e
+    
+    # Check which encounters already exist
+    start_encounter_check_time = time.time()
+    try:
+        existing_encounters = check_existing_encounters(list(potential_encounters))
+        encounter_check_duration = time.time() - start_encounter_check_time
+        logger.info(f"Encounter existence check completed in {encounter_check_duration:.2f} seconds. Found {len(existing_encounters)} existing encounters out of {len(potential_encounters)} potential encounters.")
+    except Exception as e:
+        logger.error(f"Critical error checking existing encounters after {time.time() - start_encounter_check_time:.2f} seconds: {str(e)}")
+        # Re-raise the exception to fail the process
+        raise Exception(f"Failed to check existing encounters: {str(e)}") from e
+    
+    # Check which clinical notes already exist
+    start_note_check_time = time.time()
+    try:
+        existing_notes = check_existing_clinical_notes(list(potential_notes))
+        note_check_duration = time.time() - start_note_check_time
+        logger.info(f"Clinical note existence check completed in {note_check_duration:.2f} seconds. Found {len(existing_notes)} existing clinical notes out of {len(potential_notes)} potential notes.")
+    except Exception as e:
+        logger.error(f"Critical error checking existing clinical notes after {time.time() - start_note_check_time:.2f} seconds: {str(e)}")
+        # Re-raise the exception to fail the process
+        raise Exception(f"Failed to check existing clinical notes: {str(e)}") from e
 
     # Start RDF generation
     start_rdf_time = time.time()
     new_links_count = 0
     skipped_links_count = 0
+    new_encounters_count = 0
+    skipped_encounters_count = 0
+    new_notes_count = 0
+    skipped_notes_count = 0
+    
+    # Track encounters and notes we've already processed in this batch
+    encountered_iris = set()
+    note_iris = set()
     
     for termlink_iri, group in termlink_to_annotation_map.items():
-        subject_iri = URIRef(group['subject_iri'])
+        source_node_iri = URIRef(group['source_node_iri'])
         term_iri = URIRef(group['term_iri'])
         qualifiers = group['qualifiers']
         
-        g.add((subject_iri, RDF.type, PHEBEE_NS.Subject))
+        # Ensure the source node exists
+        # If it's a subject, add the type
+        if "/subjects/" in str(source_node_iri) and "/encounter/" not in str(source_node_iri):
+            g.add((source_node_iri, RDF.type, PHEBEE_NS.Subject))
         
         # Skip if this term link already exists
         if termlink_iri in existing_termlinks:
@@ -195,9 +251,12 @@ def generate_rdf(entries: List[TermLinkInput]) -> str:
         term_link_iri = URIRef(termlink_iri)
         
         g.add((term_link_iri, RDF.type, PHEBEE_NS.TermLink))
-        g.add((term_link_iri, PHEBEE_NS.sourceNode, subject_iri))
+        g.add((term_link_iri, PHEBEE_NS.sourceNode, source_node_iri))
         g.add((term_link_iri, PHEBEE_NS.hasTerm, term_iri))
         g.add((term_link_iri, DCTERMS.created, RdfLiteral(get_current_timestamp(), datatype=XSD.dateTime)))
+        
+        # Connect the source node to the term link
+        g.add((source_node_iri, PHEBEE_NS.hasTermLink, term_link_iri))
         
         # Add qualifier triples if any
         for qualifier in qualifiers:
@@ -207,29 +266,56 @@ def generate_rdf(entries: List[TermLinkInput]) -> str:
             evidence_creator_iri = create_or_find_creator(evidence.evidence_creator_id, evidence.evidence_creator_version, evidence.evidence_creator_name, evidence.evidence_creator_type, creator_exists_cache)
             
             if evidence.type == "clinical_note":
-                encounter_iri = URIRef(f"{subject_iri}/encounter/{evidence.encounter_id}")
-                note_iri = URIRef(f"{encounter_iri}/note/{evidence.clinical_note_id}")
+                encounter_iri_str = f"{subject_iri}/encounter/{evidence.encounter_id}"
+                encounter_iri = URIRef(encounter_iri_str)
+                note_iri_str = f"{encounter_iri_str}/note/{evidence.clinical_note_id}"
+                note_iri = URIRef(note_iri_str)
                 
-                # Create the encounter node
-                g.add((encounter_iri, RDF.type, PHEBEE_NS.Encounter))
-                g.add((encounter_iri, PHEBEE_NS.encounterId, RdfLiteral(evidence.encounter_id)))
-                g.add((encounter_iri, PHEBEE_NS.hasSubject, subject_iri))
-                g.add((encounter_iri, DCTERMS.created, RdfLiteral(get_current_timestamp(), datatype=XSD.dateTime)))
+                # Only create the encounter if it doesn't already exist in the database
+                # AND we haven't already created it in this batch
+                if encounter_iri_str not in existing_encounters and encounter_iri_str not in encountered_iris:
+                    # Create the encounter node
+                    g.add((encounter_iri, RDF.type, PHEBEE_NS.Encounter))
+                    g.add((encounter_iri, PHEBEE_NS.encounterId, RdfLiteral(evidence.encounter_id)))
+                    g.add((encounter_iri, PHEBEE_NS.hasSubject, subject_iri))
+                    g.add((encounter_iri, DCTERMS.created, RdfLiteral(get_current_timestamp(), datatype=XSD.dateTime)))
+                    new_encounters_count += 1
+                    logger.debug(f"Created new encounter: {encounter_iri_str}")
+                    
+                    # Add to our tracking set
+                    encountered_iris.add(encounter_iri_str)
+                else:
+                    skipped_encounters_count += 1
+                    logger.debug(f"Skipping existing encounter: {encounter_iri_str}")
                 
-                # Add clinical note properties
-                g.add((note_iri, RDF.type, PHEBEE_NS.ClinicalNote))
-                g.add((note_iri, PHEBEE_NS.clinicalNoteId, RdfLiteral(evidence.clinical_note_id)))
-                g.add((note_iri, PHEBEE_NS.hasEncounter, URIRef(encounter_iri)))
-                g.add((note_iri, DCTERMS.created, RdfLiteral(get_current_timestamp(), datatype=XSD.dateTime)))
-                if evidence.note_timestamp:
-                    g.add((note_iri, PHEBEE_NS.noteTimestamp, RdfLiteral(evidence.note_timestamp, datatype=XSD.dateTime)))
-                if evidence.author_prov_type:
-                    g.add((note_iri, PHEBEE_NS.providerType, RdfLiteral(evidence.author_prov_type)))
-                if evidence.author_specialty:
-                    g.add((note_iri, PHEBEE_NS.authorSpecialty, RdfLiteral(evidence.author_specialty)))
+                # Only create the clinical note if it doesn't already exist in the database
+                # AND we haven't already created it in this batch
+                if note_iri_str not in existing_notes and note_iri_str not in note_iris:
+                    # Add clinical note properties
+                    g.add((note_iri, RDF.type, PHEBEE_NS.ClinicalNote))
+                    g.add((note_iri, PHEBEE_NS.clinicalNoteId, RdfLiteral(evidence.clinical_note_id)))
+                    g.add((note_iri, PHEBEE_NS.hasEncounter, URIRef(encounter_iri)))
+                    g.add((note_iri, DCTERMS.created, RdfLiteral(get_current_timestamp(), datatype=XSD.dateTime)))
+                    if evidence.note_timestamp:
+                        g.add((note_iri, PHEBEE_NS.noteTimestamp, RdfLiteral(evidence.note_timestamp, datatype=XSD.dateTime)))
+                    if evidence.author_prov_type:
+                        g.add((note_iri, PHEBEE_NS.providerType, RdfLiteral(evidence.author_prov_type)))
+                    if evidence.author_specialty:
+                        g.add((note_iri, PHEBEE_NS.authorSpecialty, RdfLiteral(evidence.author_specialty)))
+                    
+                    new_notes_count += 1
+                    logger.debug(f"Created new clinical note: {note_iri_str}")
+                    
+                    # Add to our tracking set
+                    note_iris.add(note_iri_str)
+                else:
+                    skipped_notes_count += 1
+                    logger.debug(f"Skipping existing clinical note: {note_iri_str}")
                 
-                # Connect the note to the term link
-                g.add((note_iri, PHEBEE_NS.hasTermLink, term_link_iri))
+                # Always connect the note to the term link, even if the note already exists
+                # But only if the note is not already the source node (to avoid duplicate hasTermLink properties)
+                if str(source_node_iri) != note_iri_str:
+                    g.add((note_iri, PHEBEE_NS.hasTermLink, term_link_iri))
 
                 # Create a TextAnnotation node
                 annotation_id = str(uuid.uuid4())
@@ -263,7 +349,7 @@ def generate_rdf(entries: List[TermLinkInput]) -> str:
 
     rdf_duration = time.time() - start_rdf_time
     triple_count = len(g)
-    logger.info(f"RDF generation completed in {rdf_duration:.2f} seconds. Generated {triple_count} triples for {new_links_count} new term links. Skipped {skipped_links_count} existing links.")
+    logger.info(f"RDF generation completed in {rdf_duration:.2f} seconds. Generated {triple_count} triples for {new_links_count} new term links, {new_encounters_count} new encounters, and {new_notes_count} new clinical notes. Skipped {skipped_links_count} existing links, {skipped_encounters_count} existing encounters, and {skipped_notes_count} existing clinical notes.")
 
     graph_ttl = g.serialize(format="turtle", prefixes={"phebee": PHEBEE_NS, "obo": OBO, "dcterms": DCTERMS})
     
@@ -273,13 +359,24 @@ def generate_rdf(entries: List[TermLinkInput]) -> str:
     return graph_ttl
 
 def create_or_find_creator(creator_id, creator_version, creator_name, creator_type, creator_exists_cache):
-    creator_iri = URIRef(f"{PHEBEE}/creator/{creator_id}")
+    # Create the creator IRI
+    creator_id_safe = quote(creator_id, safe="")
+    
+    # Include version in the creator IRI for automated creators using /version/ path
+    if creator_type == "automated" and creator_version:
+        version_safe = quote(creator_version, safe="")
+        creator_iri = URIRef(f"{PHEBEE}/creator/{creator_id_safe}/version/{version_safe}")
+    else:
+        creator_iri = URIRef(f"{PHEBEE}/creator/{creator_id_safe}")
 
     # Check if creator already exists.  If not, we need to create it.
     logger.info(f"Checking if evidence creator exists: {creator_iri}")
     if creator_iri not in creator_exists_cache and not node_exists(creator_iri):
         logger.info(f"Creating {creator_type} creator: {creator_id}")
-        create_creator(creator_id, creator_type, creator_name, creator_version)
+        created_iri = create_creator(creator_id, creator_type, creator_name, creator_version)
+        # Verify the IRIs match
+        if str(creator_iri) != created_iri:
+            logger.warning(f"Created creator IRI {created_iri} doesn't match expected IRI {creator_iri}")
     else:
         logger.info("Creator already exists.")
     creator_exists_cache.append(creator_iri)
