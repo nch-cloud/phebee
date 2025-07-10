@@ -67,7 +67,14 @@ def test_creator_lifecycle(physical_resources, creator_type, extra):
     )
     assert remove_resp["StatusCode"] == 200
     remove_body = json.loads(json.loads(remove_resp["Payload"].read())["body"])
-    assert remove_body["creator_iri"].endswith(creator_id)
+    if creator_type == "automated":
+        assert creator_id_safe in remove_body["creator_iri"], f"Creator ID {creator_id_safe} not found in IRI {remove_body['creator_iri']}"
+        assert "/version/" in remove_body["creator_iri"], f"Version path not found in IRI {remove_body['creator_iri']}"
+        version_safe = quote(extra["version"], safe="")
+        assert f"/version/{version_safe}" in remove_body["creator_iri"], f"Version {version_safe} not found in IRI {remove_body['creator_iri']}"
+    else:
+        # For human creators, the IRI still ends with the creator ID
+        assert remove_body["creator_iri"].endswith(creator_id_safe)
 
     # --- Get after delete → should return 'not found' ---
     get_again_resp = lambda_client.invoke(
