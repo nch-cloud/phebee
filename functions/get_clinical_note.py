@@ -11,7 +11,7 @@ def lambda_handler(event, context):
     try:
         body = extract_body(event)
 
-        logger.info(f"body: {body}")
+        logger.info("body: %s", body)
 
         encounter_iri = body.get("encounter_iri")
         clinical_note_id = body.get("clinical_note_id")
@@ -40,5 +40,5 @@ def lambda_handler(event, context):
     except Exception as e:
         return {
             "statusCode": 500,
-            "body": json.dumps({"message": f"Error retrieving clinical note: {str(e)}"})
+            "body": json.dumps({"message": "Error retrieving clinical note: {str(e)}"})
         }

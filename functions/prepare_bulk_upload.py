@@ -24,7 +24,7 @@ def lambda_handler(event, context):
             HttpMethod="PUT",
         )
 
-        logger.info(f"Generated signed upload URL for job_id={job_id}, key={object_key}")
+        logger.info("Generated signed upload URL for job_id=%s, key=%s", job_id, object_key)
 
         return {
             "statusCode": 200,
@@ -37,7 +37,7 @@ def lambda_handler(event, context):
         }
 
     except Exception as e:
-        logger.error(f"Error generating signed URL: {str(e)}")
+        logger.error("Error generating signed URL: %s", str(e))
         return {
             "statusCode": 500,
             "body": json.dumps({"error": "Failed to generate signed URL"}),

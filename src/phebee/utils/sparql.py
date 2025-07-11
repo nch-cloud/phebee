@@ -4,7 +4,7 @@ SPARQL Query Conventions for PheBee Graph
 Prefix Usage:
 - PREFIX rdf:    http://www.w3.org/1999/02/22-rdf-syntax-ns#
 - PREFIX rdfs:   http://www.w3.org/2000/01/rdf-schema#
-- PREFIX dc:     http://purl.org/dc/terms/
+- PREFIX dcterms: http://purl.org/dc/terms/
 - PREFIX xsd:    http://www.w3.org/2001/XMLSchema#
 - PREFIX phebee: http://ods.nationwidechildrens.org/phebee#
 
@@ -25,6 +25,8 @@ Utilities:
 
 import re
 import uuid
+import hashlib
+import time
 from collections import defaultdict
 from typing import List
 from aws_lambda_powertools import Metrics, Logger, Tracer
@@ -170,7 +172,7 @@ def create_subject(project_id: str, project_subject_id: str) -> str:
     sparql = f"""
     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
     PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-    PREFIX dc: <http://purl.org/dc/terms/>
+    PREFIX dcterms: <http://purl.org/dc/terms/>
     PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
 
     INSERT DATA {{
@@ -181,7 +183,7 @@ def create_subject(project_id: str, project_subject_id: str) -> str:
             <{subject_iri}> phebee:hasProjectSubjectId <{project_subject_iri}> .
             <{project_subject_iri}> rdf:type phebee:ProjectSubjectId ;
                                      phebee:hasProject <{project_iri}> ;
-                                     dc:created \"{timestamp}\"^^xsd:dateTime .
+                                     dcterms:created \"{timestamp}\"^^xsd:dateTime .
         }}
     }}
     """
@@ -198,7 +200,7 @@ def link_subject_to_project(
 
     sparql = f"""
     PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-    PREFIX dc: <http://purl.org/dc/terms/>
+    PREFIX dcterms: <http://purl.org/dc/terms/>
     PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
 
     INSERT DATA {{
@@ -206,7 +208,7 @@ def link_subject_to_project(
             <{subject_iri}> phebee:hasProjectSubjectId <{project_subject_iri}> .
             <{project_subject_iri}> rdf:type phebee:ProjectSubjectId ;
                                      phebee:hasProject <{project_iri}> ;
-                                     dc:created \"{timestamp}\"^^xsd:dateTime .
+                                     dcterms:created \"{timestamp}\"^^xsd:dateTime .
         }}
     }}
     """
@@ -268,7 +270,7 @@ def get_subjects(
         """
 
     result = execute_query(sparql)
-    logger.info(f"Subjects matching term: {term_iri}")
+    logger.info("Subjects matching term: %s", term_iri)
     logger.info(result)
 
     subjects = []
@@ -322,7 +324,7 @@ def dump_graph_contents(
 
 def get_creator_info(creator_iri: str) -> dict:
     sparql = f"""
-    PREFIX dc: <http://purl.org/dc/terms/>
+    PREFIX dcterms: <http://purl.org/dc/terms/>
     SELECT ?p ?o WHERE {{
         <{creator_iri}> ?p ?o .
     }}
@@ -351,7 +353,7 @@ def get_term_links_for_node(
     sparql = f"""
     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
     PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-    PREFIX dc: <http://purl.org/dc/terms/>
+    PREFIX dcterms: <http://purl.org/dc/terms/>
     PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
 
     SELECT DISTINCT
@@ -370,8 +372,8 @@ def get_term_links_for_node(
             OPTIONAL {{ ?link phebee:creator ?termlink_creator . }}
 
             OPTIONAL {{ ?termlink_creator rdf:type ?termlink_creator_type . }}
-            OPTIONAL {{ ?termlink_creator dc:title ?termlink_creator_title . }}
-            OPTIONAL {{ ?termlink_creator dc:hasVersion ?termlink_creator_version . }}
+            OPTIONAL {{ ?termlink_creator dcterms:title ?termlink_creator_title . }}
+            OPTIONAL {{ ?termlink_creator dcterms:hasVersion ?termlink_creator_version . }}
             OPTIONAL {{ ?termlink_creator phebee:creatorId ?termlink_creator_id . }}
         }}
 
@@ -392,8 +394,8 @@ def get_term_links_for_node(
                 ?evidence phebee:creator ?evidence_creator .
 
                 OPTIONAL {{ ?evidence_creator rdf:type ?evidence_creator_type . }}
-                OPTIONAL {{ ?evidence_creator dc:title ?evidence_creator_title . }}
-                OPTIONAL {{ ?evidence_creator dc:hasVersion ?evidence_creator_version . }}
+                OPTIONAL {{ ?evidence_creator dcterms:title ?evidence_creator_title . }}
+                OPTIONAL {{ ?evidence_creator dcterms:hasVersion ?evidence_creator_version . }}
                 OPTIONAL {{ ?evidence_creator phebee:creatorId ?evidence_creator_id . }}
             }}
         }}
@@ -519,7 +521,7 @@ def create_encounter(subject_iri: str, encounter_id: str):
             <{encounter_iri}> rdf:type phebee:Encounter ;
                             phebee:encounterId "{encounter_id}" ;
                             dcterms:created "{now_iso}" ;
-                            phebee:subject <{subject_iri}> .
+                            phebee:hasSubject <{subject_iri}> .
         }}
     }}
     """
@@ -531,7 +533,7 @@ def get_encounter(subject_iri: str, encounter_id: str) -> dict:
     sparql = f"""
     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
     PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-    PREFIX dc: <http://purl.org/dc/terms/>
+    PREFIX dcterms: <http://purl.org/dc/terms/>
     PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
 
     SELECT ?p ?o WHERE {{
@@ -580,6 +582,8 @@ def create_clinical_note(
     encounter_iri: str,
     clinical_note_id: str,
     note_timestamp: str = None,
+    provider_type: str = None,
+    author_specialty: str = None,
 ):
     clinical_note_iri = f"{encounter_iri}/note/{clinical_note_id}"
     now_iso = get_current_timestamp()
@@ -588,12 +592,22 @@ def create_clinical_note(
         f"<{clinical_note_iri}> rdf:type phebee:ClinicalNote",
         f'<{clinical_note_iri}> phebee:clinicalNoteId "{clinical_note_id}"',
         f"<{clinical_note_iri}> phebee:hasEncounter <{encounter_iri}>",
-        f'<{clinical_note_iri}> dc:created "{now_iso}"^^xsd:dateTime',
+        f'<{clinical_note_iri}> dcterms:created "{now_iso}"^^xsd:dateTime',
     ]
 
     if note_timestamp:
         triples.append(
             f'<{clinical_note_iri}> phebee:noteTimestamp "{note_timestamp}"^^xsd:dateTime'
+        )
+        
+    if provider_type:
+        triples.append(
+            f'<{clinical_note_iri}> phebee:providerType "{provider_type}"'
+        )
+        
+    if author_specialty:
+        triples.append(
+            f'<{clinical_note_iri}> phebee:authorSpecialty "{author_specialty}"'
         )
 
     triples_block = " .\n        ".join(triples)
@@ -601,7 +615,7 @@ def create_clinical_note(
     sparql = f"""
     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
     PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-    PREFIX dc: <http://purl.org/dc/terms/>
+    PREFIX dcterms: <http://purl.org/dc/terms/>
     PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
 
     INSERT DATA {{
@@ -619,7 +633,7 @@ def get_clinical_note(encounter_iri: str, clinical_note_id: str) -> dict:
     sparql = f"""
     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
     PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-    PREFIX dc: <http://purl.org/dc/terms/>
+    PREFIX dcterms: <http://purl.org/dc/terms/>
     PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
 
     SELECT ?p ?o WHERE {{
@@ -665,8 +679,16 @@ def create_creator(
     creator_id: str, creator_type: str, name: str = None, version: str = None
 ):
     now_iso = get_current_timestamp()
+    
+    # Create the creator IRI
     creator_id_safe = quote(creator_id, safe="")
-    creator_iri = f"http://ods.nationwidechildrens.org/phebee/creator/{creator_id_safe}"
+    
+    # Include version in the creator IRI for automated creators using /version/ path
+    if creator_type == "automated" and version:
+        version_safe = quote(version, safe="")
+        creator_iri = f"http://ods.nationwidechildrens.org/phebee/creator/{creator_id_safe}/version/{version_safe}"
+    else:
+        creator_iri = f"http://ods.nationwidechildrens.org/phebee/creator/{creator_id_safe}"
 
     if creator_type == "human":
         rdf_type = "phebee:HumanCreator"
@@ -678,22 +700,22 @@ def create_creator(
     triples = [
         f'<{creator_iri}> phebee:creatorId "{creator_id}"',
         f"<{creator_iri}> rdf:type {rdf_type}",
-        f'<{creator_iri}> dc:created "{now_iso}"^^xsd:dateTime',
+        f'<{creator_iri}> dcterms:created "{now_iso}"^^xsd:dateTime',
     ]
 
     if name:
-        triples.append(f'<{creator_iri}> dc:title "{name}"')
+        triples.append(f'<{creator_iri}> dcterms:title "{name}"')
     if creator_type == "automated":
         if not version:
             raise ValueError("version is required for automated creators")
-        triples.append(f'<{creator_iri}> dc:hasVersion "{version}"')
+        triples.append(f'<{creator_iri}> dcterms:hasVersion "{version}"')
 
     triples_block = " .\n    ".join(triples) + " ."
 
     sparql = f"""
     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
     PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-    PREFIX dc: <http://purl.org/dc/terms/>
+    PREFIX dcterms: <http://purl.org/dc/terms/>
     PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
 
     INSERT DATA {{
@@ -703,16 +725,50 @@ def create_creator(
     }}
     """
     execute_update(sparql)
+    
+    return creator_iri
 
 
 def get_creator(creator_id: str) -> dict:
-    creator_id_safe = quote(creator_id, safe="")
-    creator_iri = f"http://ods.nationwidechildrens.org/phebee/creator/{creator_id_safe}"
+    """
+    Get creator by ID. This function supports both direct creator_id lookup
+    and full creator_iri lookup.
+    
+    Args:
+        creator_id (str): Either the creator ID or the full creator IRI
+        
+    Returns:
+        dict: Creator information or None if not found
+    """
+    # Check if the input is a full IRI
+    if creator_id.startswith("http://"):
+        creator_iri = creator_id
+    else:
+        # Try to find the creator by ID (might be multiple if versioned)
+        sparql = f"""
+        PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+        
+        SELECT ?creator WHERE {{
+            ?creator phebee:creatorId "{creator_id}" .
+        }}
+        LIMIT 1
+        """
+        
+        result = execute_query(sparql)
+        bindings = result.get("results", {}).get("bindings", [])
+        
+        if not bindings:
+            # Fall back to the old method if no results
+            creator_id_safe = quote(creator_id, safe="")
+            creator_iri = f"http://ods.nationwidechildrens.org/phebee/creator/{creator_id_safe}"
+        else:
+            creator_iri = bindings[0]["creator"]["value"]
 
+    # Get creator properties
     sparql = f"""
     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
     PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-    PREFIX dc: <http://purl.org/dc/terms/>
+    PREFIX dcterms: <http://purl.org/dc/terms/>
     PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
 
     SELECT ?p ?o WHERE {{
@@ -737,9 +793,37 @@ def get_creator(creator_id: str) -> dict:
         return None
 
 
-def delete_creator(creator_id: str):
-    creator_id_safe = quote(creator_id, safe="")
-    creator_iri = f"http://ods.nationwidechildrens.org/phebee/creator/{creator_id_safe}"
+def delete_creator(creator_id_or_iri: str):
+    """
+    Delete a creator by ID or IRI.
+    
+    Args:
+        creator_id_or_iri (str): Either the creator ID or the full creator IRI
+    """
+    # Check if the input is a full IRI
+    if creator_id_or_iri.startswith("http://"):
+        creator_iri = creator_id_or_iri
+    else:
+        # Try to find the creator by ID (might be multiple if versioned)
+        sparql = f"""
+        PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+        
+        SELECT ?creator WHERE {{
+            ?creator phebee:creatorId "{creator_id_or_iri}" .
+        }}
+        LIMIT 1
+        """
+        
+        result = execute_query(sparql)
+        bindings = result.get("results", {}).get("bindings", [])
+        
+        if not bindings:
+            # Fall back to the old method if no results
+            creator_id_safe = quote(creator_id_or_iri, safe="")
+            creator_iri = f"http://ods.nationwidechildrens.org/phebee/creator/{creator_id_safe}"
+        else:
+            creator_iri = bindings[0]["creator"]["value"]
+    
     sparql = f"""
     DELETE WHERE {{
         <{creator_iri}> ?p ?o .
@@ -749,6 +833,8 @@ def delete_creator(creator_id: str):
     }}
     """
     execute_update(sparql)
+    
+    return creator_iri
 
 
 def create_text_annotation(
@@ -782,7 +868,7 @@ def create_text_annotation(
     triples = [
         f"<{annotation_iri}> rdf:type phebee:TextAnnotation",
         f"<{annotation_iri}> phebee:textSource <{text_source_iri}>",
-        f'<{annotation_iri}> dc:created "{created}"^^xsd:dateTime',
+        f'<{annotation_iri}> dcterms:created "{created}"^^xsd:dateTime',
         f"<{annotation_iri}> phebee:evidenceType <{evidence_type_iri}>",
         f"<{annotation_iri}> phebee:assertionType <{assertion_type_iri}>",
     ]
@@ -805,7 +891,7 @@ def create_text_annotation(
     sparql = f"""
     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
     PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-    PREFIX dc: <http://purl.org/dc/terms/>
+    PREFIX dcterms: <http://purl.org/dc/terms/>
     PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
 
     INSERT DATA {{
@@ -886,7 +972,7 @@ def get_text_annotation(annotation_iri: str) -> dict:
     sparql = f"""
     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
     PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-    PREFIX dc: <http://purl.org/dc/terms/>
+    PREFIX dcterms: <http://purl.org/dc/terms/>
     PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
 
     SELECT ?p ?o WHERE {{
@@ -922,10 +1008,39 @@ def delete_text_annotation(annotation_iri: str):
 
 
 def create_term_link(
-    source_node_iri: str, term_iri: str, creator_iri: str, evidence_iris: list[str]
-) -> str:
-    termlink_id = str(uuid.uuid4())
-    termlink_iri = f"{source_node_iri}/term-link/{termlink_id}"
+    source_node_iri: str, term_iri: str, creator_iri: str, evidence_iris: list[str], qualifiers=None
+) -> dict:
+    """
+    Create a term link between a source node (subject, encounter, or clinical note) and a term.
+    
+    Args:
+        source_node_iri (str): The IRI of the source node (subject, encounter, or clinical note)
+        term_iri (str): The IRI of the term
+        creator_iri (str): The IRI of the creator
+        evidence_iris (list[str]): List of evidence IRIs
+        qualifiers (list): List of qualifier IRIs
+        
+    Returns:
+        dict: Dictionary with the term link IRI and whether it was created
+    """
+    # Generate deterministic hash based on source node, term, and qualifiers
+    termlink_hash = generate_termlink_hash(source_node_iri, term_iri, qualifiers)
+    termlink_iri = f"{source_node_iri}/term-link/{termlink_hash}"
+    
+    # Check if the term link already exists
+    link_exists = node_exists(termlink_iri)
+    
+    if link_exists:
+        logger.info("Term link already exists: %s", termlink_iri)
+        
+        # If evidence_iris is provided, attach them to the existing term link
+        if evidence_iris:
+            for evidence_iri in evidence_iris:
+                attach_evidence_to_term_link(termlink_iri, evidence_iri)
+                    
+        return {"termlink_iri": termlink_iri, "created": False}
+    
+    # Create the term link if it doesn't exist
     created = get_current_timestamp()
 
     triples = [
@@ -933,19 +1048,25 @@ def create_term_link(
         f"<{termlink_iri}> phebee:sourceNode <{source_node_iri}>",
         f"<{termlink_iri}> phebee:hasTerm <{term_iri}>",
         f"<{termlink_iri}> phebee:creator <{creator_iri}>",
-        f'<{termlink_iri}> dc:created "{created}"^^xsd:dateTime',
+        f'<{termlink_iri}> dcterms:created "{created}"^^xsd:dateTime',
+        f"<{source_node_iri}> phebee:hasTermLink <{termlink_iri}>",
     ]
 
     if evidence_iris:
         for evidence_iri in evidence_iris:
             triples.append(f"<{termlink_iri}> phebee:hasEvidence <{evidence_iri}>")
+            
+    # Add qualifier triples if any
+    if qualifiers:
+        for qualifier in qualifiers:
+            triples.append(f"<{termlink_iri}> phebee:hasQualifyingTerm <{qualifier}>")
 
     triples_block = " .\n    ".join(triples) + " ."
 
     sparql = f"""
     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
     PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-    PREFIX dc: <http://purl.org/dc/terms/>
+    PREFIX dcterms: <http://purl.org/dc/terms/>
     PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
 
     INSERT DATA {{
@@ -955,14 +1076,14 @@ def create_term_link(
     }}
     """
     execute_update(sparql)
-    return termlink_iri
+    return {"termlink_iri": termlink_iri, "created": True}
 
 
 def get_term_link(termlink_iri: str) -> dict:
     sparql = f"""
     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
     PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-    PREFIX dc: <http://purl.org/dc/terms/>
+    PREFIX dcterms: <http://purl.org/dc/terms/>
     PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
     
     SELECT ?p ?o WHERE {{
@@ -985,6 +1106,33 @@ def get_term_link(termlink_iri: str) -> dict:
         return None
 
 
+def attach_evidence_to_term_link(termlink_iri: str, evidence_iri: str) -> None:
+    """
+    Attach evidence to a term link if it's not already attached.
+    
+    Args:
+        termlink_iri (str): The IRI of the term link
+        evidence_iri (str): The IRI of the evidence to attach
+    """
+    # Check if the evidence is already attached
+    if triple_exists(termlink_iri, "http://ods.nationwidechildrens.org/phebee#hasEvidence", evidence_iri):
+        logger.debug("Evidence %s already attached to %s", evidence_iri, termlink_iri)
+        return
+        
+    # Attach the evidence
+    sparql = f"""
+    PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+    
+    INSERT DATA {{
+        GRAPH <http://ods.nationwidechildrens.org/phebee/subjects> {{
+            <{termlink_iri}> phebee:hasEvidence <{evidence_iri}> .
+        }}
+    }}
+    """
+    execute_update(sparql)
+    logger.info("Attached evidence %s to %s", evidence_iri, termlink_iri)
+
+
 def flatten_response(fixed: dict, properties: dict) -> dict:
     overlap = fixed.keys() & properties.keys()
     if overlap:
@@ -1002,6 +1150,133 @@ def delete_term_link(termlink_iri: str):
     }}
     """
     execute_update(sparql)
+
+
+def generate_termlink_hash(source_node_iri: str, term_iri: str, qualifiers=None):
+    """
+    Generate a deterministic hash for a term link based on its components.
+    
+    Args:
+        source_node_iri (str): The IRI of the source node (subject, encounter, or clinical note)
+        term_iri (str): The IRI of the term being linked
+        qualifiers (list): List of qualifier IRIs, e.g., negated, hypothetical
+        
+    Returns:
+        str: A deterministic hash that can be used as part of the term link IRI
+    """
+    # Sort qualifiers to ensure consistent ordering
+    sorted_qualifiers = sorted(qualifiers) if qualifiers else []
+    
+    # Create a composite key
+    key_parts = [source_node_iri, term_iri] + sorted_qualifiers
+    key_string = '|'.join(key_parts)
+    
+    # Generate a deterministic hash
+    return hashlib.sha256(key_string.encode()).hexdigest()
+
+
+def check_existing_term_links(termlink_iris, batch_size=1000):
+    """
+    Check which term links from a list already exist in the database.
+    Uses batching to handle large numbers of IRIs efficiently.
+    
+    Args:
+        termlink_iris (list): List of term link IRIs to check
+        batch_size (int): Maximum number of IRIs to check in a single query
+        
+    Returns:
+        set: Set of existing term link IRIs
+    """
+    if not termlink_iris:
+        return set()
+    
+    existing = set()
+    batch_count = (len(termlink_iris) + batch_size - 1) // batch_size  # Ceiling division
+    logger.info("Checking %s term links in %s batches of up to %s each", len(termlink_iris), batch_count, batch_size)
+    
+    # Process in batches to avoid query size limitations
+    for i in range(0, len(termlink_iris), batch_size):
+        batch_start_time = time.time()
+        batch = termlink_iris[i:i+batch_size]
+        batch_num = i // batch_size + 1
+        
+        # Convert batch to VALUES clause
+        values_clause = " ".join(f"<{iri}>" for iri in batch)
+        
+        sparql = f"""
+        PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+        PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+        
+        SELECT ?termlink WHERE {{
+            VALUES ?termlink {{ {values_clause} }}
+            ?termlink a phebee:TermLink .
+        }}
+        """
+        
+        # Use POST method to avoid URL length limitations
+        from .neptune import execute_query_post
+        result = execute_query_post(sparql)
+        
+        # Extract existing IRIs from results
+        for binding in result["results"]["bindings"]:
+            existing.add(binding["termlink"]["value"])
+        
+        batch_duration = time.time() - batch_start_time
+        logger.info("Batch %s/%s processed in %.2f seconds. Found %s existing term links.", batch_num, batch_count, batch_duration, len(result['results']['bindings']))
+    
+    return existing
+
+
+def check_existing_encounters(encounter_iris, batch_size=1000):
+    """
+    Check which encounters from a list already exist in the database.
+    Uses batching to handle large numbers of IRIs efficiently.
+    
+    Args:
+        encounter_iris (list): List of encounter IRIs to check
+        batch_size (int): Maximum number of IRIs to check in a single query
+        
+    Returns:
+        set: Set of existing encounter IRIs
+    """
+    if not encounter_iris:
+        return set()
+    
+    existing = set()
+    batch_count = (len(encounter_iris) + batch_size - 1) // batch_size  # Ceiling division
+    logger.info("Checking %s encounters in %s batches of up to %s each", len(encounter_iris), batch_count, batch_size)
+    
+    # Process in batches to avoid query size limitations
+    for i in range(0, len(encounter_iris), batch_size):
+        batch_start_time = time.time()
+        batch = encounter_iris[i:i+batch_size]
+        batch_num = i // batch_size + 1
+        
+        # Convert batch to VALUES clause
+        values_clause = " ".join(f"<{iri}>" for iri in batch)
+        
+        sparql = f"""
+        PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+        PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+        
+        SELECT ?encounter WHERE {{
+            VALUES ?encounter {{ {values_clause} }}
+            ?encounter a phebee:Encounter .
+        }}
+        """
+        
+        # Use POST method to avoid URL length limitations
+        from .neptune import execute_query_post
+        result = execute_query_post(sparql)
+        
+        # Extract existing IRIs from results
+        for binding in result["results"]["bindings"]:
+            existing.add(binding["encounter"]["value"])
+        
+        batch_duration = time.time() - batch_start_time
+        logger.info("Batch %s/%s processed in %.2f seconds. Found %s existing encounters.", batch_num, batch_count, batch_duration, len(result['results']['bindings']))
+    
+    return existing
 
 
 def flatten_sparql_results(sparql_json, include_datatype=False, group_subjects=False):
@@ -1050,3 +1325,53 @@ def flatten_sparql_results(sparql_json, include_datatype=False, group_subjects=F
         return dict(grouped_results)
     else:
         return simplified_results
+def check_existing_clinical_notes(note_iris, batch_size=1000):
+    """
+    Check which clinical notes from a list already exist in the database.
+    Uses batching to handle large numbers of IRIs efficiently.
+    
+    Args:
+        note_iris (list): List of clinical note IRIs to check
+        batch_size (int): Maximum number of IRIs to check in a single query
+        
+    Returns:
+        set: Set of existing clinical note IRIs
+    """
+    if not note_iris:
+        return set()
+    
+    existing = set()
+    batch_count = (len(note_iris) + batch_size - 1) // batch_size  # Ceiling division
+    logger.info("Checking %s clinical notes in %s batches of up to %s each", len(note_iris), batch_count, batch_size)
+    
+    # Process in batches to avoid query size limitations
+    for i in range(0, len(note_iris), batch_size):
+        batch_start_time = time.time()
+        batch = note_iris[i:i+batch_size]
+        batch_num = i // batch_size + 1
+        
+        # Convert batch to VALUES clause
+        values_clause = " ".join(f"<{iri}>" for iri in batch)
+        
+        sparql = f"""
+        PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+        PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+        
+        SELECT ?note WHERE {{
+            VALUES ?note {{ {values_clause} }}
+            ?note a phebee:ClinicalNote .
+        }}
+        """
+        
+        # Use POST method to avoid URL length limitations
+        from .neptune import execute_query_post
+        result = execute_query_post(sparql)
+        
+        # Extract existing IRIs from results
+        for binding in result["results"]["bindings"]:
+            existing.add(binding["note"]["value"])
+        
+        batch_duration = time.time() - batch_start_time
+        logger.info("Batch %s/%s processed in %.2f seconds. Found %s existing clinical notes.", batch_num, batch_count, batch_duration, len(result['results']['bindings']))
+    
+    return existing

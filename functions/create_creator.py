@@ -30,20 +30,19 @@ def lambda_handler(event, context):
                 "body": json.dumps({"message": "Missing required field: version for automated creator"})
             }
 
-        create_creator(
+        # Create the creator and get the IRI
+        creator_iri = create_creator(
             creator_id=creator_id,
             creator_type=creator_type,
             name=name,
             version=version
         )
-
-        creator_id_safe = quote(creator_id, safe="")
         
         return {
             "statusCode": 200,
             "body": json.dumps({
                 "message": "Creator created",
-                "creator_iri": f"http://ods.nationwidechildrens.org/phebee/creator/{creator_id_safe}"
+                "creator_iri": creator_iri
             })
         }
 
