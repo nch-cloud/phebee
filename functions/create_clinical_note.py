@@ -31,7 +31,8 @@ def lambda_handler(event, context):
         }
 
     except Exception as e:
+        error_message = "Error creating clinical note: %s" % str(e)
         return {
             "statusCode": 500,
-            "body": json.dumps({"message": f"Error creating clinical note: {str(e)}"})
+            "body": json.dumps({"message": error_message})
         }

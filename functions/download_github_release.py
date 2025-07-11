@@ -34,13 +34,14 @@ def lambda_handler(event, context):
     # If test flag is set, skip cache check and process the existing version as new
     if is_test or not release_cache_exists(source_name, version):
         logger.info(
-            f"Retrieving {source_name} version {version} (Test mode: {is_test})"
+            "Retrieving %s version %s (Test mode: %s)",
+            source_name, version, is_test
         )
 
         if extract_zip:
             download_and_explode_zip(newest_release)
 
-            logger.info(f"Storing assets from zip: {asset_names}")
+            logger.info("Storing assets from zip: %s", asset_names)
 
             asset_metadatas = [
                 get_and_store_zip_asset(asset_name, version, source_name, bucket_name)
@@ -59,7 +60,8 @@ def lambda_handler(event, context):
         return {"downloaded": True, "version": version, "assets": asset_metadatas}
     else:
         logger.info(
-            f"Source {source_name} version {version} is already cached, not downloading."
+            "Source %s version %s is already cached, not downloading.",
+            source_name, version
         )
 
         return {"downloaded": False, "version": version}
@@ -74,7 +76,7 @@ def find_newest_release(user: str, repo: str):
 
 
 def release_cache_exists(source_name: str, version: str):
-    logger.info(f"Checking if source exists: {source_name} version {version}")
+    logger.info("Checking if source exists: %s version %s", source_name, version)
 
     # Our dynamo table doesn't have version as a key field, so we need to query for
     # all versions of the source and check that one with the correct version exists.
@@ -97,7 +99,7 @@ def release_cache_exists(source_name: str, version: str):
 
 
 def store_release_metadata(source_name: str, version: str, asset_metadata: list[dict]):
-    logger.info(f"Storing release metadata for {source_name} version {version}")
+    logger.info("Storing release metadata for %s version %s", source_name, version)
 
     creation_timestamp = get_current_timestamp()
 
@@ -130,20 +132,20 @@ def store_asset(
     asset_path = f"s3://{bucket_name}/{asset_key}"
     download_url = asset["browser_download_url"]
 
-    logger.info(f"Storing asset: {asset_name}")
+    logger.info("Storing asset: %s", asset_name)
 
-    logger.info(f"Downloading asset from {download_url}...")
+    logger.info("Downloading asset from %s...", download_url)
 
     tmp_file = f"/tmp/{asset_name}"
     r = requests.get(download_url)
     with open(tmp_file, "wb") as output:
         output.write(r.content)
 
-    logger.info(f"Storing asset to {asset_path}...")
+    logger.info("Storing asset to %s...", asset_path)
 
     s3_client.upload_file(tmp_file, bucket_name, asset_key)
 
-    logger.info(f"Successfully stored {asset_name}")
+    logger.info("Successfully stored %s", asset_name)
 
     return {
         "asset_name": asset_name,
@@ -155,17 +157,17 @@ def store_zip_asset(asset_name: str, version: str, source_name: str, bucket_name
     asset_key = f"sources/{source_name}/{version}/assets/{asset_name}"
     asset_path = f"s3://{bucket_name}/{asset_key}"
 
-    logger.info(f"Storing zip asset: {asset_name}")
+    logger.info("Storing zip asset: %s", asset_name)
 
     tmp_file = f"/tmp/zip_contents/{asset_name}"
 
-    logger.info(f"Using extracted asset from {tmp_file}...")
+    logger.info("Using extracted asset from %s...", tmp_file)
 
-    logger.info(f"Storing asset to {asset_path}...")
+    logger.info("Storing asset to %s...", asset_path)
 
     s3_client.upload_file(tmp_file, bucket_name, asset_key)
 
-    logger.info(f"Successfully stored {asset_name}")
+    logger.info("Successfully stored %s", asset_name)
 
     return {
         "asset_name": asset_name,
@@ -201,7 +203,7 @@ def serialize_asset_metadata(asset_metadata: list[dict]):
 def download_and_explode_zip(release: dict):
     zipball_url = release["zipball_url"]
 
-    logger.info(f"Downloading zipball from {zipball_url}...")
+    logger.info("Downloading zipball from %s...", zipball_url)
 
     zip_file_path = "/tmp/zipball.zip"
     r = requests.get(zipball_url)

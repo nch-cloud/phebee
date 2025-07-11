@@ -174,7 +174,8 @@ def generate_rdf(entries: List[TermLinkInput]) -> str:
             termlink_to_annotation_map[termlink_iri]['evidence'].append(evidence)
     
     precompute_duration = time.time() - start_precompute_time
-    logger.info(f"Pre-computation completed in {precompute_duration:.2f} seconds. Generated {len(potential_termlinks)} potential term links, {len(potential_encounters)} potential encounters, and {len(potential_notes)} potential clinical notes.")
+    logger.info("Pre-computation completed in %.2f seconds. Generated %s potential term links, %s potential encounters, and %s potential clinical notes.", 
+                precompute_duration, len(potential_termlinks), len(potential_encounters), len(potential_notes))
     
     # Log qualifier statistics
     qualifier_counts = {}
@@ -183,16 +184,18 @@ def generate_rdf(entries: List[TermLinkInput]) -> str:
             qualifier_counts[qualifier] = qualifier_counts.get(qualifier, 0) + 1
     
     if qualifier_counts:
-        logger.info(f"Qualifier distribution: {qualifier_counts}")
+        logger.info("Qualifier distribution: %s", qualifier_counts)
     
     # Check which term links already exist
     start_check_time = time.time()
     try:
         existing_termlinks = check_existing_term_links(potential_termlinks)
         check_duration = time.time() - start_check_time
-        logger.info(f"Term link existence check completed in {check_duration:.2f} seconds. Found {len(existing_termlinks)} existing term links out of {len(potential_termlinks)} potential links.")
+        logger.info("Term link existence check completed in %.2f seconds. Found %s existing term links out of %s potential links.", 
+                   check_duration, len(existing_termlinks), len(potential_termlinks))
     except Exception as e:
-        logger.error(f"Critical error checking existing term links after {time.time() - start_check_time:.2f} seconds: {str(e)}")
+        logger.error("Critical error checking existing term links after %.2f seconds: %s", 
+                  time.time() - start_check_time, str(e))
         # Re-raise the exception to fail the process
         raise Exception(f"Failed to check existing term links: {str(e)}") from e
     
@@ -201,9 +204,11 @@ def generate_rdf(entries: List[TermLinkInput]) -> str:
     try:
         existing_encounters = check_existing_encounters(list(potential_encounters))
         encounter_check_duration = time.time() - start_encounter_check_time
-        logger.info(f"Encounter existence check completed in {encounter_check_duration:.2f} seconds. Found {len(existing_encounters)} existing encounters out of {len(potential_encounters)} potential encounters.")
+        logger.info("Encounter existence check completed in %.2f seconds. Found %s existing encounters out of %s potential encounters.", 
+                   encounter_check_duration, len(existing_encounters), len(potential_encounters))
     except Exception as e:
-        logger.error(f"Critical error checking existing encounters after {time.time() - start_encounter_check_time:.2f} seconds: {str(e)}")
+        logger.error("Critical error checking existing encounters after %.2f seconds: %s", 
+                  time.time() - start_encounter_check_time, str(e))
         # Re-raise the exception to fail the process
         raise Exception(f"Failed to check existing encounters: {str(e)}") from e
     
@@ -212,9 +217,11 @@ def generate_rdf(entries: List[TermLinkInput]) -> str:
     try:
         existing_notes = check_existing_clinical_notes(list(potential_notes))
         note_check_duration = time.time() - start_note_check_time
-        logger.info(f"Clinical note existence check completed in {note_check_duration:.2f} seconds. Found {len(existing_notes)} existing clinical notes out of {len(potential_notes)} potential notes.")
+        logger.info("Clinical note existence check completed in %.2f seconds. Found %s existing clinical notes out of %s potential notes.", 
+                   note_check_duration, len(existing_notes), len(potential_notes))
     except Exception as e:
-        logger.error(f"Critical error checking existing clinical notes after {time.time() - start_note_check_time:.2f} seconds: {str(e)}")
+        logger.error("Critical error checking existing clinical notes after %.2f seconds: %s", 
+                  time.time() - start_note_check_time, str(e))
         # Re-raise the exception to fail the process
         raise Exception(f"Failed to check existing clinical notes: {str(e)}") from e
 
@@ -243,7 +250,7 @@ def generate_rdf(entries: List[TermLinkInput]) -> str:
         
         # Skip if this term link already exists
         if termlink_iri in existing_termlinks:
-            logger.debug(f"Skipping existing TermLink: {termlink_iri}")
+            logger.debug("Skipping existing TermLink: %s", termlink_iri)
             skipped_links_count += 1
             continue
         
@@ -280,13 +287,13 @@ def generate_rdf(entries: List[TermLinkInput]) -> str:
                     g.add((encounter_iri, PHEBEE_NS.hasSubject, subject_iri))
                     g.add((encounter_iri, DCTERMS.created, RdfLiteral(get_current_timestamp(), datatype=XSD.dateTime)))
                     new_encounters_count += 1
-                    logger.debug(f"Created new encounter: {encounter_iri_str}")
+                    logger.debug("Created new encounter: %s", encounter_iri_str)
                     
                     # Add to our tracking set
                     encountered_iris.add(encounter_iri_str)
                 else:
                     skipped_encounters_count += 1
-                    logger.debug(f"Skipping existing encounter: {encounter_iri_str}")
+                    logger.debug("Skipping existing encounter: %s", encounter_iri_str)
                 
                 # Only create the clinical note if it doesn't already exist in the database
                 # AND we haven't already created it in this batch
@@ -304,13 +311,13 @@ def generate_rdf(entries: List[TermLinkInput]) -> str:
                         g.add((note_iri, PHEBEE_NS.authorSpecialty, RdfLiteral(evidence.author_specialty)))
                     
                     new_notes_count += 1
-                    logger.debug(f"Created new clinical note: {note_iri_str}")
+                    logger.debug("Created new clinical note: %s", note_iri_str)
                     
                     # Add to our tracking set
                     note_iris.add(note_iri_str)
                 else:
                     skipped_notes_count += 1
-                    logger.debug(f"Skipping existing clinical note: {note_iri_str}")
+                    logger.debug("Skipping existing clinical note: %s", note_iri_str)
                 
                 # Always connect the note to the term link, even if the note already exists
                 # But only if the note is not already the source node (to avoid duplicate hasTermLink properties)
@@ -349,12 +356,13 @@ def generate_rdf(entries: List[TermLinkInput]) -> str:
 
     rdf_duration = time.time() - start_rdf_time
     triple_count = len(g)
-    logger.info(f"RDF generation completed in {rdf_duration:.2f} seconds. Generated {triple_count} triples for {new_links_count} new term links, {new_encounters_count} new encounters, and {new_notes_count} new clinical notes. Skipped {skipped_links_count} existing links, {skipped_encounters_count} existing encounters, and {skipped_notes_count} existing clinical notes.")
+    logger.info("RDF generation completed in %.2f seconds. Generated %s triples for %s new term links, %s new encounters, and %s new clinical notes. Skipped %s existing links, %s existing encounters, and %s existing clinical notes.", 
+               rdf_duration, triple_count, new_links_count, new_encounters_count, new_notes_count, skipped_links_count, skipped_encounters_count, skipped_notes_count)
 
     graph_ttl = g.serialize(format="turtle", prefixes={"phebee": PHEBEE_NS, "obo": OBO, "dcterms": DCTERMS})
     
     total_duration = time.time() - start_total_time
-    logger.info(f"Total RDF generation process completed in {total_duration:.2f} seconds")
+    logger.info("Total RDF generation process completed in %.2f seconds", total_duration)
 
     return graph_ttl
 
@@ -370,13 +378,13 @@ def create_or_find_creator(creator_id, creator_version, creator_name, creator_ty
         creator_iri = URIRef(f"{PHEBEE}/creator/{creator_id_safe}")
 
     # Check if creator already exists.  If not, we need to create it.
-    logger.info(f"Checking if evidence creator exists: {creator_iri}")
+    logger.info("Checking if evidence creator exists: %s", creator_iri)
     if creator_iri not in creator_exists_cache and not node_exists(creator_iri):
-        logger.info(f"Creating {creator_type} creator: {creator_id}")
+        logger.info("Creating %s creator: %s", creator_type, creator_id)
         created_iri = create_creator(creator_id, creator_type, creator_name, creator_version)
         # Verify the IRIs match
         if str(creator_iri) != created_iri:
-            logger.warning(f"Created creator IRI {created_iri} doesn't match expected IRI {creator_iri}")
+            logger.warning("Created creator IRI %s doesn't match expected IRI %s", created_iri, creator_iri)
     else:
         logger.info("Creator already exists.")
     creator_exists_cache.append(creator_iri)
@@ -396,7 +404,7 @@ def lambda_handler(event, context):
         if not s3_key:
             return {"statusCode": 400, "body": json.dumps({"error": "Missing 's3_key'"})}
 
-        logger.info(f"Reading JSON from: s3://{BUCKET_NAME}/{s3_key}")
+        logger.info("Reading JSON from: s3://%s/%s", BUCKET_NAME, s3_key)
         obj = s3.get_object(Bucket=BUCKET_NAME, Key=s3_key)
         raw_data = obj["Body"].read().decode("utf-8")
 
@@ -411,7 +419,7 @@ def lambda_handler(event, context):
         turtle = generate_rdf(validated)
         ttl_key = s3_key.replace("input/", "rdf/").replace(".json", ".ttl")
         s3.put_object(Bucket=BUCKET_NAME, Key=ttl_key, Body=turtle.encode("utf-8"))
-        logger.info(f"Uploaded RDF to s3://{BUCKET_NAME}/{ttl_key}")
+        logger.info("Uploaded RDF to s3://%s/%s", BUCKET_NAME, ttl_key)
 
         s3_uri = f"s3://{BUCKET_NAME}/{ttl_key}"
 

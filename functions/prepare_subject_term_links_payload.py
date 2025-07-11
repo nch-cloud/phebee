@@ -7,7 +7,7 @@ metrics = Metrics()
 
 
 def lambda_handler(event, context):
-    logger.info(f"Received event: {json.dumps(event)}")
+    logger.info("Received event: %s", json.dumps(event))
 
     term_links_payload = event.get("term_links_payload", [])
     source_node_iri = event.get("source_node_iri")

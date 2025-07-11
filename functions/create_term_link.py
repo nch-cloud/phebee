@@ -26,9 +26,9 @@ def lambda_handler(event, context):
                 })
             }
 
-        logger.info(f"Creating link from source {source_node_iri} to term: {term_iri}")
+        logger.info("Creating link from source %s to term: %s", source_node_iri, term_iri)
         if qualifiers:
-            logger.info(f"With qualifiers: {qualifiers}")
+            logger.info("With qualifiers: %s", qualifiers)
 
         result = create_term_link(
             source_node_iri=source_node_iri,
@@ -55,5 +55,5 @@ def lambda_handler(event, context):
     except Exception as e:
         return {
             "statusCode": 500,
-            "body": json.dumps({"message": f"Error creating TermLink: {str(e)}"})
+            "body": json.dumps({"message": "Error creating TermLink: %s" % str(e)})
         }

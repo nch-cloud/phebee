@@ -14,7 +14,7 @@ s3_client = get_client("s3")
 
 
 def lambda_handler(event, context):
-    logger.info(f"Event: {event}")
+    logger.info("Event: %s", event)
 
     body = extract_body(event)
 

@@ -270,7 +270,7 @@ def get_subjects(
         """
 
     result = execute_query(sparql)
-    logger.info(f"Subjects matching term: {term_iri}")
+    logger.info("Subjects matching term: %s", term_iri)
     logger.info(result)
 
     subjects = []
@@ -1031,7 +1031,7 @@ def create_term_link(
     link_exists = node_exists(termlink_iri)
     
     if link_exists:
-        logger.info(f"Term link already exists: {termlink_iri}")
+        logger.info("Term link already exists: %s", termlink_iri)
         
         # If evidence_iris is provided, attach them to the existing term link
         if evidence_iris:
@@ -1116,7 +1116,7 @@ def attach_evidence_to_term_link(termlink_iri: str, evidence_iri: str) -> None:
     """
     # Check if the evidence is already attached
     if triple_exists(termlink_iri, "http://ods.nationwidechildrens.org/phebee#hasEvidence", evidence_iri):
-        logger.debug(f"Evidence {evidence_iri} already attached to {termlink_iri}")
+        logger.debug("Evidence %s already attached to %s", evidence_iri, termlink_iri)
         return
         
     # Attach the evidence
@@ -1130,7 +1130,7 @@ def attach_evidence_to_term_link(termlink_iri: str, evidence_iri: str) -> None:
     }}
     """
     execute_update(sparql)
-    logger.info(f"Attached evidence {evidence_iri} to {termlink_iri}")
+    logger.info("Attached evidence %s to %s", evidence_iri, termlink_iri)
 
 
 def flatten_response(fixed: dict, properties: dict) -> dict:
@@ -1192,7 +1192,7 @@ def check_existing_term_links(termlink_iris, batch_size=1000):
     
     existing = set()
     batch_count = (len(termlink_iris) + batch_size - 1) // batch_size  # Ceiling division
-    logger.info(f"Checking {len(termlink_iris)} term links in {batch_count} batches of up to {batch_size} each")
+    logger.info("Checking %s term links in %s batches of up to %s each", len(termlink_iris), batch_count, batch_size)
     
     # Process in batches to avoid query size limitations
     for i in range(0, len(termlink_iris), batch_size):
@@ -1222,7 +1222,7 @@ def check_existing_term_links(termlink_iris, batch_size=1000):
             existing.add(binding["termlink"]["value"])
         
         batch_duration = time.time() - batch_start_time
-        logger.info(f"Batch {batch_num}/{batch_count} processed in {batch_duration:.2f} seconds. Found {len(result['results']['bindings'])} existing term links.")
+        logger.info("Batch %s/%s processed in %.2f seconds. Found %s existing term links.", batch_num, batch_count, batch_duration, len(result['results']['bindings']))
     
     return existing
 
@@ -1244,7 +1244,7 @@ def check_existing_encounters(encounter_iris, batch_size=1000):
     
     existing = set()
     batch_count = (len(encounter_iris) + batch_size - 1) // batch_size  # Ceiling division
-    logger.info(f"Checking {len(encounter_iris)} encounters in {batch_count} batches of up to {batch_size} each")
+    logger.info("Checking %s encounters in %s batches of up to %s each", len(encounter_iris), batch_count, batch_size)
     
     # Process in batches to avoid query size limitations
     for i in range(0, len(encounter_iris), batch_size):
@@ -1274,7 +1274,7 @@ def check_existing_encounters(encounter_iris, batch_size=1000):
             existing.add(binding["encounter"]["value"])
         
         batch_duration = time.time() - batch_start_time
-        logger.info(f"Batch {batch_num}/{batch_count} processed in {batch_duration:.2f} seconds. Found {len(result['results']['bindings'])} existing encounters.")
+        logger.info("Batch %s/%s processed in %.2f seconds. Found %s existing encounters.", batch_num, batch_count, batch_duration, len(result['results']['bindings']))
     
     return existing
 
@@ -1342,7 +1342,7 @@ def check_existing_clinical_notes(note_iris, batch_size=1000):
     
     existing = set()
     batch_count = (len(note_iris) + batch_size - 1) // batch_size  # Ceiling division
-    logger.info(f"Checking {len(note_iris)} clinical notes in {batch_count} batches of up to {batch_size} each")
+    logger.info("Checking %s clinical notes in %s batches of up to %s each", len(note_iris), batch_count, batch_size)
     
     # Process in batches to avoid query size limitations
     for i in range(0, len(note_iris), batch_size):
@@ -1372,6 +1372,6 @@ def check_existing_clinical_notes(note_iris, batch_size=1000):
             existing.add(binding["note"]["value"])
         
         batch_duration = time.time() - batch_start_time
-        logger.info(f"Batch {batch_num}/{batch_count} processed in {batch_duration:.2f} seconds. Found {len(result['results']['bindings'])} existing clinical notes.")
+        logger.info("Batch %s/%s processed in %.2f seconds. Found %s existing clinical notes.", batch_num, batch_count, batch_duration, len(result['results']['bindings']))
     
     return existing
