@@ -7,7 +7,7 @@
 @prefix obo: <http://purl.obolibrary.org/obo/> .
 
 <http://ods.nationwidechildrens.org/phebee> a owl:Ontology ;
-    owl:versionIRI <http://ods.nationwidechildrens.org/phebee/0.9> ;
+    owl:versionIRI <http://ods.nationwidechildrens.org/phebee/0.9.1> ;
     owl:imports <http://purl.org/dc/terms/> .
 
 # Documentation of imported properties
