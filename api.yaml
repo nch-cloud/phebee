@@ -6,7 +6,7 @@ info:
 
 paths:
   # --- Project-related endpoints ---
-  /project:
+  /project/create:
     post:
       summary: Create a new project node
       description: |
@@ -71,7 +71,7 @@ paths:
         timeoutInMillis: 30000
 
   # --- Subject-related endpoints ---
-  /subject:
+  /subject/create:
     post:
       summary: Create or link a subject
       description: |
@@ -87,7 +87,7 @@ paths:
               type: object
               required:
                 - project_id
-                - project_subject_id
+                - project_subject_iri
               properties:
                 project_id:
                   type: string
@@ -95,7 +95,7 @@ paths:
                   type: string
                 known_project_id:
                   type: string
-                known_project_subject_id:
+                known_project_subject_iri:
                   type: string
                 known_subject_iri:
                   type: string
@@ -111,7 +111,7 @@ paths:
         connectionType: "INTERNET"
         timeoutInMillis: 30000
 
-  /subject/details:
+  /subject:
     post:
       summary: Retrieve subject details and associated terms
       description: |
@@ -125,12 +125,9 @@ paths:
             schema:
               type: object
               required:
-                - project_id
-                - project_subject_id
+                - project_subject_iri
               properties:
-                project_id:
-                  type: string
-                project_subject_id:
+                project_subject_iri:
                   type: string
       security:
         - sigv4: []
@@ -158,12 +155,9 @@ paths:
             schema:
               type: object
               required:
-                - project_id
-                - project_subject_id
+                - project_subject_iri
               properties:
-                project_id:
-                  type: string
-                project_subject_id:
+                project_subject_iri:
                   type: string
       security:
         - sigv4: []
@@ -178,61 +172,6 @@ paths:
         timeoutInMillis: 30000
 
   /subjects/query:
-    post:
-      summary: Query subject data with optional filters and export
-      description: |
-        Returns structured subject data for a given project. Supports filters like subject IDs, terms,
-        and flags for phenotypes, evidence, and descendants. Optionally exports results to S3 if
-        `output_s3_path` is provided.
-      operationId: querySubjects
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required:
-                - project_id
-              properties:
-                project_id:
-                  type: string
-                project_subject_ids:
-                  type: array
-                  items:
-                    type: string
-                term_iri:
-                  type: string
-                term_source:
-                  type: string
-                term_source_version:
-                  type: string
-                return_excluded_terms:
-                  type: boolean
-                include_descendants:
-                  type: boolean
-                include_phenotypes:
-                  type: boolean
-                include_evidence:
-                  type: boolean
-                optional_evidence:
-                  type: object
-                return_raw_json:
-                  type: boolean
-                output_s3_path:
-                  type: string
-      security:
-        - sigv4: []
-      x-amazon-apigateway-integration:
-        credentials:
-          Fn::GetAtt: [PheBeeAPIRole, Arn]
-        payloadFormatVersion: "2.0"
-        type: "aws_proxy"
-        uri:
-          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-GetSubjectsFunction/invocations
-        connectionType: "INTERNET"
-        timeoutInMillis: 30000
-
-  /subjects/phenotypes:
     post:
       summary: List subjects and their phenotypes for a project
       description: |
@@ -271,52 +210,7 @@ paths:
         timeoutInMillis: 30000
 
   # --- Term & link-related endpoints ---
-  /subject-term-link:
-    post:
-      summary: Link a subject to a term with evidence
-      description: |
-        Associates a subject with a term in the PheBee graph. If the link does not yet exist, it is created.
-        Evidence metadata is required for each link and is stored alongside the association.
-      operationId: createSubjectTermLink
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                evidence_list:
-                  type: array
-                  items:
-                    type: object
-                    required:
-                      - project_id
-                      - project_subject_id
-                      - term_iri
-                      - evidence
-                    properties:
-                      project_id:
-                        type: string
-                      project_subject_id:
-                        type: string
-                      term_iri:
-                        type: string
-                      evidence:
-                        type: object
-                evidence_s3_path:
-                  type: string
-      security:
-        - sigv4: []
-      x-amazon-apigateway-integration:
-        credentials:
-          Fn::GetAtt: [PheBeeAPIRole, Arn]
-        payloadFormatVersion: "2.0"
-        type: "aws_proxy"
-        uri:
-          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-CreateSubjectTermLinkFunction/invocations
-        connectionType: "INTERNET"
-        timeoutInMillis: 30000
-
+  
   /source/{source_name}:
     get:
       summary: Get term source metadata
@@ -340,6 +234,600 @@ paths:
         type: "aws_proxy"
         uri:
           Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-GetSourceInfoFunction/invocations
+        connectionType: "INTERNET"
+        timeoutInMillis: 30000
+
+  /encounter/create:
+    post:
+      summary: Create an encounter node
+      description: |
+        Creates an Encounter node for the given subject IRI and encounter ID.
+        The resulting node IRI is returned in the response.
+      operationId: createEncounter
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - subject_iri
+                - encounter_id
+              properties:
+                subject_iri:
+                  type: string
+                encounter_id:
+                  type: string
+      responses:
+        "200":
+          description: Encounter created
+        "400":
+          description: Missing required fields
+        "500":
+          description: Internal server error
+      security:
+        - sigv4: []
+      x-amazon-apigateway-integration:
+        credentials:
+          Fn::GetAtt: [PheBeeAPIRole, Arn]
+        payloadFormatVersion: "2.0"
+        type: "aws_proxy"
+        uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-CreateEncounterFunction/invocations
+        connectionType: "INTERNET"
+        timeoutInMillis: 30000
+
+  /encounter:
+    post:
+      summary: Retrieve encounter node details
+      description: |
+        Fetches properties of an encounter based on subject IRI and encounter ID.
+        Returns the encounter IRI and its associated unprefixed properties.
+      operationId: getEncounter
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - subject_iri
+                - encounter_id
+              properties:
+                subject_iri:
+                  type: string
+                encounter_id:
+                  type: string
+      responses:
+        "200":
+          description: Encounter found
+        "400":
+          description: Missing required fields
+        "404":
+          description: Encounter not found
+        "500":
+          description: Internal server error
+      security:
+        - sigv4: []
+      x-amazon-apigateway-integration:
+        credentials:
+          Fn::GetAtt: [PheBeeAPIRole, Arn]
+        payloadFormatVersion: "2.0"
+        type: "aws_proxy"
+        uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-GetEncounterFunction/invocations
+        connectionType: "INTERNET"
+        timeoutInMillis: 30000
+
+  /encounter/remove:
+    post:
+      summary: Remove an encounter node
+      description: |
+        Deletes an Encounter node identified by subject IRI and encounter ID.
+      operationId: removeEncounter
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - subject_iri
+                - encounter_id
+              properties:
+                subject_iri:
+                  type: string
+                encounter_id:
+                  type: string
+      responses:
+        "200":
+          description: Encounter deleted
+        "400":
+          description: Missing required fields
+        "500":
+          description: Internal server error
+      security:
+        - sigv4: []
+      x-amazon-apigateway-integration:
+        credentials:
+          Fn::GetAtt: [PheBeeAPIRole, Arn]
+        payloadFormatVersion: "2.0"
+        type: "aws_proxy"
+        uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-RemoveEncounterFunction/invocations
+        connectionType: "INTERNET"
+        timeoutInMillis: 30000
+
+  /clinical-note/create:
+    post:
+      summary: Create a ClinicalNote node
+      description: |
+        Creates a ClinicalNote node linked to a specific Encounter. The note ID must be unique within the encounter.
+      operationId: createClinicalNote
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - encounter_iri
+                - clinical_note_id
+              properties:
+                encounter_iri:
+                  type: string
+                clinical_note_id:
+                  type: string
+                note_timestamp:
+                  type: string
+                  format: date-time
+      responses:
+        "200":
+          description: ClinicalNote created
+        "400":
+          description: Missing required fields
+        "500":
+          description: Internal server error
+      security:
+        - sigv4: []
+      x-amazon-apigateway-integration:
+        credentials:
+          Fn::GetAtt: [PheBeeAPIRole, Arn]
+        payloadFormatVersion: "2.0"
+        type: "aws_proxy"
+        uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-CreateClinicalNoteFunction/invocations
+        connectionType: "INTERNET"
+        timeoutInMillis: 30000
+
+  /clinical-note:
+    post:
+      summary: Get ClinicalNote details
+      description: |
+        Retrieves all properties of a ClinicalNote node based on encounter IRI and clinical note ID.
+      operationId: getClinicalNote
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - encounter_iri
+                - clinical_note_id
+              properties:
+                encounter_iri:
+                  type: string
+                clinical_note_id:
+                  type: string
+      responses:
+        "200":
+          description: ClinicalNote found or not found
+        "400":
+          description: Missing required fields
+        "500":
+          description: Internal server error
+      security:
+        - sigv4: []
+      x-amazon-apigateway-integration:
+        credentials:
+          Fn::GetAtt: [PheBeeAPIRole, Arn]
+        payloadFormatVersion: "2.0"
+        type: "aws_proxy"
+        uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-GetClinicalNoteFunction/invocations
+        connectionType: "INTERNET"
+        timeoutInMillis: 30000
+
+  /clinical-note/remove:
+    post:
+      summary: Delete a ClinicalNote node
+      description: |
+        Deletes a ClinicalNote node from the graph by its encounter and note ID.
+      operationId: removeClinicalNote
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - encounter_iri
+                - clinical_note_id
+              properties:
+                encounter_iri:
+                  type: string
+                clinical_note_id:
+                  type: string
+      responses:
+        "200":
+          description: ClinicalNote deleted
+        "400":
+          description: Missing required fields
+        "500":
+          description: Internal server error
+      security:
+        - sigv4: []
+      x-amazon-apigateway-integration:
+        credentials:
+          Fn::GetAtt: [PheBeeAPIRole, Arn]
+        payloadFormatVersion: "2.0"
+        type: "aws_proxy"
+        uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-RemoveClinicalNoteFunction/invocations
+        connectionType: "INTERNET"
+        timeoutInMillis: 30000
+
+  /creator/create:
+    post:
+      summary: Create a Creator node
+      description: |
+        Creates a new Creator node in the PheBee graph. Supports both HumanCreator and AutomatedCreator types.
+      operationId: createCreator
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - creator_id
+                - creator_type
+              properties:
+                creator_id:
+                  type: string
+                creator_type:
+                  type: string
+                  enum: [human, automated]
+                name:
+                  type: string
+                version:
+                  type: string
+      responses:
+        "200":
+          description: Creator created
+        "400":
+          description: Invalid or missing fields
+        "500":
+          description: Internal server error
+      security:
+        - sigv4: []
+      x-amazon-apigateway-integration:
+        credentials:
+          Fn::GetAtt: [PheBeeAPIRole, Arn]
+        payloadFormatVersion: "2.0"
+        type: "aws_proxy"
+        uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-CreateCreatorFunction/invocations
+        connectionType: "INTERNET"
+        timeoutInMillis: 30000
+
+  /creator:
+    post:
+      summary: Get Creator node details
+      description: |
+        Retrieves all properties of a Creator node by creator ID.
+      operationId: getCreator
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - creator_id
+              properties:
+                creator_id:
+                  type: string
+      responses:
+        "200":
+          description: Creator found or not found
+        "400":
+          description: Missing required field
+        "500":
+          description: Internal server error
+      security:
+        - sigv4: []
+      x-amazon-apigateway-integration:
+        credentials:
+          Fn::GetAtt: [PheBeeAPIRole, Arn]
+        payloadFormatVersion: "2.0"
+        type: "aws_proxy"
+        uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-GetCreatorFunction/invocations
+        connectionType: "INTERNET"
+        timeoutInMillis: 30000
+
+  /creator/remove:
+    post:
+      summary: Delete a Creator node
+      description: |
+        Deletes a Creator node by creator ID.
+      operationId: removeCreator
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - creator_id
+              properties:
+                creator_id:
+                  type: string
+      responses:
+        "200":
+          description: Creator deleted
+        "400":
+          description: Missing required field
+        "500":
+          description: Internal server error
+      security:
+        - sigv4: []
+      x-amazon-apigateway-integration:
+        credentials:
+          Fn::GetAtt: [PheBeeAPIRole, Arn]
+        payloadFormatVersion: "2.0"
+        type: "aws_proxy"
+        uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-RemoveCreatorFunction/invocations
+        connectionType: "INTERNET"
+        timeoutInMillis: 30000
+
+  /text-annotation/create:
+    post:
+      summary: Create a TextAnnotation node
+      description: |
+        Creates a TextAnnotation node linked to a TextSource. A unique IRI is generated automatically.
+      operationId: createTextAnnotation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - text_source_iri
+              properties:
+                text_source_iri:
+                  type: string
+                span_start:
+                  type: integer
+                span_end:
+                  type: integer
+                creator_iri:
+                  type: string
+                term_iri:
+                  type: string
+                metadata:
+                  type: string
+      responses:
+        "200":
+          description: Annotation created
+        "400":
+          description: Missing required fields
+        "500":
+          description: Internal server error
+      security:
+        - sigv4: []
+      x-amazon-apigateway-integration:
+        credentials:
+          Fn::GetAtt: [PheBeeAPIRole, Arn]
+        payloadFormatVersion: "2.0"
+        type: "aws_proxy"
+        uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-CreateTextAnnotationFunction/invocations
+        connectionType: "INTERNET"
+        timeoutInMillis: 30000
+
+  /text-annotation:
+    post:
+      summary: Get TextAnnotation details
+      description: |
+        Retrieves all properties of a TextAnnotation node by IRI.
+      operationId: getTextAnnotation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - annotation_iri
+              properties:
+                annotation_iri:
+                  type: string
+      responses:
+        "200":
+          description: TextAnnotation found or not found
+        "400":
+          description: Missing required field
+        "500":
+          description: Internal server error
+      security:
+        - sigv4: []
+      x-amazon-apigateway-integration:
+        credentials:
+          Fn::GetAtt: [PheBeeAPIRole, Arn]
+        payloadFormatVersion: "2.0"
+        type: "aws_proxy"
+        uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-GetTextAnnotationFunction/invocations
+        connectionType: "INTERNET"
+        timeoutInMillis: 30000
+
+  /text-annotation/remove:
+    post:
+      summary: Delete a TextAnnotation node
+      description: |
+        Deletes a TextAnnotation node by IRI.
+      operationId: removeTextAnnotation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - annotation_iri
+              properties:
+                annotation_iri:
+                  type: string
+      responses:
+        "200":
+          description: TextAnnotation deleted
+        "400":
+          description: Missing required field
+        "500":
+          description: Internal server error
+      security:
+        - sigv4: []
+      x-amazon-apigateway-integration:
+        credentials:
+          Fn::GetAtt: [PheBeeAPIRole, Arn]
+        payloadFormatVersion: "2.0"
+        type: "aws_proxy"
+        uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-RemoveTextAnnotationFunction/invocations
+        connectionType: "INTERNET"
+        timeoutInMillis: 30000
+
+  /term-link/create:
+    post:
+      summary: Create a TermLink node
+      description: |
+        Creates a TermLink node that connects a Subject, Encounter, or ClinicalNote to a term with supporting evidence.
+      operationId: createTermLink
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - source_node_iri
+                - term_iri
+                - creator_iri
+                - evidence_iris
+              properties:
+                source_node_iri:
+                  type: string
+                term_iri:
+                  type: string
+                creator_iri:
+                  type: string
+                evidence_iris:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        "200":
+          description: TermLink created
+        "400":
+          description: Missing required fields or invalid structure
+        "500":
+          description: Internal server error
+      security:
+        - sigv4: []
+      x-amazon-apigateway-integration:
+        credentials:
+          Fn::GetAtt: [PheBeeAPIRole, Arn]
+        payloadFormatVersion: "2.0"
+        type: "aws_proxy"
+        uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-CreateTermLinkFunction/invocations
+        connectionType: "INTERNET"
+        timeoutInMillis: 30000
+
+  /term-link:
+    post:
+      summary: Get TermLink details
+      description: |
+        Retrieves a TermLink node and its associated properties.
+      operationId: getTermLink
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - termlink_iri
+              properties:
+                termlink_iri:
+                  type: string
+      responses:
+        "200":
+          description: TermLink found or not found
+        "400":
+          description: Missing required field
+        "500":
+          description: Internal server error
+      security:
+        - sigv4: []
+      x-amazon-apigateway-integration:
+        credentials:
+          Fn::GetAtt: [PheBeeAPIRole, Arn]
+        payloadFormatVersion: "2.0"
+        type: "aws_proxy"
+        uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-GetTermLinkFunction/invocations
+        connectionType: "INTERNET"
+        timeoutInMillis: 30000
+
+  /term-link/remove:
+    post:
+      summary: Delete a TermLink node
+      description: |
+        Deletes a TermLink node by IRI.
+      operationId: removeTermLink
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - termlink_iri
+              properties:
+                termlink_iri:
+                  type: string
+      responses:
+        "200":
+          description: TermLink deleted
+        "400":
+          description: Missing required field
+        "500":
+          description: Internal server error
+      security:
+        - sigv4: []
+      x-amazon-apigateway-integration:
+        credentials:
+          Fn::GetAtt: [PheBeeAPIRole, Arn]
+        payloadFormatVersion: "2.0"
+        type: "aws_proxy"
+        uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-RemoveTermLinkFunction/invocations
         connectionType: "INTERNET"
         timeoutInMillis: 30000
 

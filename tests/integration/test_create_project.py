@@ -74,6 +74,4 @@ def test_create_project(cloudformation_stack, physical_resources, prepare_projec
     body = json.loads(response["body"])
 
     assert ~body["project_created"]
-    assert (
-        body["message"] == f"Project already exists with id {TEST_PROJECT_ID}"
-    )
+    assert "already exists" in body["message"]

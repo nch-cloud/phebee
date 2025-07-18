@@ -2,89 +2,90 @@
     "Comment": "Download the newest version of the Evidence Code ontology and import it to Neptune",
     "StartAt": "Download ECO",
     "States": {
-      "Download ECO": {
-        "Type": "Task",
-        "Resource": "arn:aws:states:::lambda:invoke",
-        "Parameters": {
-          "FunctionName": "${DownloadGithubReleaseFunctionArn}",
-          "Payload": {
-            "source_name": "eco",
-            "user": "evidenceontology",
-            "repo": "evidenceontology",
-            "extract_zip": "true",
-            "asset_names": [
-              "eco.owl"
-            ]
-          }
+        "Download ECO": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+                "FunctionName": "${DownloadGithubReleaseFunctionArn}",
+                "Payload": {
+                    "source_name": "eco",
+                    "user": "evidenceontology",
+                    "repo": "evidenceontology",
+                    "test.$": "$.test",
+                    "extract_zip": "true",
+                    "asset_names": [
+                        "eco.owl"
+                    ]
+                }
+            },
+            "ResultPath": "$.eco",
+            "Next": "Was New ECO Version Downloaded?"
         },
-        "ResultPath": "$.eco",
-        "Next": "Was New ECO Version Downloaded?"
-      },
-      "Was New ECO Version Downloaded?": {
-        "Type": "Choice",
-        "Choices": [          
-          {
-            "Variable": "$.eco.Payload.downloaded",
-            "BooleanEquals": true,
-            "Next": "Get ECO OWL Info"
-          }
-        ],
-        "Default": "Success"
-      },
-      "Get ECO OWL Info": {
-        "Type": "Pass",
-        "Parameters": {
-          "filtered_assets.$": "$.eco.Payload.assets.[?(@.asset_name == 'eco.owl')]",
-          "eco_version.$": "$.eco.Payload.version"
+        "Was New ECO Version Downloaded?": {
+            "Type": "Choice",
+            "Choices": [
+                {
+                    "Variable": "$.eco.Payload.downloaded",
+                    "BooleanEquals": true,
+                    "Next": "Get ECO OWL Info"
+                }
+            ],
+            "Default": "Success"
         },
-        "Next": "Install ECO"
-      },
-      "Install ECO": {
-        "Type": "Task",
-        "Resource": "arn:aws:states:::states:startExecution.sync:2",
-        "Parameters": {
-          "StateMachineArn": "${InstallRDFXMLSFNArn}",
-          "Input": {
-            "source.$": "$.filtered_assets.[0].asset_path",
-            "graph_name.$": "States.Format('eco~{}', $.eco_version)"
-          }
+        "Get ECO OWL Info": {
+            "Type": "Pass",
+            "Parameters": {
+                "filtered_assets.$": "$.eco.Payload.assets.[?(@.asset_name == 'eco.owl')]",
+                "eco_version.$": "$.eco.Payload.version"
+            },
+            "Next": "Install ECO"
         },
-        "ResultPath": "$.install",
-        "Next": "Update Install Timestamp"
-      },
-      "Update Install Timestamp": {
-        "Type": "Task",
-        "Resource": "arn:aws:states:::lambda:invoke",
-        "Parameters": {
-          "FunctionName": "${UpdateInstallTimestampFunctionArn}",
-          "Payload": {
-            "source": "eco",
-            "version.$": "$.eco_version"
-          }
+        "Install ECO": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::states:startExecution.sync:2",
+            "Parameters": {
+                "StateMachineArn": "${InstallRDFXMLSFNArn}",
+                "Input": {
+                    "source.$": "$.filtered_assets.[0].asset_path",
+                    "graph_name.$": "States.Format('eco~{}', $.eco_version)"
+                }
+            },
+            "ResultPath": "$.install",
+            "Next": "Update Install Timestamp"
         },
-        "ResultPath": "$.update_timestamp",
-        "Next": "Fire Update Event"
-      },
-      "Fire Update Event": {
-        "Type": "Task",
-        "Resource": "arn:aws:states:::events:putEvents",
-        "Parameters": {
-          "Entries": [
-            {
-              "Detail": {
-                "source": "eco",
-                "version.$": "$.eco_version"
-              },
-              "DetailType": "source_updated",
-              "EventBusName": "${PheBeeBus}",
-              "Source": "PheBee"
-            }
-          ]
+        "Update Install Timestamp": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+                "FunctionName": "${UpdateInstallTimestampFunctionArn}",
+                "Payload": {
+                    "source": "eco",
+                    "version.$": "$.eco_version"
+                }
+            },
+            "ResultPath": "$.update_timestamp",
+            "Next": "Fire Update Event"
         },
-        "Next": "Success"
-      },
-      "Success": {
-        "Type": "Succeed"
-      }
+        "Fire Update Event": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::events:putEvents",
+            "Parameters": {
+                "Entries": [
+                    {
+                        "Detail": {
+                            "source": "eco",
+                            "version.$": "$.eco_version"
+                        },
+                        "DetailType": "source_updated",
+                        "EventBusName": "${PheBeeBus}",
+                        "Source": "PheBee"
+                    }
+                ]
+            },
+            "Next": "Success"
+        },
+        "Success": {
+            "Type": "Succeed"
+        }
     }
-  }
+}

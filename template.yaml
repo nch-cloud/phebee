@@ -46,10 +46,33 @@ Parameters:
     Description: Optional. Prefix (folder path) for the logs in the log bucket.
     Default: phebee-access-logs/
 
+  RunOntologyUpdatesOnSchedule:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: Whether to enable scheduled ontology updates
+
+  HPOScheduleExpression:
+    Type: String
+    Default: "cron(0 9 * * ? *)"  # 4 AM EST = 9 UTC
+    Description: Cron expression for HPO update
+
+  MondoScheduleExpression:
+    Type: String
+    Default: "cron(10 9 * * ? *)"  # 4:10 AM EST = 9:10 UTC
+    Description: Cron expression for Mondo update
+
+  ECOScheduleExpression:
+    Type: String
+    Default: "cron(20 9 * * ? *)"  # 4:20 AM EST = 9:20 UTC
+    Description: Cron expression for ECO update
+
 Conditions:
   ShouldCreateS3Bucket: !Equals [!Ref CreateS3Bucket, true]
 
   ShouldEnableS3Logging: !Not [!Equals [!Ref S3AccessLogBucketName, ""]]
+
+  EnableScheduledOntologyUpdate: !Equals [!Ref RunOntologyUpdatesOnSchedule, "true"]
 
 Resources:
   SAMLogs:
@@ -121,13 +144,26 @@ Resources:
               - !GetAtt GetSourceInfoFunction.Arn
               - !GetAtt CreateProjectFunction.Arn
               - !GetAtt CreateSubjectFunction.Arn
-              - !GetAtt CreateSubjectTermLinkFunction.Arn
               - !GetAtt ExportPhenopacketsFunction.Arn
               - !GetAtt GetSubjectFunction.Arn
-              - !GetAtt GetSubjectsFunction.Arn
               - !GetAtt GetSubjectsPhenotypesFunction.Arn
               - !GetAtt RemoveSubjectFunction.Arn
               - !GetAtt RemoveProjectFunction.Arn
+              - !GetAtt CreateEncounterFunction.Arn
+              - !GetAtt GetEncounterFunction.Arn
+              - !GetAtt RemoveEncounterFunction.Arn
+              - !GetAtt CreateClinicalNoteFunction.Arn
+              - !GetAtt GetClinicalNoteFunction.Arn
+              - !GetAtt RemoveClinicalNoteFunction.Arn
+              - !GetAtt CreateCreatorFunction.Arn
+              - !GetAtt GetCreatorFunction.Arn
+              - !GetAtt RemoveCreatorFunction.Arn
+              - !GetAtt CreateTextAnnotationFunction.Arn
+              - !GetAtt GetTextAnnotationFunction.Arn
+              - !GetAtt RemoveTextAnnotationFunction.Arn
+              - !GetAtt CreateTermLinkFunction.Arn
+              - !GetAtt GetTermLinkFunction.Arn
+              - !GetAtt RemoveTermLinkFunction.Arn
           - Effect: Allow
             Action:
               - states:StartSyncExecution
@@ -208,6 +244,10 @@ Resources:
             Resource: !Sub
               - arn:${AWS::Partition}:neptune-db:${AWS::Region}:${AWS::AccountId}:${ClusterId}/*
               - ClusterId: !GetAtt PheBeeNeptuneCluster.ClusterResourceId
+          - Effect: Allow
+            Action:
+              - rds:DescribeDBClusters
+            Resource: !Sub arn:${AWS::Partition}:rds:${AWS::Region}:${AWS::AccountId}:cluster:${AWS::StackName}-neptune-cluster
   
   PheBeeNeptuneLoadPolicy:
     Type: AWS::IAM::ManagedPolicy
@@ -288,6 +328,30 @@ Resources:
       ManagedPolicyArns:
         - !Ref PheBeeS3ReadPolicy
 
+  UpdateOntologyInvokeRole:
+    Type: AWS::IAM::Role
+    Condition: EnableScheduledOntologyUpdate
+    Properties:
+      RoleName: !Sub PheBeeInvokeOntologyUpdatersRole-${AWS::StackName}
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: "AllowEventBridgeToStartUpdaters"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: "states:StartExecution"
+                Resource:
+                  - !GetAtt UpdateHPOSFN.Arn
+                  - !GetAtt UpdateMondoSFN.Arn
+                  - !GetAtt UpdateECOSFN.Arn
+
   #################
   # Neptune Cluster
   #################
@@ -316,6 +380,7 @@ Resources:
   PheBeeNeptuneCluster:
     Type: AWS::Neptune::DBCluster
     Properties:
+      DBClusterIdentifier: !Sub ${AWS::StackName}-neptune-cluster
       StorageEncrypted: true
       # Associating the role here is necessary to pass it as the role to use for our bulk loader
       AssociatedRoles:
@@ -376,6 +441,7 @@ Resources:
       Policies:
         - !Ref PheBeeS3ReadPolicy
         - !Ref PheBeeDynamoDBWritePolicy
+        - !Ref PheBeeDynamoDBReadPolicy
         - Statement:
           - Effect: Allow
             Action: states:StartExecution
@@ -461,26 +527,6 @@ Resources:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
           Region: !Sub ${AWS::Region}
-      VpcConfig:
-        SecurityGroupIds:
-          - !Ref PheBeeLambdaSecurityGroup
-        SubnetIds:
-          - !Ref SubnetId1
-          - !Ref SubnetId2
-      Policies:
-        - !Ref PheBeeNeptuneReadPolicy
-
-  GetSubjectsFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: !Sub ${AWS::StackName}-GetSubjectsFunction
-      CodeUri: functions
-      Handler: get_subjects.lambda_handler
-      MemorySize: 512
-      Environment:
-        Variables:
-          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
-          Region: !Sub ${AWS::Region}
           PheBeeDynamoTable: !Ref DynamoDBTable
       VpcConfig:
         SecurityGroupIds:
@@ -535,38 +581,6 @@ Resources:
       Policies:
         - !Ref PheBeeNeptuneReadPolicy
         - !Ref PheBeeNeptuneDeletePolicy
-
-  CreateSubjectTermLinkFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: !Sub ${AWS::StackName}-CreateSubjectTermLinkFunction
-      CodeUri: functions
-      Handler: create_subject_term_link.lambda_handler
-      MemorySize: 512
-      Environment:
-        Variables:
-          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
-          Region: !Sub ${AWS::Region}
-          PheBeeBus: !Ref PheBeeBus
-      VpcConfig:
-        SecurityGroupIds:
-          - !Ref PheBeeLambdaSecurityGroup
-        SubnetIds:
-          - !Ref SubnetId1
-          - !Ref SubnetId2
-      Policies:
-        - !Ref PheBeeNeptuneReadPolicy
-        - !Ref PheBeeNeptuneWritePolicy
-        - !Ref PheBeeS3ReadPolicy
-        - !Ref PheBeePutEventsPolicy
-      Events:
-        CreateSubjectTermLinkEvent:
-          Type: CloudWatchEvent
-          Properties:
-            EventBusName: !Ref PheBeeBus
-            Pattern:
-              detail-type:
-                - subject_term_link_evidence
 
   CreateProjectFunction:
     Type: AWS::Serverless::Function
@@ -658,6 +672,7 @@ Resources:
       CodeUri: functions
       Handler: get_subjects_pheno.lambda_handler
       MemorySize: 2048
+      Timeout: 300
       Environment:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
@@ -684,6 +699,7 @@ Resources:
       CodeUri: functions
       Handler: reset_database.lambda_handler
       MemorySize: 512
+      Timeout: 300
       Environment:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
@@ -698,7 +714,373 @@ Resources:
           - !Ref SubnetId2
       Policies:
         - !Ref PheBeeNeptuneResetPolicy
+        - !Ref PheBeeNeptuneReadPolicy
         - !Ref PheBeeDynamoDBWritePolicy
+        - !Ref PheBeeDynamoDBReadPolicy
+
+  CreateEncounterFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-CreateEncounterFunction
+      CodeUri: functions
+      Handler: create_encounter.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+        - !Ref PheBeeNeptuneWritePolicy
+
+  GetEncounterFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-GetEncounterFunction
+      CodeUri: functions
+      Handler: get_encounter.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+
+  RemoveEncounterFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-RemoveEncounterFunction
+      CodeUri: functions
+      Handler: remove_encounter.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+        - !Ref PheBeeNeptuneDeletePolicy
+
+  CreateClinicalNoteFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-CreateClinicalNoteFunction
+      CodeUri: functions
+      Handler: create_clinical_note.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+        - !Ref PheBeeNeptuneWritePolicy
+
+  GetClinicalNoteFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-GetClinicalNoteFunction
+      CodeUri: functions
+      Handler: get_clinical_note.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+
+  RemoveClinicalNoteFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-RemoveClinicalNoteFunction
+      CodeUri: functions
+      Handler: remove_clinical_note.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+        - !Ref PheBeeNeptuneDeletePolicy
+
+  CreateCreatorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-CreateCreatorFunction
+      CodeUri: functions
+      Handler: create_creator.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+        - !Ref PheBeeNeptuneWritePolicy
+
+  GetCreatorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-GetCreatorFunction
+      CodeUri: functions
+      Handler: get_creator.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+
+  RemoveCreatorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-RemoveCreatorFunction
+      CodeUri: functions
+      Handler: remove_creator.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+        - !Ref PheBeeNeptuneDeletePolicy
+
+  CreateTextAnnotationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-CreateTextAnnotationFunction
+      CodeUri: functions
+      Handler: create_text_annotation.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+        - !Ref PheBeeNeptuneWritePolicy
+
+  GetTextAnnotationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-GetTextAnnotationFunction
+      CodeUri: functions
+      Handler: get_text_annotation.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+
+  RemoveTextAnnotationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-RemoveTextAnnotationFunction
+      CodeUri: functions
+      Handler: remove_text_annotation.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+        - !Ref PheBeeNeptuneDeletePolicy
+
+  CreateTermLinkFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-CreateTermLinkFunction
+      CodeUri: functions
+      Handler: create_term_link.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+        - !Ref PheBeeNeptuneWritePolicy
+
+  GetTermLinkFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-GetTermLinkFunction
+      CodeUri: functions
+      Handler: get_term_link.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+
+  RemoveTermLinkFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-RemoveTermLinkFunction
+      CodeUri: functions
+      Handler: remove_term_link.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+        - !Ref PheBeeNeptuneDeletePolicy
+
+  PrepareSubjectTermLinksPayloadFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-PrepareSubjectTermLinksPayloadFunction
+      CodeUri: functions
+      Handler: prepare_subject_term_links_payload.lambda_handler
+      MemorySize: 512
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+
+  PrepareBulkUploadFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-PrepareBulkUploadFunction
+      CodeUri: functions
+      Handler: prepare_bulk_upload.lambda_handler
+      MemorySize: 512
+      Environment:
+        Variables:
+          PheBeeBucketName: !Ref PheBeeBucket
+      Policies:
+        - !Ref PheBeeS3WritePolicy
+
+  PerformBulkUploadFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-PerformBulkUploadFunction
+      CodeUri: functions
+      Handler: perform_bulk_upload.lambda_handler
+      MemorySize: 1024
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+          PheBeeBucketName: !Ref PheBeeBucket
+          LoaderRoleArn: !GetAtt NeptuneLoaderRole.Arn
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneLoadPolicy
+        - !Ref PheBeeNeptuneReadPolicy
+        - !Ref PheBeeNeptuneWritePolicy
+        - !Ref PheBeeNeptuneDeletePolicy
+        - !Ref PheBeeS3ReadPolicy
+
 
   #################
   # Step Functions
@@ -760,7 +1142,7 @@ Resources:
             Resource:
               - !GetAtt InstallRDFXMLSFN.Arn
 
-  UpdateMONDOSFN:
+  UpdateMondoSFN:
     Type: AWS::Serverless::StateMachine
     Properties:
       DefinitionUri: statemachine/update_mondo.asl.json
@@ -836,7 +1218,8 @@ Resources:
         ParsePhenopacketCollectionFunctionArn: !Ref ParsePhenopacketCollectionFunction
         ProcessPhenopacketFunctionArn: !Ref ProcessPhenopacketFunction
         CreateSubjectFunctionArn: !Ref CreateSubjectFunction
-        CreateSubjectTermLinkFunctionArn: !Ref CreateSubjectTermLinkFunction
+        CreateTermLinkFunctionArn: !Ref CreateTermLinkFunction
+        PrepareSubjectTermLinksPayloadFunctionArn: !Ref PrepareSubjectTermLinksPayloadFunction
       Type: STANDARD
       Policies:
         - !Ref PheBeeStepFunctionPolicy
@@ -847,14 +1230,16 @@ Resources:
               - lambda:InvokeFunction
             Resource:
               - !GetAtt CreateSubjectFunction.Arn
-              - !GetAtt CreateSubjectTermLinkFunction.Arn
+              - !GetAtt CreateTermLinkFunction.Arn
               - !GetAtt ParsePhenopacketCollectionFunction.Arn
               - !GetAtt ProcessPhenopacketFunction.Arn
+              - !GetAtt PrepareSubjectTermLinksPayloadFunction.Arn
           - Effect: Allow
             Action:
               - states:StartExecution
             Resource:
               - !Sub arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:ImportPhenopacketsSFN-${AWS::StackName}
+
 
   #################
   # DynamoDB
@@ -943,18 +1328,76 @@ Resources:
     Properties:
       Name: !Sub phebee-bus-${AWS::StackName}
 
+  ####################
+  # Scheduled Updates
+  ####################
+
+  UpdateHPOScheduleRule:
+    Type: AWS::Events::Rule
+    Condition: EnableScheduledOntologyUpdate
+    Properties:
+      Name: !Sub UpdateHPO-OnSchedule-${AWS::StackName}
+      ScheduleExpression: !Ref HPOScheduleExpression
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt UpdateHPOSFN.Arn
+          Id: "UpdateHPO"
+          RoleArn: !GetAtt UpdateOntologyInvokeRole.Arn
+  
+  UpdateMondoScheduleRule:
+    Type: AWS::Events::Rule
+    Condition: EnableScheduledOntologyUpdate
+    Properties:
+      Name: !Sub UpdateMondo-OnSchedule-${AWS::StackName}
+      ScheduleExpression: !Ref MondoScheduleExpression
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt UpdateMondoSFN.Arn
+          Id: "UpdateMondo"
+          RoleArn: !GetAtt UpdateOntologyInvokeRole.Arn
+
+  UpdateECOScheduleRule:
+    Type: AWS::Events::Rule
+    Condition: EnableScheduledOntologyUpdate
+    Properties:
+      Name: !Sub UpdateECO-OnSchedule-${AWS::StackName}
+      ScheduleExpression: !Ref ECOScheduleExpression
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt UpdateECOSFN.Arn
+          Id: "UpdateECO"
+          RoleArn: !GetAtt UpdateOntologyInvokeRole.Arn
+
 Outputs:
   UpdateHPOSFNArn:
     Value: !Ref UpdateHPOSFN
 
-  UpdateMONDOSFNArn:
-    Value: !Ref UpdateMONDOSFN
+  UpdateMondoSFNArn:
+    Value: !Ref UpdateMondoSFN
+
+  UpdateECOSFNArn:
+    Value: !Ref UpdateECOSFN
 
   CreateProjectFunctionArn:
     Value: !Ref CreateProjectFunction
 
   ResetDatabaseFunctionArn:
     Value: !Ref ResetDatabaseFunction
+
+  PrepareBulkUploadFunctionArn:
+    Value: !GetAtt PrepareBulkUploadFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-PrepareBulkUploadFunctionArn"
+
+  PerformBulkUploadFunctionArn:
+    Value: !GetAtt PerformBulkUploadFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-PerformBulkUploadFunctionArn"
+
+  GetLoadStatusFunctionArn:
+    Value: !GetAtt GetLoadStatusFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-GetLoadStatusFunctionArn"
 
   DynamoDBTableName:
     Description: Table name of the PheBee DynamoDB table
