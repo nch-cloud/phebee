@@ -36,11 +36,11 @@ This document outlines our planned milestones and the focus areas for each versi
 
 ---
 
-## Version 0.2 — Data Model Refinement and Provenance Support (In Progress)
+## Version 0.9 — Data Model Refinement and Provenance Support - Pilot Release
 
 **Goal:** Introduce richer provenance tracking and expand the data model to better support real-world usage scenarios. Continue migration of internal provenance code to open source release.
 
-### Planned Features
+### Features
 
 - Revise RDF model to include additional context and provenance information
 - Enhanced subject-term links:
@@ -55,14 +55,21 @@ This document outlines our planned milestones and the focus areas for each versi
   - Add phenopacket support to API layer
   - Improved querying on provenance and other metadata
 - Additional test suite coverage
+- Bulk import support for large-scale addition of subjects/clinical info/term links
 
 ---
 
-## How To Get Involved
+## Version 1.0 — Production Release
 
-As we transition our codebase from an internally-focused project to open source, we will probably keep development in-house until the 0.2 release to smooth that process and ensure we can continue to hit milestones for our pilot projects.
+**Goal:** Run PheBee 0.9 release at full production scale in Nationwide Children's Hospital pilot projects, bump release to 1.0 when fully confident in feature set and performance against hospital-scale data.
 
-In the meantime, we'd love to hear your feedback and ideas, and we hope to open up to new contributors as soon as possible!
+### Planned Features
+
+- Run PheBee term link import using automated feed of clinical data.
+- Deep testing of phenotype links for both content and provenance.
+- Revise any services that underperform at scale or for which additional metadata is deemed necessary.
+- Add built-in Sagemaker notebook deployment to CloudFormation stack
+- Evaluate additional automated ontology integrations
 
 ---
 
