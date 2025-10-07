@@ -284,7 +284,7 @@ def generate_rdf(entries: List[TermLinkInput]) -> str:
                     # Create the encounter node
                     g.add((encounter_iri, RDF.type, PHEBEE_NS.Encounter))
                     g.add((encounter_iri, PHEBEE_NS.encounterId, RdfLiteral(evidence.encounter_id)))
-                    g.add((encounter_iri, PHEBEE_NS.hasSubject, subject_iri))
+                    g.add((encounter_iri, PHEBEE_NS.hasSubject, URIRef(subject_iri)))
                     g.add((encounter_iri, DCTERMS.created, RdfLiteral(get_current_timestamp(), datatype=XSD.dateTime)))
                     new_encounters_count += 1
                     logger.debug("Created new encounter: %s", encounter_iri_str)
