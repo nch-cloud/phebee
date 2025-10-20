@@ -648,7 +648,14 @@ def get_clinical_note(encounter_iri: str, clinical_note_id: str) -> dict:
         pred = binding["p"]["value"]
         obj = binding["o"]["value"]
         key = split_predicate(pred)
-        properties[key] = obj
+        
+        if key == "has_term_link":
+            # Always make has_term_link an array
+            if key not in properties:
+                properties[key] = []
+            properties[key].append(obj)
+        else:
+            properties[key] = obj
 
     if len(bindings) > 0:
         return flatten_response(

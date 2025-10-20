@@ -1062,6 +1062,7 @@ Resources:
       CodeUri: functions
       Handler: perform_bulk_upload.lambda_handler
       MemorySize: 1024
+      Timeout: 900
       Environment:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
