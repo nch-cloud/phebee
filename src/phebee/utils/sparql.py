@@ -28,7 +28,7 @@ import uuid
 import hashlib
 import time
 from collections import defaultdict
-from typing import List
+from typing import List, Optional, Sequence
 from aws_lambda_powertools import Metrics, Logger, Tracer
 from datetime import datetime
 from urllib.parse import quote
@@ -843,18 +843,88 @@ def delete_creator(creator_id_or_iri: str):
     
     return creator_iri
 
+QUALIFIER_BASE = f"{PHEBEE}/qualifier"
+
+def build_qualifier_iris(contexts: Optional[dict]) -> list[str]:
+    """
+    Turn contexts dict into canonical qualifier IRIs.
+    Returns a sorted, de-duplicated list of IRIs (stable across runs).
+    """
+    iris = set()
+
+    # contexts: {"negated": 1, "family": 0, ...}
+    if contexts:
+        for k, v in contexts.items():
+            if v in (1, True, "1", "true", "True"):
+                slug = quote(str(k).strip().lower(), safe="")
+                iris.add(f"{QUALIFIER_BASE}/{slug}")
+
+    return sorted(iris)
+
+def _sparql_escape_literal(s: str) -> str:
+    """Minimal escaping for a SPARQL string literal."""
+    return (
+        s.replace("\\", "\\\\")
+         .replace('"', '\\"')
+         .replace("\r", "\\r")
+         .replace("\n", "\\n")
+    )
+
+# ---- Deterministic TextAnnotation IDs ----
+ANNOTATION_HASH_VERSION = "v1"
+
+def stable_text_annotation_iri(
+    text_source_iri: str,
+    term_iri: str,
+    creator_iri: str,
+    span_start: Optional[int],
+    span_end: Optional[int],
+    qualifier_iris: Optional[Sequence[str]],  # may be unsorted/duplicated
+) -> str:
+    """
+    v1 inputs (frozen): text_source_iri, term_iri, creator_iri, span_start, span_end,
+    qualifier_iris (order-insensitive; duplicates ignored). No timestamps.
+    """
+    import hashlib
+
+    # Defensive canonicalization so caller order/dupes don't matter
+    qlist = tuple(sorted(set(qualifier_iris or ())))  # deterministic, hashable
+
+    key = "|".join([
+        text_source_iri,
+        term_iri,
+        creator_iri,
+        str(span_start or ""),
+        str(span_end or ""),
+        ",".join(qlist),
+    ])
+    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()
+    return f"{text_source_iri}/annotation/{ANNOTATION_HASH_VERSION}/{digest}"
 
 def create_text_annotation(
     text_source_iri: str,
-    span_start: int = None,
-    span_end: int = None,
-    creator_iri: str = None,
-    term_iri: str = None,
-    metadata: str = None,
+    span_start: Optional[int] = None,
+    span_end: Optional[int] = None,
+    creator_iri: Optional[str] = None,
+    term_iri: Optional[str] = None,
+    metadata: Optional[str] = None,
+    contexts: Optional[dict] = None,
+    note_timestamp: Optional[str] = None
 ) -> str:
-    annotation_id = str(uuid.uuid4())
-    annotation_iri = f"{text_source_iri}/annotation/{annotation_id}"
-    created = get_current_timestamp()
+    if not (creator_iri and term_iri):
+        raise ValueError("creator_iri and term_iri are required")
+
+    # Deterministic TextAnnotation IRI (v1)
+    qualifiers = build_qualifier_iris(contexts)
+
+    annotation_iri = stable_text_annotation_iri(
+        text_source_iri,
+        term_iri,
+        creator_iri,
+        span_start,
+        span_end,
+        qualifiers
+    )
 
     # Lookup rdf:type of the source and creator
     creator_type = get_rdf_type(creator_iri) if creator_iri else None
@@ -874,11 +944,15 @@ def create_text_annotation(
 
     triples = [
         f"<{annotation_iri}> rdf:type phebee:TextAnnotation",
-        f"<{annotation_iri}> phebee:textSource <{text_source_iri}>",
-        f'<{annotation_iri}> dcterms:created "{created}"^^xsd:dateTime',
+        f"<{annotation_iri}> phebee:textSource <{text_source_iri}>",        
         f"<{annotation_iri}> phebee:evidenceType <{evidence_type_iri}>",
         f"<{annotation_iri}> phebee:assertionType <{assertion_type_iri}>",
     ]
+
+    if note_timestamp is not None:
+        triples.append(
+            f'<{annotation_iri}> dcterms:created "{note_timestamp}"^^xsd:dateTime',
+        )
 
     if span_start is not None:
         triples.append(
@@ -891,7 +965,7 @@ def create_text_annotation(
     if term_iri:
         triples.append(f"<{annotation_iri}> phebee:term <{term_iri}>")
     if metadata:
-        triples.append(f'<{annotation_iri}> phebee:metadata """{metadata}"""')
+        triples.append(f'<{annotation_iri}> phebee:metadata "{_sparql_escape_literal(metadata)}"')
 
     triples_block = " .\n    ".join(triples) + " ."
 

@@ -169,6 +169,18 @@ phebee:creatorId a owl:DatatypeProperty ;
     rdfs:label "Creator ID" ;
     rdfs:comment "The identifier of the entity responsible for creating a node in the PheBee graph." .
 
+phebee:creatorName a owl:DatatypeProperty ;
+    rdfs:domain phebee:Creator ;
+    rdfs:range xsd:string ;
+    rdfs:label "Creator Name" ;
+    rdfs:comment "The name of the entity responsible for creating a node in the PheBee graph." .
+
+phebee:creatorVersion a owl:DatatypeProperty ;
+    rdfs:domain phebee:Creator ;
+    rdfs:range xsd:string ;
+    rdfs:label "Creator Version" ;
+    rdfs:comment "The version of the entity responsible for creating a node in the PheBee graph." .
+
 phebee:version a owl:DatatypeProperty ;
     rdfs:domain phebee:AutomatedCreator ;
     rdfs:range xsd:string ;
@@ -201,6 +213,12 @@ phebee:hasTerm a owl:ObjectProperty ;
     rdfs:range rdfs:Resource ;
     rdfs:label "Has Term" ;
     rdfs:comment "Links a subject term link to a term, with the term being an unspecified non-literal node." .
+
+phebee:hasEvidence a owl:ObjectProperty ;
+    rdfs:domain phebee:TermLink ;
+    rdfs:range  phebee:Evidence ;
+    rdfs:label "Has Evidence" ;
+    rdfs:comment "Connects a TermLink to supporting Evidence." .
 
 phebee:hasQualifyingTerm a owl:ObjectProperty ;
     rdfs:domain phebee:TermLink ;
