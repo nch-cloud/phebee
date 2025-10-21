@@ -760,6 +760,103 @@ def test_bulk_upload_encounter_deduplication(test_payload, test_project_id, phys
         assert len(term["evidence"]) > 0, "Each term link should have evidence"
 
 
+def test_bulk_upload_concurrent_uploads(test_project_id, physical_resources):
+    """Test concurrent uploads of the same data to verify no corruption occurs."""
+    import uuid
+    import threading
+    import time
+    
+    subject_id = f"subj-{uuid.uuid4()}"
+    encounter_id = str(uuid.uuid4())
+    
+    # Same payload for both concurrent uploads
+    payload = [
+        {
+            "project_id": test_project_id,
+            "project_subject_id": subject_id,
+            "term_iri": "http://purl.obolibrary.org/obo/HP_0004322",
+            "evidence": [{
+                "type": "clinical_note",
+                "encounter_id": encounter_id,
+                "clinical_note_id": "note-concurrent",
+                "note_timestamp": "2025-06-06T12:00:00Z",
+                "evidence_creator_id": "robot-creator",
+                "evidence_creator_type": "automated",
+                "evidence_creator_name": "Robot Creator",
+                "evidence_creator_version": "1.2"
+            }]
+        }
+    ]
+    
+    # Track results and errors from both threads
+    results = []
+    errors = []
+    
+    def upload_worker(worker_id):
+        try:
+            result = bulk_upload_run([payload], physical_resources)
+            results.append((worker_id, result))
+        except Exception as e:
+            errors.append((worker_id, str(e)))
+    
+    # Start two concurrent uploads
+    thread1 = threading.Thread(target=upload_worker, args=(1,))
+    thread2 = threading.Thread(target=upload_worker, args=(2,))
+    
+    thread1.start()
+    thread2.start()
+    
+    # Wait for both to complete
+    thread1.join()
+    thread2.join()
+    
+    # Both should succeed (or at least not corrupt data)
+    assert len(errors) == 0, f"Concurrent uploads failed: {errors}"
+    assert len(results) == 2, f"Expected 2 results, got {len(results)}"
+    
+    # Verify final state is consistent
+    get_subject_fn = physical_resources["GetSubjectFunction"]
+    project_subject_iri = f"http://ods.nationwidechildrens.org/phebee/projects/{test_project_id}/{subject_id}"
+    
+    result = invoke_lambda(get_subject_fn, {"body": json.dumps({"project_subject_iri": project_subject_iri})})
+    
+    # Should have exactly one term with one evidence (no duplication from concurrent uploads)
+    assert len(result["terms"]) == 1, f"Expected 1 term, got {len(result['terms'])}"
+    assert len(result["terms"][0]["evidence"]) == 1, f"Expected 1 evidence, got {len(result['terms'][0]['evidence'])}"
+    assert result["terms"][0]["term_iri"] == "http://purl.obolibrary.org/obo/HP_0004322"
+
+
+def test_bulk_upload_empty_evidence_arrays(test_project_id, physical_resources):
+    """Test behavior with empty evidence arrays."""
+    import uuid
+    
+    subject_id = f"subj-{uuid.uuid4()}"
+    
+    # Payload with empty evidence array
+    payload = [
+        {
+            "project_id": test_project_id,
+            "project_subject_id": subject_id,
+            "term_iri": "http://purl.obolibrary.org/obo/HP_0004322",
+            "evidence": []  # Empty evidence array
+        }
+    ]
+    
+    # Upload should succeed but create no term links (no evidence = no term link)
+    bulk_upload_run([payload], physical_resources)
+    
+    # Verify the subject exists but has no terms
+    get_subject_fn = physical_resources["GetSubjectFunction"]
+    project_subject_iri = f"http://ods.nationwidechildrens.org/phebee/projects/{test_project_id}/{subject_id}"
+    
+    result = invoke_lambda(get_subject_fn, {"body": json.dumps({"project_subject_iri": project_subject_iri})})
+    
+    # Subject should exist but have no terms (empty evidence = no term links created)
+    assert "subject_iri" in result
+    assert result["subject_iri"].startswith("http://ods.nationwidechildrens.org/phebee/subjects/")
+    assert len(result["terms"]) == 0, "No term links should be created without evidence"
+
+
 def test_bulk_upload_true_idempotency(test_project_id, physical_resources):
     """True idempotency test: partial second upload should preserve data from first upload."""
     import uuid
