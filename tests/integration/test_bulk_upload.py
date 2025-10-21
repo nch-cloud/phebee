@@ -760,6 +760,49 @@ def test_bulk_upload_encounter_deduplication(test_payload, test_project_id, phys
         assert len(term["evidence"]) > 0, "Each term link should have evidence"
 
 
+def test_bulk_upload_creates_dynamodb_records(test_payload, test_project_id, physical_resources):
+    """Verify that bulk upload creates corresponding DynamoDB records for subjects."""
+    # Upload test data
+    bulk_upload_run([test_payload], physical_resources)
+    
+    # Get the DynamoDB table name from environment (set by conftest.py)
+    import os
+    dynamodb_table_name = os.environ.get("PheBeeDynamoTable")
+    assert dynamodb_table_name, "DynamoDB table name should be available from stack outputs"
+    
+    # Check DynamoDB for subject records
+    import boto3
+    dynamodb = boto3.resource('dynamodb', region_name='us-east-2')
+    table = dynamodb.Table(dynamodb_table_name)
+    
+    # Check each entry in the test payload
+    for entry in test_payload:
+        # Check forward mapping: PSID -> subject_iri
+        response = table.get_item(
+            Key={
+                'PK': f"PSID#{entry['project_id']}", 
+                'SK': f"PSID#{entry['project_subject_id']}"
+            }
+        )
+        
+        assert 'Item' in response, f"No forward mapping found for project_id={entry['project_id']}, project_subject_id={entry['project_subject_id']}"
+        
+        item = response['Item']
+        assert 'subject_iri' in item, "Forward mapping should contain subject_iri"
+        subject_iri = item['subject_iri']
+        assert subject_iri.startswith('http://ods.nationwidechildrens.org/phebee/subjects/'), "subject_iri should be valid"
+        
+        # Check reverse mapping: subject_iri -> PSID
+        response = table.get_item(
+            Key={
+                'PK': f"SUBJ#{subject_iri}",
+                'SK': f"PSID#{entry['project_id']}#{entry['project_subject_id']}"
+            }
+        )
+        
+        assert 'Item' in response, f"No reverse mapping found for subject_iri={subject_iri}"
+
+
 def test_bulk_upload_concurrent_uploads(test_project_id, physical_resources):
     """Test concurrent uploads of the same data to verify no corruption occurs."""
     import uuid
