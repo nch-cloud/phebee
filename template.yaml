@@ -213,6 +213,7 @@ Resources:
               - dynamodb:Query
               - dynamodb:DescribeTable
               - dynamodb:GetItem
+              - dynamodb:TransactGetItems
             Resource:
               - !GetAtt DynamoDBTable.Arn
   
@@ -228,6 +229,8 @@ Resources:
               - dynamodb:UpdateItem
               - dynamodb:DeleteItem
               - dynamodb:BatchWriteItem
+              - dynamodb:TransactWriteItems
+              - dynamodb:ConditionCheckItem
             Resource:
               - !GetAtt DynamoDBTable.Arn
 
@@ -1054,6 +1057,8 @@ Resources:
           PheBeeBucketName: !Ref PheBeeBucket
       Policies:
         - !Ref PheBeeS3WritePolicy
+        - !Ref PheBeeDynamoDBWritePolicy
+        - !Ref PheBeeDynamoDBReadPolicy
 
   PerformBulkUploadFunction:
     Type: AWS::Serverless::Function
@@ -1069,6 +1074,7 @@ Resources:
           Region: !Sub ${AWS::Region}
           PheBeeBucketName: !Ref PheBeeBucket
           LoaderRoleArn: !GetAtt NeptuneLoaderRole.Arn
+          PheBeeDynamoTable: !Ref DynamoDBTable
       VpcConfig:
         SecurityGroupIds:
           - !Ref PheBeeLambdaSecurityGroup
@@ -1076,12 +1082,36 @@ Resources:
           - !Ref SubnetId1
           - !Ref SubnetId2
       Policies:
-        - !Ref PheBeeNeptuneLoadPolicy
-        - !Ref PheBeeNeptuneReadPolicy
-        - !Ref PheBeeNeptuneWritePolicy
-        - !Ref PheBeeNeptuneDeletePolicy
         - !Ref PheBeeS3ReadPolicy
+        - !Ref PheBeeDynamoDBWritePolicy
+        - !Ref PheBeeDynamoDBReadPolicy
 
+  FinalizeBulkUploadFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-FinalizeBulkUploadFunction
+      CodeUri: functions
+      Handler: finalize_bulk_upload.lambda_handler
+      MemorySize: 1024
+      Timeout: 300
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+          PheBeeBucketName: !Ref PheBeeBucket
+          LoaderRoleArn: !GetAtt NeptuneLoaderRole.Arn
+          PheBeeDynamoTable: !Ref DynamoDBTable
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneLoadPolicy     # start loader jobs
+        - !Ref PheBeeS3ReadPolicy          # list / verify data/prov prefixes
+        - !Ref PheBeeDynamoDBReadPolicy    # read run/batch status
+        - !Ref PheBeeDynamoDBWritePolicy   # mark run finalized / store loader IDs
 
   #################
   # Step Functions
@@ -1394,6 +1424,11 @@ Outputs:
     Value: !GetAtt PerformBulkUploadFunction.Arn
     Export:
       Name: !Sub "${AWS::StackName}-PerformBulkUploadFunctionArn"
+
+  FinalizeBulkUploadFunctionArn:
+    Value: !GetAtt FinalizeBulkUploadFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-FinalizeBulkUploadFunctionArn"
 
   GetLoadStatusFunctionArn:
     Value: !GetAtt GetLoadStatusFunction.Arn

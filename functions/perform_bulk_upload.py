@@ -6,7 +6,7 @@ import time
 import uuid
 import logging
 from datetime import datetime
-from typing import List, Optional, Literal, Sequence
+from typing import List, Optional, Literal, Sequence, Tuple, Dict, Set
 
 import boto3
 from pydantic import BaseModel, Field, ValidationError
@@ -23,10 +23,6 @@ from urllib.parse import quote
 
 from phebee.constants import PHEBEE
 from phebee.utils.sparql import (
-    get_subject,
-    project_exists,
-    create_subject,
-    link_subject_to_project,
     infer_evidence_type,
     infer_assertion_type,
     generate_termlink_hash,
@@ -34,6 +30,7 @@ from phebee.utils.sparql import (
     build_qualifier_iris,
 )
 from phebee.utils.aws import extract_body
+from phebee.utils.dynamodb import resolve_subjects  # <-- NEW
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -136,21 +133,6 @@ def emit_creator_once(
         g.add((creator_iri, PHEBEE_NS.creatorId, RdfLiteral(creator_id)))
     cache.add(key)
 
-def get_or_create_subject(project_id: str, project_subject_id: str) -> str:
-    if not project_exists(project_id):
-        raise ValueError(f"Project ID not found: {project_id}")
-
-    project_subject_iri = f"http://ods.nationwidechildrens.org/phebee/projects/{project_id}/{project_subject_id}"
-
-    subject = get_subject(project_subject_iri)
-    if subject:
-        subject_iri = subject["subject_iri"]
-    else:
-        subject_iri = create_subject(project_id, project_subject_id)
-
-    link_subject_to_project(subject_iri, project_id, project_subject_id)
-    return subject_iri
-
 def get_term_link_iri(source_node_iri: str, term_iri: str, qualifiers=None) -> str:
     """
     Deterministic TermLink IRI from: source node + term + qualifiers
@@ -162,7 +144,16 @@ def get_term_link_iri(source_node_iri: str, term_iri: str, qualifiers=None) -> s
 # RDF Generation (Domain) + Created Entity Manifest (for PROV)
 # -------------------
 
-def generate_rdf(entries: List[TermLinkInput]) -> tuple[str, dict]:
+def generate_rdf(
+    entries: List[TermLinkInput],
+    subject_map: Dict[Tuple[str, str], str],  # (project_id, project_subject_id) -> subject_iri
+) -> tuple[str, dict, Set[Tuple[str, str]]]:
+    """
+    Returns:
+      - graph_ttl (str): Domain triples (Turtle)
+      - created_manifest (dict): entity IRIs + domain timestamps for provenance
+      - pairs_seen (set): {(project_id, project_subject_id)} used by this shard (for project-link triples)
+    """
     start_total_time = time.time()
     g = Graph()
     g.bind("phebee", PHEBEE_NS)
@@ -173,6 +164,7 @@ def generate_rdf(entries: List[TermLinkInput]) -> tuple[str, dict]:
     start_precompute_time = time.time()
     termlink_to_annotation_map: dict[str, dict] = {}
     emitted_creators: set[str] = set()
+    pairs_seen: Set[Tuple[str, str]] = set()
 
     # Track created entities (for provenance)
     created_termlinks: set[str] = set()
@@ -186,7 +178,11 @@ def generate_rdf(entries: List[TermLinkInput]) -> tuple[str, dict]:
     annotation_ts: dict[str, Optional[str]] = {}
 
     for entry in entries:
-        subject_iri = get_or_create_subject(entry.project_id, entry.project_subject_id)
+        key = (entry.project_id, entry.project_subject_id)
+        subject_iri = subject_map.get(key)
+        if not subject_iri:
+            raise ValueError(f"Subject resolution missing for {key}")
+        pairs_seen.add(key)
 
         for evidence in entry.evidence:
             qualifiers = build_qualifier_iris(evidence.contexts)  # canonical list
@@ -370,6 +366,10 @@ def generate_rdf(entries: List[TermLinkInput]) -> tuple[str, dict]:
         rdf_duration, triple_count, new_links_count, new_encounters_count, new_notes_count
     )
 
+    # ensure every resolved subject is explicitly typed once
+    for key in pairs_seen:
+        g.add((URIRef(subject_map[key]), RDF.type, PHEBEE_NS.Subject))
+
     graph_ttl = g.serialize(format="turtle", prefixes={"phebee": PHEBEE_NS, "obo": OBO, "dcterms": DCTERMS, "xsd": XSD})
     total_duration = time.time() - start_total_time
     logger.info("Total RDF generation process completed in %.2f seconds", total_duration)
@@ -380,7 +380,7 @@ def generate_rdf(entries: List[TermLinkInput]) -> tuple[str, dict]:
         "notes": [(iri, note_ts.get(iri)) for iri in created_notes],
         "annotations": [(iri, annotation_ts.get(iri)) for iri in created_annotations],
     }
-    return graph_ttl, created_manifest
+    return graph_ttl, created_manifest, pairs_seen
 
 # -------------------
 # Lambda Handler
@@ -394,7 +394,7 @@ def lambda_handler(event, context):
 
         run_id = body.get("run_id")
         batch_id = body.get("batch_id")
-        agent_iri = body.get("agent_iri")  # optional prov:Agent you can pass
+        agent_iri = body.get("agent_iri")  # optional prov:Agent
         if run_id is None or batch_id is None:
             return {"statusCode": 400, "body": json.dumps({"error": "run_id and batch_id are required"})}
 
@@ -419,45 +419,55 @@ def lambda_handler(event, context):
         except (ValidationError, ValueError) as ve:
             return {"statusCode": 400, "body": json.dumps({"error": "Invalid JSON", "details": str(ve)})}
 
+        # ---- DDB subject resolution (one call per shard) ----
+        pairs: Set[Tuple[str, str]] = {(e.project_id, e.project_subject_id) for e in validated}
+        logger.info("Resolving %d (project_id, project_subject_id) pairs via DynamoDB", len(pairs))
+        subject_map = resolve_subjects(pairs)  # {(project_id, project_subject_id) -> subject_iri}
+        logger.info("Resolved %d subjects", len(subject_map))
+
         # Provenance identifiers
         activity_iri = f"{PHEBEE}/activity/run/{run_id}/batch/{batch_no:05d}"
         # One named graph per run to group all batch activities for that run
-        batch_graph_iri = f"{PHEBEE}/provenance/run/{run_id}"
+        run_prov_graph_iri = f"{PHEBEE}/provenance/run/{run_id}"
         started_at = datetime.utcnow().isoformat(timespec="seconds") + "Z"
 
         # Generate domain RDF and manifest of created entities
-        turtle, created = generate_rdf(validated)
+        turtle, created, pairs_seen = generate_rdf(validated, subject_map)
 
         # Upload compressed domain TTL
         ttl_key = f"phebee/runs/{run_id}/data/batch-{batch_no:05d}.ttl.gz"
         _put_gzip_text(BUCKET_NAME, ttl_key, turtle, "text/turtle")
 
-        # Build provenance N-Quads (graph-scoped to the run)
+        # Build N-Quads containing:
+        #   (a) PROV activity in the run-scoped graph
+        #   (b) Project-link triples in each project's graph
         ds = ConjunctiveGraph()
-        ctx = ds.get_context(URIRef(batch_graph_iri))
+
+        # (a) Run provenance
+        prov_ctx = ds.get_context(URIRef(run_prov_graph_iri))
         act = URIRef(activity_iri)
 
-        ctx.add((act, RDF.type, PROV.Activity))
-        ctx.add((act, PROV.startedAtTime, RdfLiteral(started_at, datatype=XSD.dateTime)))
+        prov_ctx.add((act, RDF.type, PROV.Activity))
+        prov_ctx.add((act, PROV.startedAtTime, RdfLiteral(started_at, datatype=XSD.dateTime)))
 
         if agent_iri:
             ag_ref = URIRef(agent_iri)
-            ctx.add((ag_ref, RDF.type, PROV.Agent))
-            ctx.add((act, PROV.wasAssociatedWith, ag_ref))
+            prov_ctx.add((ag_ref, RDF.type, PROV.Agent))
+            prov_ctx.add((act, PROV.wasAssociatedWith, ag_ref))
 
         inp = URIRef(f"s3://{BUCKET_NAME}/{s3_key}")
         out = URIRef(f"s3://{BUCKET_NAME}/{ttl_key}")
-        ctx.add((inp, RDF.type, PROV.Entity))
-        ctx.add((out, RDF.type, PROV.Entity))
-        ctx.add((act, PROV.used, inp))
-        ctx.add((act, PROV.generated, out))
+        prov_ctx.add((inp, RDF.type, PROV.Entity))
+        prov_ctx.add((out, RDF.type, PROV.Entity))
+        prov_ctx.add((act, PROV.used, inp))
+        prov_ctx.add((act, PROV.generated, out))
 
         # Per-entity provenance (domain timestamps only)
         def _gen(eiri: str, ts: Optional[str]):
             ent = URIRef(eiri)
-            ctx.add((ent, PROV.wasGeneratedBy, act))
+            prov_ctx.add((ent, PROV.wasGeneratedBy, act))
             if ts:
-                ctx.add((ent, PROV.generatedAtTime, RdfLiteral(ts, datatype=XSD.dateTime)))
+                prov_ctx.add((ent, PROV.generatedAtTime, RdfLiteral(ts, datatype=XSD.dateTime)))
 
         for eiri, ts in created.get("termlinks", []): _gen(eiri, ts)
         for eiri, ts in created.get("notes", []): _gen(eiri, ts)
@@ -465,11 +475,27 @@ def lambda_handler(event, context):
         for eiri, _  in created.get("encounters", []): _gen(eiri, None)
 
         ended_at = datetime.utcnow().isoformat(timespec="seconds") + "Z"
-        ctx.add((act, PROV.endedAtTime, RdfLiteral(ended_at, datatype=XSD.dateTime)))
+        prov_ctx.add((act, PROV.endedAtTime, RdfLiteral(ended_at, datatype=XSD.dateTime)))
+
+        # (b) Project-link triples (in each project graph)
+        for (project_id, project_subject_id) in pairs_seen:
+            subject_iri = subject_map[(project_id, project_subject_id)]
+            project_graph_iri = f"{PHEBEE}/projects/{project_id}"
+            project_ctx = ds.get_context(URIRef(project_graph_iri))
+
+            subject_ref = URIRef(subject_iri)
+            project_graph_ref = URIRef(project_graph_iri)
+            project_subject_iri = f"{project_graph_iri}/{project_subject_id}"
+            project_subject_ref = URIRef(project_subject_iri)
+
+            # Subject ↔ ProjectSubjectId link (no timestamps)
+            project_ctx.add((subject_ref, PHEBEE_NS.hasProjectSubjectId, project_subject_ref))
+            project_ctx.add((project_subject_ref, RDF.type, PHEBEE_NS.ProjectSubjectId))
+            project_ctx.add((project_subject_ref, PHEBEE_NS.hasProject, project_graph_ref))
 
         nq_bytes = ds.serialize(format="nquads")
 
-        # Upload compressed provenance N-Quads
+        # Upload compressed N-Quads
         nq_key = f"phebee/runs/{run_id}/prov/batch-{batch_no:05d}.nq.gz"
         _put_gzip_bytes(BUCKET_NAME, nq_key, nq_bytes, "application/n-quads")
 
@@ -484,7 +510,7 @@ def lambda_handler(event, context):
                 "batch_id": batch_no,
                 "data_key": ttl_key,
                 "prov_key": nq_key,
-                "prov_graph": batch_graph_iri,
+                "prov_graph": run_prov_graph_iri,
                 "activity": activity_iri,
             }),
         }
