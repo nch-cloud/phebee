@@ -760,6 +760,87 @@ def test_bulk_upload_encounter_deduplication(test_payload, test_project_id, phys
         assert len(term["evidence"]) > 0, "Each term link should have evidence"
 
 
+def test_bulk_upload_true_idempotency(test_project_id, physical_resources):
+    """True idempotency test: partial second upload should preserve data from first upload."""
+    import uuid
+    
+    subject_id = f"subj-{uuid.uuid4()}"
+    encounter_id = str(uuid.uuid4())
+    
+    # First upload: subject with TWO terms
+    first_payload = [
+        {
+            "project_id": test_project_id,
+            "project_subject_id": subject_id,
+            "term_iri": "http://purl.obolibrary.org/obo/HP_0004322",  # Term A
+            "evidence": [{
+                "type": "clinical_note",
+                "encounter_id": encounter_id,
+                "clinical_note_id": "note-001",
+                "note_timestamp": "2025-06-06T12:00:00Z",
+                "evidence_creator_id": "robot-creator",
+                "evidence_creator_type": "automated",
+                "evidence_creator_name": "Robot Creator",
+                "evidence_creator_version": "1.2"
+            }]
+        },
+        {
+            "project_id": test_project_id,
+            "project_subject_id": subject_id,
+            "term_iri": "http://purl.obolibrary.org/obo/HP_0002297",  # Term B
+            "evidence": [{
+                "type": "clinical_note",
+                "encounter_id": encounter_id,
+                "clinical_note_id": "note-002",
+                "note_timestamp": "2025-06-06T12:00:00Z",
+                "evidence_creator_id": "robot-creator",
+                "evidence_creator_type": "automated",
+                "evidence_creator_name": "Robot Creator",
+                "evidence_creator_version": "1.2"
+            }]
+        }
+    ]
+    
+    # Second upload: same subject with only ONE term (should be idempotent)
+    second_payload = [
+        {
+            "project_id": test_project_id,
+            "project_subject_id": subject_id,
+            "term_iri": "http://purl.obolibrary.org/obo/HP_0004322",  # Only Term A
+            "evidence": [{
+                "type": "clinical_note",
+                "encounter_id": encounter_id,
+                "clinical_note_id": "note-001",
+                "note_timestamp": "2025-06-06T12:00:00Z",
+                "evidence_creator_id": "robot-creator",
+                "evidence_creator_type": "automated",
+                "evidence_creator_name": "Robot Creator",
+                "evidence_creator_version": "1.2"
+            }]
+        }
+    ]
+    
+    # Execute uploads
+    bulk_upload_run([first_payload], physical_resources)
+    bulk_upload_run([second_payload], physical_resources)
+    
+    # Verify true idempotency
+    get_subject_fn = physical_resources["GetSubjectFunction"]
+    project_subject_iri = f"http://ods.nationwidechildrens.org/phebee/projects/{test_project_id}/{subject_id}"
+    
+    result = invoke_lambda(get_subject_fn, {"body": json.dumps({"project_subject_iri": project_subject_iri})})
+    
+    # Extract all term IRIs from the result
+    term_iris = [term["term_iri"] for term in result["terms"]]
+    
+    # TRUE IDEMPOTENCY TEST: Both terms should still be present
+    assert "http://purl.obolibrary.org/obo/HP_0004322" in term_iris, "Term A should be present (from both uploads)"
+    assert "http://purl.obolibrary.org/obo/HP_0002297" in term_iris, "Term B should be present (from first upload only) - this proves idempotency"
+    
+    # Should have exactly 2 terms (no duplicates)
+    assert len(term_iris) == 2, f"Expected exactly 2 terms, got {len(term_iris)}: {term_iris}"
+
+
 def test_bulk_upload_error_handling(test_project_id, physical_resources):
     """Invalid JSON (schema) -> perform should return a validation error; finalize not called."""
     run_id = str(uuid.uuid4())
