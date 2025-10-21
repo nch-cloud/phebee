@@ -213,6 +213,7 @@ Resources:
               - dynamodb:Query
               - dynamodb:DescribeTable
               - dynamodb:GetItem
+              - dynamodb:BatchGetItem
               - dynamodb:TransactGetItems
             Resource:
               - !GetAtt DynamoDBTable.Arn

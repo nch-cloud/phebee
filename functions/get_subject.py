@@ -1,5 +1,5 @@
 from aws_lambda_powertools import Metrics, Logger, Tracer
-from phebee.utils.sparql import get_term_links_for_node, get_subject
+from phebee.utils.sparql import get_term_links_with_evidence, get_subject
 from phebee.utils.aws import extract_body
 from phebee.utils.dynamodb import get_current_term_source_version
 import json
@@ -48,7 +48,7 @@ def get_subject_info(project_subject_iri: str):
     mondo_version = get_current_term_source_version("mondo")
 
     # TODO: Maybe the versions should be in a dictionary?
-    terms = get_term_links_for_node(subject["subject_iri"], hpo_version, mondo_version)
+    terms = get_term_links_with_evidence(subject["subject_iri"], hpo_version, mondo_version)
     subject["terms"] = terms
 
     return subject

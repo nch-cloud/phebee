@@ -497,7 +497,7 @@ def lambda_handler(event, context):
 
         # Upload compressed N-Quads
         nq_key = f"phebee/runs/{run_id}/prov/batch-{batch_no:05d}.nq.gz"
-        _put_gzip_bytes(BUCKET_NAME, nq_key, nq_bytes, "application/n-quads")
+        _put_gzip_bytes(BUCKET_NAME, nq_key, nq_bytes.encode('utf-8'), "application/n-quads")
 
         logger.info("Wrote data=%s prov=%s", ttl_key, nq_key)
 
