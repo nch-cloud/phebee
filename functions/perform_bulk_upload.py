@@ -370,6 +370,21 @@ def generate_rdf(
     for key in pairs_seen:
         g.add((URIRef(subject_map[key]), RDF.type, PHEBEE_NS.Subject))
 
+    # Add ProjectSubjectId nodes and relationships to domain graph
+    for (project_id, project_subject_id) in pairs_seen:
+        subject_iri = subject_map[(project_id, project_subject_id)]
+        project_iri = f"{PHEBEE}/projects/{project_id}"
+        project_subject_iri = f"{project_iri}/{project_subject_id}"
+        
+        subject_ref = URIRef(subject_iri)
+        project_ref = URIRef(project_iri)
+        project_subject_ref = URIRef(project_subject_iri)
+        
+        # Add ProjectSubjectId node and relationships
+        g.add((project_subject_ref, RDF.type, PHEBEE_NS.ProjectSubjectId))
+        g.add((subject_ref, PHEBEE_NS.hasProjectSubjectId, project_subject_ref))
+        g.add((project_subject_ref, PHEBEE_NS.hasProject, project_ref))
+
     graph_ttl = g.serialize(format="turtle", prefixes={"phebee": PHEBEE_NS, "obo": OBO, "dcterms": DCTERMS, "xsd": XSD})
     total_duration = time.time() - start_total_time
     logger.info("Total RDF generation process completed in %.2f seconds", total_duration)

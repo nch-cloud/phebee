@@ -459,6 +459,9 @@ def test_perform_bulk_upload_flow(test_payload, test_project_id, physical_resour
     """Basic run with 1 shard; validates subject, term links, evidence, creators."""
     _, _, _ = bulk_upload_run([test_payload], physical_resources)
 
+    # Verify all uploaded data can be retrieved
+    verify_uploaded_data(test_payload, test_project_id, physical_resources)
+
     get_subject_fn = physical_resources["GetSubjectFunction"]
     get_note_fn = physical_resources["GetClinicalNoteFunction"]
 
@@ -497,6 +500,9 @@ def test_bulk_upload_with_qualifiers(test_payload_with_qualifiers, test_project_
     """Two entries with different context flags -> two TermLinks with distinct qualifiers."""
     _, _, _ = bulk_upload_run([test_payload_with_qualifiers], physical_resources)
 
+    # Verify all uploaded data can be retrieved
+    verify_uploaded_data(test_payload_with_qualifiers, test_project_id, physical_resources)
+
     get_subject_fn = physical_resources["GetSubjectFunction"]
     get_termlink_fn = physical_resources["GetTermLinkFunction"]
 
@@ -521,9 +527,71 @@ def test_bulk_upload_with_qualifiers(test_payload_with_qualifiers, test_project_
     assert any({q_neg, q_hyp}.issubset(qs) for qs in seen.values())
     assert any({q_neg, q_fam}.issubset(qs) and q_hyp not in qs for qs in seen.values())
 
+def verify_uploaded_data(test_payload, test_project_id, physical_resources):
+    """Verify that all uploaded data can be retrieved via API functions."""
+    import boto3
+    
+    # Get subjects for the project
+    lambda_client = boto3.client('lambda', region_name='us-east-2')
+    
+    # Test GetSubjectsPhenotypesFunction
+    get_subjects_response = lambda_client.invoke(
+        FunctionName=physical_resources["GetSubjectsPhenotypesFunction"],
+        InvocationType="RequestResponse",
+        Payload=json.dumps({"body": json.dumps({"project_id": test_project_id})})
+    )
+    
+    subjects_result = json.loads(get_subjects_response["Payload"].read().decode("utf-8"))
+    assert subjects_result["statusCode"] == 200, f"GetSubjectsPhenotypesFunction failed: {subjects_result}"
+    
+    subjects_data = json.loads(subjects_result["body"])["body"]
+    
+    # Count unique subjects in test payload
+    unique_subjects = len(set(entry["project_subject_id"] for entry in test_payload))
+    assert len(subjects_data) == unique_subjects, f"Expected {unique_subjects} unique subjects, got {len(subjects_data)}"
+    
+    # Verify each subject has expected data
+    for i, subject_data in enumerate(subjects_data):
+        # Find corresponding entry in test payload
+        expected_entry = next(entry for entry in test_payload if entry["project_subject_id"] == subject_data["project_subject_id"])
+        
+        # Check subject has term links
+        assert len(subject_data["term_links"]) > 0, f"Subject {i} should have term links"
+        
+        # Verify expected terms are present (term_iri is at top level of each entry)
+        found_terms = {tl["term_iri"] for tl in subject_data["term_links"]}
+        expected_terms = {entry["term_iri"] for entry in test_payload if entry["project_subject_id"] == expected_entry["project_subject_id"]}
+        assert expected_terms.issubset(found_terms), f"Missing expected terms for subject {i}"
+        
+        # Test GetSubjectFunction for detailed data
+        project_subject_iri = f"http://ods.nationwidechildrens.org/phebee/projects/{test_project_id}/{expected_entry['project_subject_id']}"
+        get_subject_response = lambda_client.invoke(
+            FunctionName=physical_resources["GetSubjectFunction"],
+            InvocationType="RequestResponse",
+            Payload=json.dumps({"body": json.dumps({
+                "project_subject_iri": project_subject_iri
+            })})
+        )
+        
+        subject_result = json.loads(get_subject_response["Payload"].read().decode("utf-8"))
+        assert subject_result["statusCode"] == 200, f"GetSubjectFunction failed for subject {i}: {subject_result}"
+        
+        detailed_subject = json.loads(subject_result["body"])
+        
+        # Verify subject has expected evidence count
+        total_evidence = sum(len(tl.get("evidence", [])) for tl in detailed_subject.get("terms", []))
+        expected_evidence = sum(len(entry["evidence"]) for entry in test_payload if entry["project_subject_id"] == expected_entry["project_subject_id"])
+        assert total_evidence >= expected_evidence, f"Subject {i} missing evidence: got {total_evidence}, expected {expected_evidence}"
+
+
 def test_bulk_upload_with_spans(test_payload_with_spans, test_project_id, physical_resources):
     """Evidence carries spanStart/spanEnd on TextAnnotation."""
     _, _, _ = bulk_upload_run([test_payload_with_spans], physical_resources)
+    
+    # Verify all uploaded data can be retrieved
+    verify_uploaded_data(test_payload_with_spans, test_project_id, physical_resources)
+    
+    # Original span-specific verification
     get_subject_fn = physical_resources["GetSubjectFunction"]
 
     entry = test_payload_with_spans[0]
@@ -538,6 +606,9 @@ def test_bulk_upload_with_spans(test_payload_with_spans, test_project_id, physic
 def test_bulk_upload_with_new_fields(test_payload_with_new_fields, test_project_id, physical_resources):
     """Validate provider_type and author_specialty on ClinicalNote."""
     _, _, _ = bulk_upload_run([test_payload_with_new_fields], physical_resources)
+
+    # Verify all uploaded data can be retrieved
+    verify_uploaded_data(test_payload_with_new_fields, test_project_id, physical_resources)
 
     entry = test_payload_with_new_fields[0]
     project_subject_iri = f"http://ods.nationwidechildrens.org/phebee/projects/{entry['project_id']}/{entry['project_subject_id']}"
@@ -563,6 +634,10 @@ def test_bulk_upload_with_new_fields(test_payload_with_new_fields, test_project_
 def test_bulk_upload_duplicate_detection(test_duplicate_payload, test_project_id, physical_resources):
     """Two identical entries in one shard => single TermLink & single Evidence."""
     _, _, _ = bulk_upload_run([test_duplicate_payload], physical_resources)
+    
+    # Verify all uploaded data can be retrieved
+    verify_uploaded_data(test_duplicate_payload, test_project_id, physical_resources)
+    
     entry = test_duplicate_payload[0]
 
     get_subject_fn = physical_resources["GetSubjectFunction"]
@@ -578,6 +653,9 @@ def test_bulk_upload_encounter_duplicate_handling(test_duplicate_encounters_payl
     """Same encounter across different term links -> one Encounter node reused; notes remain distinct."""
     # First run
     run1 = bulk_upload_run([test_duplicate_encounters_payload], physical_resources)
+
+    # Verify all uploaded data can be retrieved
+    verify_uploaded_data(test_duplicate_encounters_payload, test_project_id, physical_resources)
 
     get_subject_fn = physical_resources["GetSubjectFunction"]
     get_note_fn = physical_resources["GetClinicalNoteFunction"]
@@ -617,6 +695,9 @@ def test_bulk_upload_encounter_in_batch_duplicate_handling(test_duplicate_encoun
     """Multiple notes share one encounter within a shard -> one Encounter, three Notes."""
     _, _, _ = bulk_upload_run([test_duplicate_encounters_in_batch_payload], physical_resources)
 
+    # Verify all uploaded data can be retrieved
+    verify_uploaded_data(test_duplicate_encounters_in_batch_payload, test_project_id, physical_resources)
+
     e = test_duplicate_encounters_in_batch_payload[0]
     get_subject_fn = physical_resources["GetSubjectFunction"]
     get_note_fn = physical_resources["GetClinicalNoteFunction"]
@@ -643,6 +724,9 @@ def test_bulk_upload_clinical_note_duplicate_handling(test_duplicate_notes_in_ba
     """Same ClinicalNote used by two TermLinks -> one note with two hasTermLink edges."""
     _, _, _ = bulk_upload_run([test_duplicate_notes_in_batch_payload], physical_resources)
 
+    # Verify all uploaded data can be retrieved
+    verify_uploaded_data(test_duplicate_notes_in_batch_payload, test_project_id, physical_resources)
+
     e = test_duplicate_notes_in_batch_payload[0]
     get_subject_fn = physical_resources["GetSubjectFunction"]
     get_note_fn = physical_resources["GetClinicalNoteFunction"]
@@ -667,6 +751,9 @@ def test_bulk_upload_clinical_note_duplicate_handling(test_duplicate_notes_in_ba
 def test_term_link_source_node(test_payload, test_project_id, physical_resources):
     """TermLink IRIs are based on the ClinicalNote when evidence is a clinical note."""
     _, _, _ = bulk_upload_run([test_payload], physical_resources)
+
+    # Verify all uploaded data can be retrieved
+    verify_uploaded_data(test_payload, test_project_id, physical_resources)
 
     e = test_payload[0]
     get_subject_fn = physical_resources["GetSubjectFunction"]
@@ -702,6 +789,9 @@ def test_bulk_upload_subject_deduplication(test_payload, test_project_id, physic
     # Second upload with same project_subject_id - this should be idempotent
     bulk_upload_run([test_payload], physical_resources)
     
+    # Verify all uploaded data can be retrieved
+    verify_uploaded_data(test_payload, test_project_id, physical_resources)
+    
     get_subject_fn = physical_resources["GetSubjectFunction"]
     entry = test_payload[0]
     project_subject_iri = f"http://ods.nationwidechildrens.org/phebee/projects/{entry['project_id']}/{entry['project_subject_id']}"
@@ -733,6 +823,9 @@ def test_bulk_upload_encounter_deduplication(test_payload, test_project_id, phys
     
     # Second upload with same encounter_id - this should be idempotent
     bulk_upload_run([test_payload], physical_resources)
+    
+    # Verify all uploaded data can be retrieved
+    verify_uploaded_data(test_payload, test_project_id, physical_resources)
     
     get_subject_fn = physical_resources["GetSubjectFunction"]
     get_encounter_fn = physical_resources["GetEncounterFunction"]
@@ -857,6 +950,9 @@ def test_bulk_upload_concurrent_uploads(test_project_id, physical_resources):
     assert len(errors) == 0, f"Concurrent uploads failed: {errors}"
     assert len(results) == 2, f"Expected 2 results, got {len(results)}"
     
+    # Verify all uploaded data can be retrieved
+    verify_uploaded_data(payload, test_project_id, physical_resources)
+    
     # Verify final state is consistent
     get_subject_fn = physical_resources["GetSubjectFunction"]
     project_subject_iri = f"http://ods.nationwidechildrens.org/phebee/projects/{test_project_id}/{subject_id}"
@@ -887,6 +983,23 @@ def test_bulk_upload_empty_evidence_arrays(test_project_id, physical_resources):
     
     # Upload should succeed but create no term links (no evidence = no term link)
     bulk_upload_run([payload], physical_resources)
+    
+    # Special verification for empty evidence - subject should exist but have empty term_links
+    import boto3
+    lambda_client = boto3.client('lambda', region_name='us-east-2')
+    
+    # GetSubjectsPhenotypesFunction should return the subject but with empty term_links
+    get_subjects_response = lambda_client.invoke(
+        FunctionName=physical_resources["GetSubjectsPhenotypesFunction"],
+        InvocationType="RequestResponse",
+        Payload=json.dumps({"body": json.dumps({"project_id": test_project_id})})
+    )
+    
+    subjects_result = json.loads(get_subjects_response["Payload"].read().decode("utf-8"))
+    assert subjects_result["statusCode"] == 200
+    subjects_data = json.loads(subjects_result["body"])["body"]
+    assert len(subjects_data) == 1, "Subject should exist even with empty evidence"
+    assert len(subjects_data[0]["term_links"]) == 0, "Subject should have empty term_links array"
     
     # Verify the subject exists but has no terms
     get_subject_fn = physical_resources["GetSubjectFunction"]
@@ -963,6 +1076,9 @@ def test_bulk_upload_true_idempotency(test_project_id, physical_resources):
     # Execute uploads
     bulk_upload_run([first_payload], physical_resources)
     bulk_upload_run([second_payload], physical_resources)
+    
+    # Verify uploaded data can be retrieved via GetSubjectsPhenotypesFunction
+    verify_uploaded_data([{"project_id": test_project_id, "project_subject_id": subject_id, "evidence": first_payload + second_payload}], test_project_id, physical_resources)
     
     # Verify true idempotency
     get_subject_fn = physical_resources["GetSubjectFunction"]

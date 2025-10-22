@@ -304,6 +304,8 @@ def test_project_id(cloudformation_stack):
     project_id = f"test-project-{uuid.uuid4().hex[:8]}"
     payload = {"project_id": project_id, "project_label": "Lambda-Initiated Project"}
 
+    print(f"Test project id: {project_id}")
+
     # Create the project by invoking the deployed Lambda
     create_response = lambda_client.invoke(
         FunctionName=f"{cloudformation_stack}-CreateProjectFunction",  # adjust if you've named it
