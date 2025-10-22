@@ -311,10 +311,17 @@ def test_project_id(cloudformation_stack):
         Payload=json.dumps({"body": json.dumps(payload)}),
     )
 
-    body = json.loads(
-        json.loads(create_response["Payload"].read().decode("utf-8"))["body"]
-    )
-    assert create_response["StatusCode"] == 200, f"Invoke failed: {body}"
+    lambda_response = json.loads(create_response["Payload"].read().decode("utf-8"))
+    assert create_response["StatusCode"] == 200, f"Invoke failed: {lambda_response}"
+    
+    # Handle both direct response and API Gateway format
+    if "statusCode" in lambda_response:
+        assert lambda_response["statusCode"] == 200, f"Lambda failed: {lambda_response}"
+        body = json.loads(lambda_response["body"])
+    else:
+        # Direct Lambda response
+        body = lambda_response
+    
     assert body.get("project_created") is True
 
     yield body.get("project_id")

@@ -28,7 +28,7 @@ def execute_update(query: str):
 def execute_query(query: str):
     logger.info(query)
 
-    response = make_signed_request("GET", "sparql", query)
+    response = make_signed_request("POST", "sparql", query)
 
     logger.info(response)
 
@@ -232,6 +232,8 @@ def make_signed_request(method, query_type, query):
         print("Request URL = " + request_url)
         if query_type == "loader":
             request.headers["Content-type"] = "application/json"
+        elif query_type == "sparql" or query_type == "sparqlupdate":
+            request.headers["Content-type"] = "application/x-www-form-urlencoded"
         r = requests.post(request_url, headers=request.headers, verify=False, data=data)
 
     else:
@@ -272,11 +274,19 @@ def get_canonical_uri_and_payload(query_type, query, method):
     # Set the stack and payload depending on query_type.
     if query_type == "sparql":
         canonical_uri = "/sparql/"
-        payload = {"query": query}
+        if method == "POST":
+            from urllib.parse import urlencode
+            payload = urlencode({"query": query})
+        else:
+            payload = {"query": query}
 
     elif query_type == "sparqlupdate":
         canonical_uri = "/sparql/"
-        payload = {"update": query}
+        if method == "POST":
+            from urllib.parse import urlencode
+            payload = urlencode({"update": query})
+        else:
+            payload = {"update": query}
 
     elif query_type == "gremlin":
         canonical_uri = "/gremlin/"
