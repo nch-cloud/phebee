@@ -313,7 +313,7 @@ def get_subjects(
     PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
 
-    SELECT ?subjectIRI ?termlink ?term ?term_label ?sourceNode ?sourceType
+    SELECT ?subjectIRI ?termlink ?term ?term_label ?sourceNode ?sourceType ?qualifier
     FROM <http://ods.nationwidechildrens.org/phebee/subjects>
     FROM <http://ods.nationwidechildrens.org/phebee/hpo~{hpo_version}>
     FROM <http://ods.nationwidechildrens.org/phebee/mondo~{mondo_version}>
@@ -338,6 +338,11 @@ def get_subjects(
                       phebee:hasTerm ?term .
             BIND(?clinicalNote AS ?sourceNode)
             BIND("clinical_note" AS ?sourceType)
+        }}
+        
+        # Optional qualifiers
+        OPTIONAL {{
+            ?termlink phebee:hasQualifyingTerm ?qualifier .
         }}
         
         # Optional term labels
@@ -368,6 +373,7 @@ def get_subjects(
         subject_iri = binding["subjectIRI"]["value"]
         termlink_iri = binding["termlink"]["value"]
         term_iri_val = binding["term"]["value"]
+        qualifier_iri = binding.get("qualifier", {}).get("value")
         
         if subject_iri in subjects_map:
             if termlink_iri not in subjects_map[subject_iri]["term_links"]:
@@ -377,14 +383,23 @@ def get_subjects(
                     "term_label": binding.get("term_label", {}).get("value"),
                     "source_node": binding.get("sourceNode", {}).get("value"),
                     "source_type": binding.get("sourceType", {}).get("value"),
-                    "evidence": []  # Empty for performance - evidence can be loaded separately if needed
+                    "evidence": [],  # Empty for performance - evidence can be loaded separately if needed
+                    "qualifiers": set()
                 }
+            
+            # Add qualifier if present
+            if qualifier_iri:
+                subjects_map[subject_iri]["term_links"][termlink_iri]["qualifiers"].add(qualifier_iri)
     
     # Convert to final format
     subjects = []
     for subject in subjects_map.values():
-        # Convert term_links dict to sorted list
-        subject["term_links"] = sorted(subject["term_links"].values(), key=lambda x: x["termlink_iri"])
+        # Convert term_links dict to sorted list and convert qualifiers sets to sorted lists
+        term_links = []
+        for term_link in subject["term_links"].values():
+            term_link["qualifiers"] = sorted(list(term_link["qualifiers"]))
+            term_links.append(term_link)
+        subject["term_links"] = sorted(term_links, key=lambda x: x["termlink_iri"])
         subjects.append(subject)
     
     # Sort by subject IRI to maintain consistent ordering
@@ -502,13 +517,13 @@ def get_term_links_with_evidence(
             return s
 
     # -------------------------------
-    # 1) Lean main query: link/term/evidence
+    # 1) Lean main query: link/term/evidence/qualifiers
     # -------------------------------
     sparql_links = f"""
     PREFIX rdf:    <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
     PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
 
-    SELECT ?link ?term ?evidence
+    SELECT ?link ?term ?evidence ?qualifier
     WHERE {{
       VALUES ?subject {{ <{source_node_iri}> }}
 
@@ -522,6 +537,10 @@ def get_term_links_with_evidence(
           ?link phebee:hasEvidence ?evidence .
           # Guard: don't treat nested TermLinks as evidence
           MINUS {{ ?evidence a phebee:TermLink }}
+        }}
+        
+        OPTIONAL {{
+          ?link phebee:hasQualifyingTerm ?qualifier .
         }}
       }}
     }}
@@ -537,10 +556,11 @@ def get_term_links_with_evidence(
         link_iri = row["link"]["value"]
         term_iri = row["term"]["value"]
         evidence_iri = row.get("evidence", {}).get("value")
+        qualifier_iri = row.get("qualifier", {}).get("value")
 
         link_obj = links.setdefault(
             link_iri,
-            {"termlink_iri": link_iri, "term_iri": term_iri, "term_label": None, "evidence": []},
+            {"termlink_iri": link_iri, "term_iri": term_iri, "term_label": None, "evidence": [], "qualifiers": set()},
         )
         distinct_terms.add(term_iri)
 
@@ -549,6 +569,9 @@ def get_term_links_with_evidence(
                 distinct_evidence.add(evidence_iri)
             # We'll fill details after the second query, but keep placeholder list membership now
             link_obj["evidence"].append({"evidence_iri": evidence_iri})
+            
+        if qualifier_iri:
+            link_obj["qualifiers"].add(qualifier_iri)
 
     # -------------------------------
     # 2) Bounded evidence-details query (VALUES over distinct_evidence)
@@ -657,6 +680,10 @@ def get_term_links_with_evidence(
         label_map = {b["term"]["value"]: b["term_label"]["value"] for b in lab_res["results"]["bindings"] if "term_label" in b}
         for obj in links.values():
             obj["term_label"] = label_map.get(obj["term_iri"])
+
+    # Convert qualifiers sets to sorted lists for consistent output
+    for obj in links.values():
+        obj["qualifiers"] = sorted(list(obj["qualifiers"]))
 
     return list(links.values())
 

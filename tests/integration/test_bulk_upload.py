@@ -527,6 +527,45 @@ def test_bulk_upload_with_qualifiers(test_payload_with_qualifiers, test_project_
     assert any({q_neg, q_hyp}.issubset(qs) for qs in seen.values())
     assert any({q_neg, q_fam}.issubset(qs) and q_hyp not in qs for qs in seen.values())
 
+
+def test_pagination_api_with_qualifiers(test_payload_with_qualifiers, test_project_id, physical_resources):
+    """Test that GetSubjectsPhenotypesFunction (pagination API) includes qualifiers."""
+    _, _, _ = bulk_upload_run([test_payload_with_qualifiers], physical_resources)
+
+    get_subjects_fn = physical_resources["GetSubjectsPhenotypesFunction"]
+    
+    # Query subjects via pagination API
+    subjects_response = invoke_lambda(get_subjects_fn, {
+        "project_id": test_project_id,
+        "limit": 10
+    })
+    
+    assert subjects_response["n_subjects"] == 1
+    subjects = subjects_response["body"]
+    assert len(subjects) == 1
+    
+    subject = subjects[0]
+    assert len(subject["term_links"]) == 2
+    
+    # Verify qualifiers are present in pagination API response
+    qualifiers_found = []
+    for term_link in subject["term_links"]:
+        qualifiers = term_link.get("qualifiers", [])
+        assert len(qualifiers) > 0, f"No qualifiers found in term_link: {term_link['termlink_iri']}"
+        qualifiers_found.extend(qualifiers)
+    
+    # Expected qualifiers from the test data
+    q_neg = "http://ods.nationwidechildrens.org/phebee/qualifier/negated"
+    q_hyp = "http://ods.nationwidechildrens.org/phebee/qualifier/hypothetical"
+    q_fam = "http://ods.nationwidechildrens.org/phebee/qualifier/family"
+    
+    # Verify expected qualifiers are present
+    assert q_neg in qualifiers_found, "Missing 'negated' qualifier"
+    assert q_hyp in qualifiers_found, "Missing 'hypothetical' qualifier"
+    assert q_fam in qualifiers_found, "Missing 'family' qualifier"
+    
+    print(f"✅ Pagination API qualifiers verified: {len(qualifiers_found)} total qualifiers found")
+
 def verify_uploaded_data(test_payload, test_project_id, physical_resources):
     """Verify that all uploaded data can be retrieved via API functions."""
     import boto3
