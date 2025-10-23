@@ -224,7 +224,7 @@ def get_subjects(
     project_iri: str,
     hpo_version: str,
     mondo_version: str,
-    limit: int = 100,
+    limit: int = 50,
     cursor: str = None,
     term_iri: str = None,
     term_source: str = None,

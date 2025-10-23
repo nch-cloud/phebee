@@ -38,7 +38,7 @@ def lambda_handler(event, context):
     project_subject_ids = body.get("project_subject_ids")
     
     # Pagination parameters
-    limit = body.get("limit", 100)
+    limit = body.get("limit", 50)
     cursor = body.get("cursor")
 
     result = get_subjects(
