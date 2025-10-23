@@ -224,72 +224,181 @@ def get_subjects(
     project_iri: str,
     hpo_version: str,
     mondo_version: str,
+    limit: int = 100,
+    cursor: str = None,
     term_iri: str = None,
     term_source: str = None,
     term_source_version: str = None,
     project_subject_ids: list[str] = None,
-) -> list[dict]:
+) -> dict:
+    # Build optional clauses
     project_subject_ids_clause = ""
     if project_subject_ids:
         iri_list = " ".join(f"<{project_iri}/{psid}>" for psid in project_subject_ids)
         project_subject_ids_clause = f"VALUES ?projectSubjectIRI {{ {iri_list} }}"
 
+    cursor_clause = ""
+    if cursor:
+        cursor_clause = f'FILTER(STR(?subjectIRI) > "{cursor}")'
+
+    # Phase 1: Get paginated subject IRIs with optional term filtering
+    term_filter_clause = ""
+    term_graphs = ""
     if term_iri:
-        sparql = f"""
-        PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-        PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+        term_graphs = f"FROM <http://ods.nationwidechildrens.org/phebee/{term_source}~{term_source_version}>"
+        term_filter_clause = f"""
+        # Find subjects with term links (direct or via clinical notes)
+        ?termlink rdf:type phebee:TermLink ;
+                  phebee:sourceNode ?srcNode ;
+                  phebee:hasTerm ?term .
+        ?srcNode (phebee:hasEncounter/phebee:hasSubject)? ?subjectIRI .
+        ?term rdfs:subClassOf* <{term_iri}> .
+        """
 
-        SELECT ?subjectIRI ?projectSubjectIRI
-        FROM <http://ods.nationwidechildrens.org/phebee/{term_source}~{term_source_version}>
-        FROM <{project_iri}>
-        FROM <http://ods.nationwidechildrens.org/phebee/subjects>
-        WHERE {{
-            ?projectSubjectIRI phebee:hasProject <{project_iri}> .
-            {project_subject_ids_clause}
-            ?subjectIRI phebee:hasProjectSubjectId ?projectSubjectIRI .
+    subjects_query = f"""
+    PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+    PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
 
+    SELECT DISTINCT ?subjectIRI ?projectSubjectIRI
+    {term_graphs}
+    FROM <{project_iri}>
+    FROM <http://ods.nationwidechildrens.org/phebee/subjects>
+    WHERE {{
+        # Core subject-project relationship
+        ?projectSubjectIRI phebee:hasProject <{project_iri}> .
+        ?subjectIRI phebee:hasProjectSubjectId ?projectSubjectIRI .
+        {project_subject_ids_clause}
+        
+        # Term filtering (only if term_iri provided)
+        {term_filter_clause}
+        
+        # Cursor-based filtering
+        {cursor_clause}
+    }}
+    ORDER BY ?subjectIRI
+    LIMIT {limit + 1}
+    """
+
+    subjects_result = execute_query(subjects_query)
+    logger.info("Phase 1: Subject query returned %d subjects", len(subjects_result["results"]["bindings"]))
+    
+    # Process subjects and determine pagination
+    subject_bindings = subjects_result["results"]["bindings"]
+    has_more = len(subject_bindings) > limit
+    if has_more:
+        subject_bindings = subject_bindings[:limit]  # Remove extra record
+        next_cursor = subject_bindings[-1]["subjectIRI"]["value"] if subject_bindings else None
+    else:
+        next_cursor = None
+
+    # If no subjects found, return empty result
+    if not subject_bindings:
+        return {
+            "subjects": [],
+            "pagination": {
+                "limit": limit,
+                "has_more": False,
+                "next_cursor": None,
+                "cursor": cursor
+            }
+        }
+
+    # Phase 2: Get term links for the paginated subjects
+    subject_iris = [binding["subjectIRI"]["value"] for binding in subject_bindings]
+    subject_values = " ".join(f"<{iri}>" for iri in subject_iris)
+    
+    termlinks_query = f"""
+    PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+    PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+
+    SELECT ?subjectIRI ?termlink ?term ?term_label ?sourceNode ?sourceType
+    FROM <http://ods.nationwidechildrens.org/phebee/subjects>
+    FROM <http://ods.nationwidechildrens.org/phebee/hpo~{hpo_version}>
+    FROM <http://ods.nationwidechildrens.org/phebee/mondo~{mondo_version}>
+    WHERE {{
+        VALUES ?subjectIRI {{ {subject_values} }}
+        
+        {{
+            # Pattern 1: Direct subject → termlink
             ?termlink rdf:type phebee:TermLink ;
                       phebee:sourceNode ?subjectIRI ;
                       phebee:hasTerm ?term .
-
-            ?term rdfs:subClassOf* <{term_iri}> .
+            BIND(?subjectIRI AS ?sourceNode)
+            BIND("subject" AS ?sourceType)
         }}
-        """
-    else:
-        sparql = f"""
-        PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-
-        SELECT ?subjectIRI ?projectSubjectIRI
-        FROM <{project_iri}>
-        FROM <http://ods.nationwidechildrens.org/phebee/subjects>
-        WHERE {{
-            ?projectSubjectIRI phebee:hasProject <{project_iri}> .
-            {project_subject_ids_clause}
-            ?subjectIRI phebee:hasProjectSubjectId ?projectSubjectIRI .
+        UNION
+        {{
+            # Pattern 2: Subject → encounter → clinical note → termlink
+            ?encounter phebee:hasSubject ?subjectIRI .
+            ?clinicalNote phebee:hasEncounter ?encounter .
+            ?termlink rdf:type phebee:TermLink ;
+                      phebee:sourceNode ?clinicalNote ;
+                      phebee:hasTerm ?term .
+            BIND(?clinicalNote AS ?sourceNode)
+            BIND("clinical_note" AS ?sourceType)
         }}
-        """
+        
+        # Optional term labels
+        OPTIONAL {{
+            ?term rdfs:label ?term_label . 
+            FILTER(LANGMATCHES(LANG(?term_label),'en'))
+        }}
+    }}
+    """
 
-    result = execute_query(sparql)
-    logger.info("Subjects matching term: %s", term_iri)
-    logger.info(result)
-
-    subjects = []
-    for binding in result["results"]["bindings"]:
+    termlinks_result = execute_query(termlinks_query)
+    logger.info("Phase 2: Term links query returned %d bindings", len(termlinks_result["results"]["bindings"]))
+    
+    # Build subjects map from Phase 1 results
+    subjects_map = {}
+    for binding in subject_bindings:
         subject_iri = binding["subjectIRI"]["value"]
         project_subject_iri = binding["projectSubjectIRI"]["value"]
-        entry = {
+        subjects_map[subject_iri] = {
             "subject_iri": subject_iri,
             "project_subject_iri": project_subject_iri,
             "project_subject_id": project_subject_iri.split("/")[-1],
+            "term_links": {}
         }
-
-        entry["term_links"] = get_term_links_with_evidence(
-            subject_iri, hpo_version, mondo_version
-        )
-
-        subjects.append(entry)
-
-    return subjects
+    
+    # Add term links from Phase 2 results
+    for binding in termlinks_result["results"]["bindings"]:
+        subject_iri = binding["subjectIRI"]["value"]
+        termlink_iri = binding["termlink"]["value"]
+        term_iri_val = binding["term"]["value"]
+        
+        if subject_iri in subjects_map:
+            if termlink_iri not in subjects_map[subject_iri]["term_links"]:
+                subjects_map[subject_iri]["term_links"][termlink_iri] = {
+                    "termlink_iri": termlink_iri,
+                    "term_iri": term_iri_val,
+                    "term_label": binding.get("term_label", {}).get("value"),
+                    "source_node": binding.get("sourceNode", {}).get("value"),
+                    "source_type": binding.get("sourceType", {}).get("value"),
+                    "evidence": []  # Empty for performance - evidence can be loaded separately if needed
+                }
+    
+    # Convert to final format
+    subjects = []
+    for subject in subjects_map.values():
+        # Convert term_links dict to sorted list
+        subject["term_links"] = sorted(subject["term_links"].values(), key=lambda x: x["termlink_iri"])
+        subjects.append(subject)
+    
+    # Sort by subject IRI to maintain consistent ordering
+    subjects = sorted(subjects, key=lambda x: x["subject_iri"])
+    
+    return {
+        "subjects": subjects,
+        "pagination": {
+            "limit": limit,
+            "has_more": has_more,
+            "next_cursor": next_cursor,
+            "cursor": cursor
+        }
+    }
 
 
 def dump_graph_contents(
