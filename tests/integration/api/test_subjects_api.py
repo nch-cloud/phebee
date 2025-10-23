@@ -48,6 +48,7 @@ def test_subjects_query_with_term_and_evidence(
         "span_start": 0,
         "span_end": 10,
         "creator_iri": creator_iri,
+        "term_iri": "http://purl.obolibrary.org/obo/HP_0001250",
         "metadata": "{\"source\": \"test\"}"
     }
     create_annotation_resp = lambda_client.invoke(
