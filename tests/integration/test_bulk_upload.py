@@ -203,7 +203,7 @@ def test_payload_with_qualifiers(test_project_id):
                 {
                     "type": "clinical_note",
                     "encounter_id": encounter_id,
-                    "clinical_note_id": "note-qual-1",
+                    "clinical_note_id": f"note-qual-1-{uuid.uuid4()}",
                     "note_timestamp": "2025-06-06T12:00:00Z",
                     "evidence_creator_id": "robot-creator",
                     "evidence_creator_type": "automated",
@@ -222,7 +222,7 @@ def test_payload_with_qualifiers(test_project_id):
                 {
                     "type": "clinical_note",
                     "encounter_id": encounter_id,
-                    "clinical_note_id": "note-qual-2",
+                    "clinical_note_id": f"note-qual-2-{uuid.uuid4()}",
                     "note_timestamp": "2025-06-06T12:00:00Z",
                     "evidence_creator_id": "robot-creator",
                     "evidence_creator_type": "automated",
