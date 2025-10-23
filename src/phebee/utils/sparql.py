@@ -28,12 +28,12 @@ import uuid
 import hashlib
 import time
 from collections import defaultdict
-from typing import List
+from typing import List, Optional, Sequence
 from aws_lambda_powertools import Metrics, Logger, Tracer
 from datetime import datetime
 from urllib.parse import quote
 from collections import defaultdict
-from phebee.constants import SPARQL_SEPARATOR
+from phebee.constants import SPARQL_SEPARATOR, PHEBEE
 from .neptune import execute_query, execute_update
 from .aws import get_current_timestamp
 
@@ -224,72 +224,196 @@ def get_subjects(
     project_iri: str,
     hpo_version: str,
     mondo_version: str,
+    limit: int = 50,
+    cursor: str = None,
     term_iri: str = None,
     term_source: str = None,
     term_source_version: str = None,
     project_subject_ids: list[str] = None,
-) -> list[dict]:
+) -> dict:
+    # Build optional clauses
     project_subject_ids_clause = ""
     if project_subject_ids:
         iri_list = " ".join(f"<{project_iri}/{psid}>" for psid in project_subject_ids)
         project_subject_ids_clause = f"VALUES ?projectSubjectIRI {{ {iri_list} }}"
 
+    cursor_clause = ""
+    if cursor:
+        cursor_clause = f'FILTER(STR(?subjectIRI) > "{cursor}")'
+
+    # Phase 1: Get paginated subject IRIs with optional term filtering
+    term_filter_clause = ""
+    term_graphs = ""
     if term_iri:
-        sparql = f"""
-        PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-        PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+        term_graphs = f"FROM <http://ods.nationwidechildrens.org/phebee/{term_source}~{term_source_version}>"
+        term_filter_clause = f"""
+        # Find subjects with term links (direct or via clinical notes)
+        ?termlink rdf:type phebee:TermLink ;
+                  phebee:sourceNode ?srcNode ;
+                  phebee:hasTerm ?term .
+        ?srcNode (phebee:hasEncounter/phebee:hasSubject)? ?subjectIRI .
+        ?term rdfs:subClassOf* <{term_iri}> .
+        """
 
-        SELECT ?subjectIRI ?projectSubjectIRI
-        FROM <http://ods.nationwidechildrens.org/phebee/{term_source}~{term_source_version}>
-        FROM <{project_iri}>
-        FROM <http://ods.nationwidechildrens.org/phebee/subjects>
-        WHERE {{
-            ?projectSubjectIRI phebee:hasProject <{project_iri}> .
-            {project_subject_ids_clause}
-            ?subjectIRI phebee:hasProjectSubjectId ?projectSubjectIRI .
+    subjects_query = f"""
+    PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+    PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
 
+    SELECT DISTINCT ?subjectIRI ?projectSubjectIRI
+    {term_graphs}
+    FROM <{project_iri}>
+    FROM <http://ods.nationwidechildrens.org/phebee/subjects>
+    WHERE {{
+        # Core subject-project relationship
+        ?projectSubjectIRI phebee:hasProject <{project_iri}> .
+        ?subjectIRI phebee:hasProjectSubjectId ?projectSubjectIRI .
+        {project_subject_ids_clause}
+        
+        # Term filtering (only if term_iri provided)
+        {term_filter_clause}
+        
+        # Cursor-based filtering
+        {cursor_clause}
+    }}
+    ORDER BY ?subjectIRI
+    LIMIT {limit + 1}
+    """
+
+    subjects_result = execute_query(subjects_query)
+    logger.info("Phase 1: Subject query returned %d subjects", len(subjects_result["results"]["bindings"]))
+    
+    # Process subjects and determine pagination
+    subject_bindings = subjects_result["results"]["bindings"]
+    has_more = len(subject_bindings) > limit
+    if has_more:
+        subject_bindings = subject_bindings[:limit]  # Remove extra record
+        next_cursor = subject_bindings[-1]["subjectIRI"]["value"] if subject_bindings else None
+    else:
+        next_cursor = None
+
+    # If no subjects found, return empty result
+    if not subject_bindings:
+        return {
+            "subjects": [],
+            "pagination": {
+                "limit": limit,
+                "has_more": False,
+                "next_cursor": None,
+                "cursor": cursor
+            }
+        }
+
+    # Phase 2: Get term links for the paginated subjects
+    subject_iris = [binding["subjectIRI"]["value"] for binding in subject_bindings]
+    subject_values = " ".join(f"<{iri}>" for iri in subject_iris)
+    
+    termlinks_query = f"""
+    PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+    PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+
+    SELECT ?subjectIRI ?termlink ?term ?term_label ?sourceNode ?sourceType ?qualifier
+    FROM <http://ods.nationwidechildrens.org/phebee/subjects>
+    FROM <http://ods.nationwidechildrens.org/phebee/hpo~{hpo_version}>
+    FROM <http://ods.nationwidechildrens.org/phebee/mondo~{mondo_version}>
+    WHERE {{
+        VALUES ?subjectIRI {{ {subject_values} }}
+        
+        {{
+            # Pattern 1: Direct subject → termlink
             ?termlink rdf:type phebee:TermLink ;
                       phebee:sourceNode ?subjectIRI ;
                       phebee:hasTerm ?term .
-
-            ?term rdfs:subClassOf* <{term_iri}> .
+            BIND(?subjectIRI AS ?sourceNode)
+            BIND("subject" AS ?sourceType)
         }}
-        """
-    else:
-        sparql = f"""
-        PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-
-        SELECT ?subjectIRI ?projectSubjectIRI
-        FROM <{project_iri}>
-        FROM <http://ods.nationwidechildrens.org/phebee/subjects>
-        WHERE {{
-            ?projectSubjectIRI phebee:hasProject <{project_iri}> .
-            {project_subject_ids_clause}
-            ?subjectIRI phebee:hasProjectSubjectId ?projectSubjectIRI .
+        UNION
+        {{
+            # Pattern 2: Subject → encounter → clinical note → termlink
+            ?encounter phebee:hasSubject ?subjectIRI .
+            ?clinicalNote phebee:hasEncounter ?encounter .
+            ?termlink rdf:type phebee:TermLink ;
+                      phebee:sourceNode ?clinicalNote ;
+                      phebee:hasTerm ?term .
+            BIND(?clinicalNote AS ?sourceNode)
+            BIND("clinical_note" AS ?sourceType)
         }}
-        """
+        
+        # Optional qualifiers
+        OPTIONAL {{
+            ?termlink phebee:hasQualifyingTerm ?qualifier .
+        }}
+        
+        # Optional term labels
+        OPTIONAL {{
+            ?term rdfs:label ?term_label . 
+            FILTER(LANGMATCHES(LANG(?term_label),'en'))
+        }}
+    }}
+    """
 
-    result = execute_query(sparql)
-    logger.info("Subjects matching term: %s", term_iri)
-    logger.info(result)
-
-    subjects = []
-    for binding in result["results"]["bindings"]:
+    termlinks_result = execute_query(termlinks_query)
+    logger.info("Phase 2: Term links query returned %d bindings", len(termlinks_result["results"]["bindings"]))
+    
+    # Build subjects map from Phase 1 results
+    subjects_map = {}
+    for binding in subject_bindings:
         subject_iri = binding["subjectIRI"]["value"]
         project_subject_iri = binding["projectSubjectIRI"]["value"]
-        entry = {
+        subjects_map[subject_iri] = {
             "subject_iri": subject_iri,
             "project_subject_iri": project_subject_iri,
             "project_subject_id": project_subject_iri.split("/")[-1],
+            "term_links": {}
         }
-
-        entry["term_links"] = get_term_links_for_node(
-            subject_iri, hpo_version, mondo_version
-        )
-
-        subjects.append(entry)
-
-    return subjects
+    
+    # Add term links from Phase 2 results
+    for binding in termlinks_result["results"]["bindings"]:
+        subject_iri = binding["subjectIRI"]["value"]
+        termlink_iri = binding["termlink"]["value"]
+        term_iri_val = binding["term"]["value"]
+        qualifier_iri = binding.get("qualifier", {}).get("value")
+        
+        if subject_iri in subjects_map:
+            if termlink_iri not in subjects_map[subject_iri]["term_links"]:
+                subjects_map[subject_iri]["term_links"][termlink_iri] = {
+                    "termlink_iri": termlink_iri,
+                    "term_iri": term_iri_val,
+                    "term_label": binding.get("term_label", {}).get("value"),
+                    "source_node": binding.get("sourceNode", {}).get("value"),
+                    "source_type": binding.get("sourceType", {}).get("value"),
+                    "evidence": [],  # Empty for performance - evidence can be loaded separately if needed
+                    "qualifiers": set()
+                }
+            
+            # Add qualifier if present
+            if qualifier_iri:
+                subjects_map[subject_iri]["term_links"][termlink_iri]["qualifiers"].add(qualifier_iri)
+    
+    # Convert to final format
+    subjects = []
+    for subject in subjects_map.values():
+        # Convert term_links dict to sorted list and convert qualifiers sets to sorted lists
+        term_links = []
+        for term_link in subject["term_links"].values():
+            term_link["qualifiers"] = sorted(list(term_link["qualifiers"]))
+            term_links.append(term_link)
+        subject["term_links"] = sorted(term_links, key=lambda x: x["termlink_iri"])
+        subjects.append(subject)
+    
+    # Sort by subject IRI to maintain consistent ordering
+    subjects = sorted(subjects, key=lambda x: x["subject_iri"])
+    
+    return {
+        "subjects": subjects,
+        "pagination": {
+            "limit": limit,
+            "has_more": has_more,
+            "next_cursor": next_cursor,
+            "cursor": cursor
+        }
+    }
 
 
 def dump_graph_contents(
@@ -347,144 +471,221 @@ def split_predicate(pred: str):
     ).lower()
 
 
-def get_term_links_for_node(
-    source_node_iri: str, hpo_version: str, mondo_version: str
+def get_term_links_with_evidence(
+    source_node_iri: str,
+    hpo_version: str | None = None,
+    mondo_version: str | None = None,
 ) -> list[dict]:
-    sparql = f"""
-    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+    """
+    Returns:
+      [
+        {
+          "termlink_iri": str,
+          "term_iri": str,
+          "term_label": Optional[str],
+          "evidence": [
+            {
+              "evidence_iri": str,
+              "evidence_class": Optional[str],        # e.g., phebee:TextAnnotation (IRI)
+              "evidence_type": Optional[str],         # ECO IRI
+              "assertion_type": Optional[str],        # ECO IRI
+              "created": Optional[str],               # xsd:dateTime (ISO)
+              # TextAnnotation-specific (when applicable)
+              "span_start": Optional[int],
+              "span_end": Optional[int],
+              "text_source": Optional[str],           # IRI of ClinicalNote/TextSource
+              "metadata": Optional[dict | str],       # JSON-decoded when possible
+            },
+            ...
+          ],
+        },
+        ...
+      ]
+    """
+    from json import loads as json_loads
+
+    def _safe_int(x):
+        try:
+            return int(x)
+        except Exception:
+            return None
+
+    def _maybe_json(s: str):
+        try:
+            return json_loads(s)
+        except Exception:
+            return s
+
+    # -------------------------------
+    # 1) Lean main query: link/term/evidence/qualifiers
+    # -------------------------------
+    sparql_links = f"""
+    PREFIX rdf:    <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
     PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-    PREFIX dcterms: <http://purl.org/dc/terms/>
-    PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
 
-    SELECT DISTINCT
-    ?link ?term ?term_label ?termlink_creator
-    ?termlink_creator_id ?termlink_creator_version ?termlink_creator_title ?termlink_creator_type
-    ?evidence ?evidence_type ?evidence_creator
-    ?evidence_creator_id ?evidence_creator_version ?evidence_creator_title ?evidence_creator_type
-
+    SELECT ?link ?term ?evidence ?qualifier
     WHERE {{
-        GRAPH <http://ods.nationwidechildrens.org/phebee/subjects> {{
-            ?link rdf:type phebee:TermLink ;
-                phebee:sourceNode <{source_node_iri}> ;
-                phebee:hasTerm ?term .
+      VALUES ?subject {{ <{source_node_iri}> }}
 
-            OPTIONAL {{ ?link phebee:hasEvidence ?evidence . }}
-            OPTIONAL {{ ?link phebee:creator ?termlink_creator . }}
-
-            OPTIONAL {{ ?termlink_creator rdf:type ?termlink_creator_type . }}
-            OPTIONAL {{ ?termlink_creator dcterms:title ?termlink_creator_title . }}
-            OPTIONAL {{ ?termlink_creator dcterms:hasVersion ?termlink_creator_version . }}
-            OPTIONAL {{ ?termlink_creator phebee:creatorId ?termlink_creator_id . }}
-        }}
+      GRAPH <http://ods.nationwidechildrens.org/phebee/subjects> {{
+        ?link a phebee:TermLink ;
+              phebee:hasTerm ?term ;
+              phebee:sourceNode ?srcNode .
+        ?srcNode phebee:hasEncounter/phebee:hasSubject ?subject .
 
         OPTIONAL {{
-            GRAPH <http://ods.nationwidechildrens.org/phebee/hpo~{hpo_version}> {{
-                ?term rdfs:label ?term_label .
-            }}
+          ?link phebee:hasEvidence ?evidence .
+          # Guard: don't treat nested TermLinks as evidence
+          MINUS {{ ?evidence a phebee:TermLink }}
         }}
+        
         OPTIONAL {{
-            GRAPH <http://ods.nationwidechildrens.org/phebee/mondo~{mondo_version}> {{
-                ?term rdfs:label ?term_label .
-            }}
+          ?link phebee:hasQualifyingTerm ?qualifier .
         }}
-
-        OPTIONAL {{
-            GRAPH <http://ods.nationwidechildrens.org/phebee/subjects> {{
-                ?evidence rdf:type ?evidence_type .
-                ?evidence phebee:creator ?evidence_creator .
-
-                OPTIONAL {{ ?evidence_creator rdf:type ?evidence_creator_type . }}
-                OPTIONAL {{ ?evidence_creator dcterms:title ?evidence_creator_title . }}
-                OPTIONAL {{ ?evidence_creator dcterms:hasVersion ?evidence_creator_version . }}
-                OPTIONAL {{ ?evidence_creator phebee:creatorId ?evidence_creator_id . }}
-            }}
-        }}
+      }}
     }}
     """
 
-    result = execute_query(sparql)
-    links = {}
+    res = execute_query(sparql_links)
 
-    for row in result["results"]["bindings"]:
+    links: dict[str, dict] = {}
+    distinct_terms: set[str] = set()
+    distinct_evidence: set[str] = set()
+
+    for row in res["results"]["bindings"]:
         link_iri = row["link"]["value"]
         term_iri = row["term"]["value"]
-        term_label = row.get("term_label", {}).get("value")
-
-        # TermLink creator
-        termlink_creator_iri = row.get("termlink_creator", {}).get("value")
-        termlink_creator_id = row.get("termlink_creator_id", {}).get("value")
-        termlink_creator_title = row.get("termlink_creator_title", {}).get("value")
-        termlink_creator_version = row.get("termlink_creator_version", {}).get("value")
-        if termlink_creator_iri:
-            creator = {
-                "creator_iri": termlink_creator_iri,
-                "creator_id": termlink_creator_id,
-                "creator_title": termlink_creator_title,
-                "creator_version": termlink_creator_version
-            }
-        else:
-            creator = None
-
-        # Initialize top-level link record
-        link = links.setdefault(
-            link_iri,
-            {
-                "termlink_iri": link_iri,
-                "term_iri": term_iri,
-                "term_label": term_label,
-                "creator": creator,
-                "evidence": {},
-            },
-        )
-
-        # Parse evidence block
         evidence_iri = row.get("evidence", {}).get("value")
+        qualifier_iri = row.get("qualifier", {}).get("value")
+
+        link_obj = links.setdefault(
+            link_iri,
+            {"termlink_iri": link_iri, "term_iri": term_iri, "term_label": None, "evidence": [], "qualifiers": set()},
+        )
+        distinct_terms.add(term_iri)
+
         if evidence_iri:
-            if (
-                row.get("evidence_type", {}).get("value")
-                == "http://ods.nationwidechildrens.org/phebee#TermLink"
-            ):
-                continue  # Skip malformed nested TermLinks
+            if evidence_iri not in distinct_evidence:
+                distinct_evidence.add(evidence_iri)
+            # We'll fill details after the second query, but keep placeholder list membership now
+            link_obj["evidence"].append({"evidence_iri": evidence_iri})
+            
+        if qualifier_iri:
+            link_obj["qualifiers"].add(qualifier_iri)
 
-            ev = link["evidence"].setdefault(
-                evidence_iri,
-                {
-                    "evidence_iri": evidence_iri,
-                    "evidence_type": row.get("evidence_type", {}).get("value"),
-                    "creator": None,
-                    "properties": {},
-                },
-            )
+    # -------------------------------
+    # 2) Bounded evidence-details query (VALUES over distinct_evidence)
+    #     - chooses a "specific class" if present (prefers non-abstract over phebee:Evidence)
+    # -------------------------------
+    evidence_details: dict[str, dict] = {}
+    if distinct_evidence:
+        # If this set could be very large, chunk it (Neptune handles a few hundred–couple thousand fine).
+        ev_list = list(distinct_evidence)
+        CHUNK = 500
+        for i in range(0, len(ev_list), CHUNK):
+            chunk = ev_list[i : i + CHUNK]
+            vals = " ".join(f"<{e}>" for e in chunk)
 
-            # Add creator if present
-            evidence_creator_iri = row.get("evidence_creator", {}).get("value")
-            evidence_creator_id = row.get("evidence_creator_id", {}).get("value")
-            evidence_creator_title = row.get("evidence_creator_title", {}).get("value")
-            evidence_creator_version = row.get("evidence_creator_version", {}).get("value")
-            if evidence_creator_iri:
-                ev["creator"] = {
-                    "creator_iri": evidence_creator_iri,
-                    "creator_id": evidence_creator_id,
-                    "creator_title": evidence_creator_title,
-                    "creator_version": evidence_creator_version
+            sparql_ev = f"""
+            PREFIX rdf:     <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+            PREFIX rdfs:    <http://www.w3.org/2000/01/rdf-schema#>
+            PREFIX dcterms: <http://purl.org/dc/terms/>
+            PREFIX phebee:  <http://ods.nationwidechildrens.org/phebee#>
+
+            SELECT ?evidence ?evidence_class
+                   (SAMPLE(?etype)   AS ?evidence_type)
+                   (SAMPLE(?atype)   AS ?assertion_type)
+                   (SAMPLE(?created) AS ?created)
+                   (SAMPLE(?sStart)  AS ?span_start)
+                   (SAMPLE(?sEnd)    AS ?span_end)
+                   (SAMPLE(?tsrc)    AS ?text_source)
+                   (SAMPLE(?meta)    AS ?metadata)
+            WHERE {{
+              VALUES ?evidence {{ {vals} }}
+              GRAPH <http://ods.nationwidechildrens.org/phebee/subjects> {{
+                # Prefer a concrete subclass over the abstract phebee:Evidence
+                OPTIONAL {{ ?evidence a ?t_specific . FILTER(?t_specific != phebee:Evidence) }}
+                BIND(COALESCE(?t_specific, phebee:Evidence) AS ?evidence_class)
+
+                OPTIONAL {{ ?evidence phebee:evidenceType  ?etype }}
+                OPTIONAL {{ ?evidence phebee:assertionType ?atype }}
+                OPTIONAL {{ ?evidence dcterms:created      ?created }}
+
+                # TextAnnotation-only fields (harmless if it isn't TA)
+                OPTIONAL {{ ?evidence phebee:spanStart ?sStart }}
+                OPTIONAL {{ ?evidence phebee:spanEnd   ?sEnd   }}
+                OPTIONAL {{ ?evidence phebee:textSource ?tsrc  }}
+                OPTIONAL {{ ?evidence phebee:metadata  ?meta   }}
+              }}
+            }}
+            GROUP BY ?evidence ?evidence_class
+            """
+
+            ev_res = execute_query(sparql_ev)
+            for b in ev_res["results"]["bindings"]:
+                ev_iri = b["evidence"]["value"]
+                evidence_details[ev_iri] = {
+                    "evidence_iri": ev_iri,
+                    "evidence_class": b.get("evidence_class", {}).get("value"),
+                    "evidence_type": b.get("evidence_type", {}).get("value"),
+                    "assertion_type": b.get("assertion_type", {}).get("value"),
+                    "created": b.get("created", {}).get("value"),
+                    "span_start": _safe_int(b.get("span_start", {}).get("value")),
+                    "span_end": _safe_int(b.get("span_end", {}).get("value")),
+                    "text_source": b.get("text_source", {}).get("value"),
+                    "metadata": _maybe_json(b.get("metadata", {}).get("value")) if b.get("metadata") else None,
                 }
 
-            # Add any extra evidence properties
-            p = row.get("p", {}).get("value")
-            o = row.get("o", {}).get("value")
-            if p and o:
-                ev["properties"][p] = o
+    # Attach evidence details to each link (dedup & stable order)
+    for link_obj in links.values():
+        seen = set()
+        detailed = []
+        for ev in link_obj["evidence"]:
+            iri = ev["evidence_iri"]
+            if iri in seen:
+                continue
+            seen.add(iri)
+            detailed.append(evidence_details.get(iri, {"evidence_iri": iri}))
+        # sort for stability (by IRI)
+        link_obj["evidence"] = sorted(detailed, key=lambda x: x["evidence_iri"])
 
-    return [
-        {
-            "termlink_iri": link["termlink_iri"],
-            "term_iri": link["term_iri"],
-            "term_label": link["term_label"],
-            "creator": link["creator"],
-            "evidence": list(link["evidence"].values()),
-        }
-        for link in links.values()
-    ]
+    # -------------------------------
+    # 3) Optional labels for distinct terms (small, bounded UNION)
+    # -------------------------------
+    if hpo_version and mondo_version and distinct_terms:
+        term_vals = " ".join(f"<{t}>" for t in distinct_terms)
+        sparql_labels = f"""
+        PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+
+        SELECT ?term (SAMPLE(?lbl) AS ?term_label)
+        WHERE {{
+          VALUES ?term {{ {term_vals} }}
+          {{
+            GRAPH <http://ods.nationwidechildrens.org/phebee/hpo~{hpo_version}> {{
+              ?term rdfs:label ?lbl .
+              FILTER(LANGMATCHES(LANG(?lbl),'en'))
+            }}
+          }}
+          UNION
+          {{
+            GRAPH <http://ods.nationwidechildrens.org/phebee/mondo~{mondo_version}> {{
+              ?term rdfs:label ?lbl .
+              FILTER(LANGMATCHES(LANG(?lbl),'en'))
+            }}
+          }}
+        }}
+        GROUP BY ?term
+        """
+        lab_res = execute_query(sparql_labels)
+        label_map = {b["term"]["value"]: b["term_label"]["value"] for b in lab_res["results"]["bindings"] if "term_label" in b}
+        for obj in links.values():
+            obj["term_label"] = label_map.get(obj["term_iri"])
+
+    # Convert qualifiers sets to sorted lists for consistent output
+    for obj in links.values():
+        obj["qualifiers"] = sorted(list(obj["qualifiers"]))
+
+    return list(links.values())
 
 
 def term_link_exists(source_node_iri: str, term_iri: str) -> dict:
@@ -843,18 +1044,88 @@ def delete_creator(creator_id_or_iri: str):
     
     return creator_iri
 
+QUALIFIER_BASE = f"{PHEBEE}/qualifier"
+
+def build_qualifier_iris(contexts: Optional[dict]) -> list[str]:
+    """
+    Turn contexts dict into canonical qualifier IRIs.
+    Returns a sorted, de-duplicated list of IRIs (stable across runs).
+    """
+    iris = set()
+
+    # contexts: {"negated": 1, "family": 0, ...}
+    if contexts:
+        for k, v in contexts.items():
+            if v in (1, True, "1", "true", "True"):
+                slug = quote(str(k).strip().lower(), safe="")
+                iris.add(f"{QUALIFIER_BASE}/{slug}")
+
+    return sorted(iris)
+
+def _sparql_escape_literal(s: str) -> str:
+    """Minimal escaping for a SPARQL string literal."""
+    return (
+        s.replace("\\", "\\\\")
+         .replace('"', '\\"')
+         .replace("\r", "\\r")
+         .replace("\n", "\\n")
+    )
+
+# ---- Deterministic TextAnnotation IDs ----
+ANNOTATION_HASH_VERSION = "v1"
+
+def stable_text_annotation_iri(
+    text_source_iri: str,
+    term_iri: str,
+    creator_iri: str,
+    span_start: Optional[int],
+    span_end: Optional[int],
+    qualifier_iris: Optional[Sequence[str]],  # may be unsorted/duplicated
+) -> str:
+    """
+    v1 inputs (frozen): text_source_iri, term_iri, creator_iri, span_start, span_end,
+    qualifier_iris (order-insensitive; duplicates ignored). No timestamps.
+    """
+    import hashlib
+
+    # Defensive canonicalization so caller order/dupes don't matter
+    qlist = tuple(sorted(set(qualifier_iris or ())))  # deterministic, hashable
+
+    key = "|".join([
+        text_source_iri,
+        term_iri,
+        creator_iri,
+        str(span_start or ""),
+        str(span_end or ""),
+        ",".join(qlist),
+    ])
+    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()
+    return f"{text_source_iri}/annotation/{ANNOTATION_HASH_VERSION}/{digest}"
 
 def create_text_annotation(
     text_source_iri: str,
-    span_start: int = None,
-    span_end: int = None,
-    creator_iri: str = None,
-    term_iri: str = None,
-    metadata: str = None,
+    span_start: Optional[int] = None,
+    span_end: Optional[int] = None,
+    creator_iri: Optional[str] = None,
+    term_iri: Optional[str] = None,
+    metadata: Optional[str] = None,
+    contexts: Optional[dict] = None,
+    note_timestamp: Optional[str] = None
 ) -> str:
-    annotation_id = str(uuid.uuid4())
-    annotation_iri = f"{text_source_iri}/annotation/{annotation_id}"
-    created = get_current_timestamp()
+    if not (creator_iri and term_iri):
+        raise ValueError("creator_iri and term_iri are required")
+
+    # Deterministic TextAnnotation IRI (v1)
+    qualifiers = build_qualifier_iris(contexts)
+
+    annotation_iri = stable_text_annotation_iri(
+        text_source_iri,
+        term_iri,
+        creator_iri,
+        span_start,
+        span_end,
+        qualifiers
+    )
 
     # Lookup rdf:type of the source and creator
     creator_type = get_rdf_type(creator_iri) if creator_iri else None
@@ -874,11 +1145,15 @@ def create_text_annotation(
 
     triples = [
         f"<{annotation_iri}> rdf:type phebee:TextAnnotation",
-        f"<{annotation_iri}> phebee:textSource <{text_source_iri}>",
-        f'<{annotation_iri}> dcterms:created "{created}"^^xsd:dateTime',
+        f"<{annotation_iri}> phebee:textSource <{text_source_iri}>",        
         f"<{annotation_iri}> phebee:evidenceType <{evidence_type_iri}>",
         f"<{annotation_iri}> phebee:assertionType <{assertion_type_iri}>",
     ]
+
+    if note_timestamp is not None:
+        triples.append(
+            f'<{annotation_iri}> dcterms:created "{note_timestamp}"^^xsd:dateTime',
+        )
 
     if span_start is not None:
         triples.append(
@@ -891,7 +1166,7 @@ def create_text_annotation(
     if term_iri:
         triples.append(f"<{annotation_iri}> phebee:term <{term_iri}>")
     if metadata:
-        triples.append(f'<{annotation_iri}> phebee:metadata """{metadata}"""')
+        triples.append(f'<{annotation_iri}> phebee:metadata "{_sparql_escape_literal(metadata)}"')
 
     triples_block = " .\n    ".join(triples) + " ."
 

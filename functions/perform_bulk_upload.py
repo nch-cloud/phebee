@@ -1,47 +1,52 @@
 import os
+import io
 import json
-import logging
-import boto3
-import hashlib
+import gzip
 import time
-from typing import List, Optional, Literal
-from pydantic import BaseModel, ValidationError
-from rdflib import Graph, URIRef, Namespace, RDF, Literal as RdfLiteral
-from rdflib.namespace import DCTERMS, XSD
 import uuid
+import logging
+from datetime import datetime
+from typing import List, Optional, Literal, Sequence, Tuple, Dict, Set
+
+import boto3
+from pydantic import BaseModel, Field, ValidationError
+from rdflib import (
+    Graph,
+    ConjunctiveGraph,
+    URIRef,
+    Namespace,
+    RDF,
+    Literal as RdfLiteral,
+)
+from rdflib.namespace import DCTERMS, XSD
 from urllib.parse import quote
 
 from phebee.constants import PHEBEE
-from phebee.utils.neptune import start_load
 from phebee.utils.sparql import (
-    get_subject,
-    project_exists,
-    term_link_exists,
-    create_subject,
-    link_subject_to_project,
-    node_exists,
-    create_creator,
     infer_evidence_type,
     infer_assertion_type,
     generate_termlink_hash,
-    check_existing_term_links,
-    check_existing_encounters,
-    check_existing_clinical_notes
+    stable_text_annotation_iri,
+    build_qualifier_iris,
 )
-from phebee.utils.aws import get_current_timestamp, extract_body
+from phebee.utils.aws import extract_body
+from phebee.utils.dynamodb import resolve_subjects  # <-- NEW
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 s3 = boto3.client("s3")
-neptune = boto3.client("neptunedata")
 
 BUCKET_NAME = os.environ["PheBeeBucketName"]
-REGION = os.environ["Region"]
-LOADER_ROLE_ARN = os.environ["LoaderRoleArn"]
 
 PHEBEE_NS = Namespace("http://ods.nationwidechildrens.org/phebee#")
-OBO = "http://purl.obolibrary.org/obo/"
+OBO = Namespace("http://purl.obolibrary.org/obo/")
+PROV = Namespace("http://www.w3.org/ns/prov#")
+
+CREATOR_CLASS = {
+    "automated": f"{str(PHEBEE_NS)}AutomatedCreator",
+    "human": f"{str(PHEBEE_NS)}HumanCreator",
+}
 
 # -------------------
 # Pydantic Models
@@ -61,335 +66,336 @@ class ClinicalNoteEvidence(BaseModel):
     author_specialty: Optional[str] = None
     span_start: Optional[int] = None
     span_end: Optional[int] = None
-    qualifying_terms: Optional[List[str]] = None  # List of qualifying term names (e.g., "negated", "hypothetical")
-    contexts: Optional[dict] = None  # Context flags from JSON input (e.g., {"negated": 1, "family": 0, "hypothetical": 0})
+    contexts: Optional[dict] = None  # e.g., {"negated": 1, "family": 0, "hypothetical": 0}
 
 class TermLinkInput(BaseModel):
     project_id: str
     project_subject_id: str
     term_iri: str
-    evidence: List[ClinicalNoteEvidence] = []
+    evidence: List[ClinicalNoteEvidence] = Field(default_factory=list)
 
 # -------------------
-# Utility Functions
+# Helpers
 # -------------------
 
-def get_or_create_subject(project_id: str, project_subject_id: str) -> str:
-    if not project_exists(project_id):
-        raise ValueError(f"Project ID not found: {project_id}")
+def _put_gzip_text(bucket: str, key: str, text: str, content_type: str):
+    buf = io.BytesIO()
+    with gzip.GzipFile(fileobj=buf, mode="wb") as gz:
+        gz.write(text.encode("utf-8"))
+    s3.put_object(
+        Bucket=bucket,
+        Key=key,
+        Body=buf.getvalue(),
+        ContentEncoding="gzip",
+        ContentType=content_type,
+    )
 
-    project_subject_iri = f"http://ods.nationwidechildrens.org/phebee/projects/{project_id}/{project_subject_id}"
+def _put_gzip_bytes(bucket: str, key: str, raw_bytes: bytes, content_type: str):
+    buf = io.BytesIO()
+    with gzip.GzipFile(fileobj=buf, mode="wb") as gz:
+        gz.write(raw_bytes)
+    s3.put_object(
+        Bucket=bucket,
+        Key=key,
+        Body=buf.getvalue(),
+        ContentEncoding="gzip",
+        ContentType=content_type,
+    )
 
-    subject = get_subject(project_subject_iri)
-    if subject:
-        subject_iri = subject["subject_iri"]
-    else:
-        subject_iri = create_subject(project_id, project_subject_id)
+def build_creator_iri(creator_id: str, creator_type: str, creator_version: Optional[str]) -> URIRef:
+    ctype = (creator_type or "").strip().lower()
+    cid = quote((creator_id or "").strip(), safe="")
+    if ctype == "automated" and creator_version:
+        ver = quote(str(creator_version).strip(), safe="")
+        return URIRef(f"{PHEBEE}/creator/{cid}/version/{ver}")
+    return URIRef(f"{PHEBEE}/creator/{cid}")
 
-    link_subject_to_project(subject_iri, project_id, project_subject_id)
-    return subject_iri
+def emit_creator_once(
+    g: Graph,
+    creator_iri: URIRef,
+    creator_class_iri: URIRef,
+    creator_name: Optional[str] = None,
+    creator_version: Optional[str] = None,
+    creator_id: Optional[str] = None,
+    cache: Optional[set] = None,
+):
+    if cache is None:
+        raise ValueError("creator cache must be provided")
+    key = str(creator_iri)
+    if key in cache:
+        return
+    g.add((creator_iri, RDF.type, creator_class_iri))
+    if creator_name:
+        g.add((creator_iri, PHEBEE_NS.creatorName, RdfLiteral(creator_name)))
+    if creator_version:
+        g.add((creator_iri, PHEBEE_NS.creatorVersion, RdfLiteral(creator_version)))
+    if creator_id:
+        g.add((creator_iri, PHEBEE_NS.creatorId, RdfLiteral(creator_id)))
+    cache.add(key)
 
 def get_term_link_iri(source_node_iri: str, term_iri: str, qualifiers=None) -> str:
     """
-    Generate a deterministic term link IRI based on source node, term, and qualifiers.
-    The source node can be a subject, encounter, or clinical note.
-    
-    Args:
-        source_node_iri (str): The IRI of the source node (subject, encounter, or clinical note)
-        term_iri (str): The IRI of the term
-        qualifiers (list): List of qualifier IRIs
-        
-    Returns:
-        str: A deterministic term link IRI
+    Deterministic TermLink IRI from: source node + term + qualifiers
     """
     termlink_hash = generate_termlink_hash(source_node_iri, term_iri, qualifiers)
     return f"{source_node_iri}/term-link/{termlink_hash}"
 
-def generate_rdf(entries: List[TermLinkInput]) -> str:
+# -------------------
+# RDF Generation (Domain) + Created Entity Manifest (for PROV)
+# -------------------
+
+def generate_rdf(
+    entries: List[TermLinkInput],
+    subject_map: Dict[Tuple[str, str], str],  # (project_id, project_subject_id) -> subject_iri
+) -> tuple[str, dict, Set[Tuple[str, str]]]:
+    """
+    Returns:
+      - graph_ttl (str): Domain triples (Turtle)
+      - created_manifest (dict): entity IRIs + domain timestamps for provenance
+      - pairs_seen (set): {(project_id, project_subject_id)} used by this shard (for project-link triples)
+    """
     start_total_time = time.time()
     g = Graph()
     g.bind("phebee", PHEBEE_NS)
     g.bind("obo", OBO)
-    g.bind("dcterms", DCTERMS)  # Changed from "dc" to "dcterms" for consistency
+    g.bind("dcterms", DCTERMS)
+    g.bind("xsd", XSD)
 
-    # Keep track of what creators we've already verified exist.
-    # Bulk uploads are likely to use the same creator repeatedly, so this cuts down on unnecessary Neptune checks.
-    creator_exists_cache = []
-    
-    # Pre-compute all potential term link IRIs and build mapping
     start_precompute_time = time.time()
-    potential_termlinks = []
-    termlink_to_annotation_map = {}
-    
-    # Pre-compute all potential encounter IRIs
-    potential_encounters = set()  # Use a set to avoid duplicates
-    
-    # Pre-compute all potential clinical note IRIs
-    potential_notes = set()  # Use a set to avoid duplicates
-    
+    termlink_to_annotation_map: dict[str, dict] = {}
+    emitted_creators: set[str] = set()
+    pairs_seen: Set[Tuple[str, str]] = set()
+
+    # Track created entities (for provenance)
+    created_termlinks: set[str] = set()
+    created_encounters: set[str] = set()
+    created_notes: set[str] = set()
+    created_annotations: set[str] = set()
+
+    # Domain timestamps we can carry to PROV
+    termlink_earliest_ts: dict[str, Optional[str]] = {}
+    note_ts: dict[str, Optional[str]] = {}
+    annotation_ts: dict[str, Optional[str]] = {}
+
     for entry in entries:
-        subject_iri = get_or_create_subject(entry.project_id, entry.project_subject_id)
-        
+        key = (entry.project_id, entry.project_subject_id)
+        subject_iri = subject_map.get(key)
+        if not subject_iri:
+            raise ValueError(f"Subject resolution missing for {key}")
+        pairs_seen.add(key)
+
         for evidence in entry.evidence:
-            # Extract qualifiers from context
-            qualifiers = []
-            if evidence.contexts:
-                for context_type, value in evidence.contexts.items():
-                    if value == 1:
-                        qualifiers.append(f"{PHEBEE}/qualifier/{context_type}")
-            
-            # Add explicit qualifying terms if provided
-            if evidence.qualifying_terms:
-                for qualifier in evidence.qualifying_terms:
-                    qualifier_iri = f"{PHEBEE}/qualifier/{qualifier}"
-                    if qualifier_iri not in qualifiers:
-                        qualifiers.append(qualifier_iri)
-            
-            # Determine the appropriate source node based on evidence type
+            qualifiers = build_qualifier_iris(evidence.contexts)  # canonical list
+
+            # Source node selection
             if evidence.type == "clinical_note":
                 encounter_iri = f"{subject_iri}/encounter/{evidence.encounter_id}"
                 note_iri = f"{encounter_iri}/note/{evidence.clinical_note_id}"
-                source_node_iri = note_iri  # Use the clinical note as the source node
-                
-                # Add to potential encounters and notes
-                potential_encounters.add(encounter_iri)
-                potential_notes.add(note_iri)
+                source_node_iri = note_iri
             else:
-                # Default to subject if not a clinical note
                 source_node_iri = subject_iri
-            
-            # Generate the term link IRI
+
             termlink_iri = get_term_link_iri(source_node_iri, entry.term_iri, qualifiers)
-            potential_termlinks.append(termlink_iri)
-            
-            # Group annotations by term link IRI
+
             if termlink_iri not in termlink_to_annotation_map:
                 termlink_to_annotation_map[termlink_iri] = {
-                    'source_node_iri': source_node_iri,
-                    'term_iri': entry.term_iri,
-                    'qualifiers': qualifiers,
-                    'evidence': []
+                    "source_node_iri": source_node_iri,
+                    "subject_iri": subject_iri,
+                    "term_iri": entry.term_iri,
+                    "qualifiers": qualifiers,
+                    "evidence": [],
                 }
-            
-            termlink_to_annotation_map[termlink_iri]['evidence'].append(evidence)
-    
+
+            termlink_to_annotation_map[termlink_iri]["evidence"].append(evidence)
+
     precompute_duration = time.time() - start_precompute_time
-    logger.info("Pre-computation completed in %.2f seconds. Generated %s potential term links, %s potential encounters, and %s potential clinical notes.", 
-                precompute_duration, len(potential_termlinks), len(potential_encounters), len(potential_notes))
-    
-    # Log qualifier statistics
-    qualifier_counts = {}
-    for termlink_iri, group in termlink_to_annotation_map.items():
-        for qualifier in group['qualifiers']:
-            qualifier_counts[qualifier] = qualifier_counts.get(qualifier, 0) + 1
-    
+    logger.info("Pre-computation completed in %.2f seconds.", precompute_duration)
+
+    # Optional qualifier stats
+    qualifier_counts: dict[str, int] = {}
+    for _, group in termlink_to_annotation_map.items():
+        for q in group["qualifiers"]:
+            qualifier_counts[q] = qualifier_counts.get(q, 0) + 1
     if qualifier_counts:
         logger.info("Qualifier distribution: %s", qualifier_counts)
-    
-    # Check which term links already exist
-    start_check_time = time.time()
-    try:
-        existing_termlinks = check_existing_term_links(potential_termlinks)
-        check_duration = time.time() - start_check_time
-        logger.info("Term link existence check completed in %.2f seconds. Found %s existing term links out of %s potential links.", 
-                   check_duration, len(existing_termlinks), len(potential_termlinks))
-    except Exception as e:
-        logger.error("Critical error checking existing term links after %.2f seconds: %s", 
-                  time.time() - start_check_time, str(e))
-        # Re-raise the exception to fail the process
-        raise Exception(f"Failed to check existing term links: {str(e)}") from e
-    
-    # Check which encounters already exist
-    start_encounter_check_time = time.time()
-    try:
-        existing_encounters = check_existing_encounters(list(potential_encounters))
-        encounter_check_duration = time.time() - start_encounter_check_time
-        logger.info("Encounter existence check completed in %.2f seconds. Found %s existing encounters out of %s potential encounters.", 
-                   encounter_check_duration, len(existing_encounters), len(potential_encounters))
-    except Exception as e:
-        logger.error("Critical error checking existing encounters after %.2f seconds: %s", 
-                  time.time() - start_encounter_check_time, str(e))
-        # Re-raise the exception to fail the process
-        raise Exception(f"Failed to check existing encounters: {str(e)}") from e
-    
-    # Check which clinical notes already exist
-    start_note_check_time = time.time()
-    try:
-        existing_notes = check_existing_clinical_notes(list(potential_notes))
-        note_check_duration = time.time() - start_note_check_time
-        logger.info("Clinical note existence check completed in %.2f seconds. Found %s existing clinical notes out of %s potential notes.", 
-                   note_check_duration, len(existing_notes), len(potential_notes))
-    except Exception as e:
-        logger.error("Critical error checking existing clinical notes after %.2f seconds: %s", 
-                  time.time() - start_note_check_time, str(e))
-        # Re-raise the exception to fail the process
-        raise Exception(f"Failed to check existing clinical notes: {str(e)}") from e
 
-    # Start RDF generation
+    # RDF generation
     start_rdf_time = time.time()
     new_links_count = 0
-    skipped_links_count = 0
     new_encounters_count = 0
-    skipped_encounters_count = 0
     new_notes_count = 0
-    skipped_notes_count = 0
-    
-    # Track encounters and notes we've already processed in this batch
-    encountered_iris = set()
-    note_iris = set()
-    
+
+    encountered_iris: set[str] = set()
+    note_iris: set[str] = set()
+
     for termlink_iri, group in termlink_to_annotation_map.items():
-        source_node_iri = URIRef(group['source_node_iri'])
-        term_iri = URIRef(group['term_iri'])
-        qualifiers = group['qualifiers']
-        
-        # Ensure the source node exists
-        # If it's a subject, add the type
-        if "/subjects/" in str(source_node_iri) and "/encounter/" not in str(source_node_iri):
-            g.add((source_node_iri, RDF.type, PHEBEE_NS.Subject))
-        
-        # Skip if this term link already exists
-        if termlink_iri in existing_termlinks:
-            logger.debug("Skipping existing TermLink: %s", termlink_iri)
-            skipped_links_count += 1
-            continue
-        
+        source_node_iri_ref = URIRef(group["source_node_iri"])
+        term_iri_ref = URIRef(group["term_iri"])
+        subject_iri_ref = URIRef(group["subject_iri"])
+        qualifiers = group["qualifiers"]
+
+        # If the source is a bare subject, ensure it's typed
+        if "/subjects/" in str(source_node_iri_ref) and "/encounter/" not in str(source_node_iri_ref):
+            g.add((source_node_iri_ref, RDF.type, PHEBEE_NS.Subject))
+
         new_links_count += 1
-        term_link_iri = URIRef(termlink_iri)
-        
-        g.add((term_link_iri, RDF.type, PHEBEE_NS.TermLink))
-        g.add((term_link_iri, PHEBEE_NS.sourceNode, source_node_iri))
-        g.add((term_link_iri, PHEBEE_NS.hasTerm, term_iri))
-        g.add((term_link_iri, DCTERMS.created, RdfLiteral(get_current_timestamp(), datatype=XSD.dateTime)))
-        
-        # Connect the source node to the term link
-        g.add((source_node_iri, PHEBEE_NS.hasTermLink, term_link_iri))
-        
-        # Add qualifier triples if any
-        for qualifier in qualifiers:
-            g.add((term_link_iri, PHEBEE_NS.hasQualifyingTerm, URIRef(qualifier)))
+        term_link_ref = URIRef(termlink_iri)
 
-        for evidence in group['evidence']:
-            evidence_creator_iri = create_or_find_creator(evidence.evidence_creator_id, evidence.evidence_creator_version, evidence.evidence_creator_name, evidence.evidence_creator_type, creator_exists_cache)
-            
+        g.add((term_link_ref, RDF.type, PHEBEE_NS.TermLink))
+        g.add((term_link_ref, PHEBEE_NS.sourceNode, source_node_iri_ref))
+        g.add((term_link_ref, PHEBEE_NS.hasTerm, term_iri_ref))
+
+        earliest = min(
+            (ev.note_timestamp for ev in group["evidence"] if getattr(ev, "note_timestamp", None)),
+            default=None
+        )
+        if earliest:
+            # Deterministic: domain time only
+            g.add((term_link_ref, DCTERMS.created, RdfLiteral(earliest, datatype=XSD.dateTime)))
+        created_termlinks.add(termlink_iri)
+        termlink_earliest_ts[termlink_iri] = earliest
+
+        # Convenience backlink
+        g.add((source_node_iri_ref, PHEBEE_NS.hasTermLink, term_link_ref))
+
+        # Qualifiers
+        for q in qualifiers:
+            g.add((term_link_ref, PHEBEE_NS.hasQualifyingTerm, URIRef(q)))
+
+        for evidence in group["evidence"]:
+            # Creator node (emit once per batch)
+            creator_iri = build_creator_iri(
+                evidence.evidence_creator_id,
+                evidence.evidence_creator_type,
+                evidence.evidence_creator_version,
+            )
+            normalized_type = (evidence.evidence_creator_type or "").strip().lower()
+            creator_class_iri = URIRef(CREATOR_CLASS.get(normalized_type, f"{str(PHEBEE_NS)}Creator"))
+
+            emit_creator_once(
+                g,
+                creator_iri,
+                creator_class_iri,
+                creator_name=evidence.evidence_creator_name,
+                creator_version=evidence.evidence_creator_version,
+                creator_id=evidence.evidence_creator_id,
+                cache=emitted_creators,
+            )
+
             if evidence.type == "clinical_note":
-                encounter_iri_str = f"{subject_iri}/encounter/{evidence.encounter_id}"
-                encounter_iri = URIRef(encounter_iri_str)
+                subj_str = str(subject_iri_ref)
+                encounter_iri_str = f"{subj_str}/encounter/{evidence.encounter_id}"
                 note_iri_str = f"{encounter_iri_str}/note/{evidence.clinical_note_id}"
-                note_iri = URIRef(note_iri_str)
-                
-                # Only create the encounter if it doesn't already exist in the database
-                # AND we haven't already created it in this batch
-                if encounter_iri_str not in existing_encounters and encounter_iri_str not in encountered_iris:
-                    # Create the encounter node
-                    g.add((encounter_iri, RDF.type, PHEBEE_NS.Encounter))
-                    g.add((encounter_iri, PHEBEE_NS.encounterId, RdfLiteral(evidence.encounter_id)))
-                    g.add((encounter_iri, PHEBEE_NS.hasSubject, URIRef(subject_iri)))
-                    g.add((encounter_iri, DCTERMS.created, RdfLiteral(get_current_timestamp(), datatype=XSD.dateTime)))
-                    new_encounters_count += 1
-                    logger.debug("Created new encounter: %s", encounter_iri_str)
-                    
-                    # Add to our tracking set
-                    encountered_iris.add(encounter_iri_str)
-                else:
-                    skipped_encounters_count += 1
-                    logger.debug("Skipping existing encounter: %s", encounter_iri_str)
-                
-                # Only create the clinical note if it doesn't already exist in the database
-                # AND we haven't already created it in this batch
-                if note_iri_str not in existing_notes and note_iri_str not in note_iris:
-                    # Add clinical note properties
-                    g.add((note_iri, RDF.type, PHEBEE_NS.ClinicalNote))
-                    g.add((note_iri, PHEBEE_NS.clinicalNoteId, RdfLiteral(evidence.clinical_note_id)))
-                    g.add((note_iri, PHEBEE_NS.hasEncounter, URIRef(encounter_iri)))
-                    g.add((note_iri, DCTERMS.created, RdfLiteral(get_current_timestamp(), datatype=XSD.dateTime)))
-                    if evidence.note_timestamp:
-                        g.add((note_iri, PHEBEE_NS.noteTimestamp, RdfLiteral(evidence.note_timestamp, datatype=XSD.dateTime)))
-                    if evidence.author_prov_type:
-                        g.add((note_iri, PHEBEE_NS.providerType, RdfLiteral(evidence.author_prov_type)))
-                    if evidence.author_specialty:
-                        g.add((note_iri, PHEBEE_NS.authorSpecialty, RdfLiteral(evidence.author_specialty)))
-                    
-                    new_notes_count += 1
-                    logger.debug("Created new clinical note: %s", note_iri_str)
-                    
-                    # Add to our tracking set
-                    note_iris.add(note_iri_str)
-                else:
-                    skipped_notes_count += 1
-                    logger.debug("Skipping existing clinical note: %s", note_iri_str)
-                
-                # Always connect the note to the term link, even if the note already exists
-                # But only if the note is not already the source node (to avoid duplicate hasTermLink properties)
-                if str(source_node_iri) != note_iri_str:
-                    g.add((note_iri, PHEBEE_NS.hasTermLink, term_link_iri))
+                encounter_ref = URIRef(encounter_iri_str)
+                note_ref = URIRef(note_iri_str)
 
-                # Create a TextAnnotation node
-                annotation_id = str(uuid.uuid4())
-                annotation_iri = URIRef(f"{note_iri}/annotation/{annotation_id}")
-                
-                # Add TextAnnotation properties
-                g.add((annotation_iri, RDF.type, PHEBEE_NS.TextAnnotation))
-                g.add((annotation_iri, PHEBEE_NS.textSource, note_iri))
-                g.add((annotation_iri, DCTERMS.created, RdfLiteral(get_current_timestamp(), datatype=XSD.dateTime)))
-                g.add((annotation_iri, PHEBEE_NS.creator, evidence_creator_iri))
-                
-                # Add evidence type and assertion type based on creator type
-                creator_type = f"http://ods.nationwidechildrens.org/phebee#{evidence.evidence_creator_type.capitalize()}Creator"
-                text_source_type = "http://ods.nationwidechildrens.org/phebee#ClinicalNote"
-                evidence_type_iri = infer_evidence_type(creator_type, text_source_type)
-                assertion_type_iri = infer_assertion_type(creator_type)
-                g.add((annotation_iri, PHEBEE_NS.evidenceType, URIRef(evidence_type_iri)))
-                g.add((annotation_iri, PHEBEE_NS.assertionType, URIRef(assertion_type_iri)))
-                
-                # Add span information if provided
+                # Encounter (no created timestamp; no stable domain time)
+                if encounter_iri_str not in encountered_iris:
+                    g.add((encounter_ref, RDF.type, PHEBEE_NS.Encounter))
+                    g.add((encounter_ref, PHEBEE_NS.encounterId, RdfLiteral(evidence.encounter_id)))
+                    g.add((encounter_ref, PHEBEE_NS.hasSubject, subject_iri_ref))
+                    encountered_iris.add(encounter_iri_str)
+                    new_encounters_count += 1
+                    created_encounters.add(encounter_iri_str)
+
+                # ClinicalNote (created = note_timestamp if provided)
+                if note_iri_str not in note_iris:
+                    g.add((note_ref, RDF.type, PHEBEE_NS.ClinicalNote))
+                    g.add((note_ref, PHEBEE_NS.clinicalNoteId, RdfLiteral(evidence.clinical_note_id)))
+                    g.add((note_ref, PHEBEE_NS.hasEncounter, encounter_ref))
+                    if evidence.note_timestamp:
+                        g.add((note_ref, DCTERMS.created, RdfLiteral(evidence.note_timestamp, datatype=XSD.dateTime)))
+                        g.add((note_ref, PHEBEE_NS.noteTimestamp, RdfLiteral(evidence.note_timestamp, datatype=XSD.dateTime)))
+                    if evidence.author_prov_type:
+                        g.add((note_ref, PHEBEE_NS.providerType, RdfLiteral(evidence.author_prov_type)))
+                    if evidence.author_specialty:
+                        g.add((note_ref, PHEBEE_NS.authorSpecialty, RdfLiteral(evidence.author_specialty)))
+                    note_iris.add(note_iri_str)
+                    new_notes_count += 1
+                    created_notes.add(note_iri_str)
+                    note_ts[note_iri_str] = evidence.note_timestamp
+
+                # Only add hasTermLink from note if it's not the source node
+                if str(source_node_iri_ref) != note_iri_str:
+                    g.add((note_ref, PHEBEE_NS.hasTermLink, term_link_ref))
+
+                # ---- TextAnnotation (deterministic IRI, no timestamp in hash) ----
+                annotation_iri_str = stable_text_annotation_iri(
+                    text_source_iri=note_iri_str,
+                    term_iri=str(term_iri_ref),
+                    creator_iri=str(creator_iri),
+                    span_start=evidence.span_start,
+                    span_end=evidence.span_end,
+                    qualifier_iris=qualifiers,
+                )
+                annotation_ref = URIRef(annotation_iri_str)
+
+                g.add((annotation_ref, RDF.type, PHEBEE_NS.TextAnnotation))
+                g.add((annotation_ref, PHEBEE_NS.textSource, note_ref))
+                g.add((annotation_ref, PHEBEE_NS.creator, creator_iri))
+
+                # Domain-created = note timestamp (deterministic)
+                if evidence.note_timestamp:
+                    g.add((annotation_ref, DCTERMS.created, RdfLiteral(evidence.note_timestamp, datatype=XSD.dateTime)))
+
+                # Evidence/assertion types (ECO)
+                creator_type_iri = CREATOR_CLASS.get(normalized_type, f"{str(PHEBEE_NS)}Creator")
+                text_source_type_iri = f"{str(PHEBEE_NS)}ClinicalNote"
+                evidence_type_iri = infer_evidence_type(creator_type_iri, text_source_type_iri)
+                assertion_type_iri = infer_assertion_type(creator_type_iri)
+                g.add((annotation_ref, PHEBEE_NS.evidenceType, URIRef(evidence_type_iri)))
+                g.add((annotation_ref, PHEBEE_NS.assertionType, URIRef(assertion_type_iri)))
+
+                # Spans
                 if evidence.span_start is not None:
-                    g.add((annotation_iri, PHEBEE_NS.spanStart, RdfLiteral(evidence.span_start, datatype=XSD.integer)))
+                    g.add((annotation_ref, PHEBEE_NS.spanStart, RdfLiteral(evidence.span_start, datatype=XSD.integer)))
                 if evidence.span_end is not None:
-                    g.add((annotation_iri, PHEBEE_NS.spanEnd, RdfLiteral(evidence.span_end, datatype=XSD.integer)))
-                
-                # Link the TextAnnotation to the term
-                g.add((annotation_iri, PHEBEE_NS.hasTerm, term_iri))
-                
-                # Connect the TermLink to the TextAnnotation as evidence
-                g.add((term_link_iri, PHEBEE_NS.hasEvidence, annotation_iri))
+                    g.add((annotation_ref, PHEBEE_NS.spanEnd, RdfLiteral(evidence.span_end, datatype=XSD.integer)))
+
+                # Term relationship + evidence link
+                g.add((annotation_ref, PHEBEE_NS.hasTerm, term_iri_ref))
+                g.add((term_link_ref, PHEBEE_NS.hasEvidence, annotation_ref))
+
+                created_annotations.add(annotation_iri_str)
+                annotation_ts[annotation_iri_str] = evidence.note_timestamp
 
     rdf_duration = time.time() - start_rdf_time
     triple_count = len(g)
-    logger.info("RDF generation completed in %.2f seconds. Generated %s triples for %s new term links, %s new encounters, and %s new clinical notes. Skipped %s existing links, %s existing encounters, and %s existing clinical notes.", 
-               rdf_duration, triple_count, new_links_count, new_encounters_count, new_notes_count, skipped_links_count, skipped_encounters_count, skipped_notes_count)
+    logger.info(
+        "RDF generation completed in %.2f seconds. Triples=%s, links=%s, encounters=%s, notes=%s",
+        rdf_duration, triple_count, new_links_count, new_encounters_count, new_notes_count
+    )
 
-    graph_ttl = g.serialize(format="turtle", prefixes={"phebee": PHEBEE_NS, "obo": OBO, "dcterms": DCTERMS})
-    
+    # ensure every resolved subject is explicitly typed once
+    for key in pairs_seen:
+        g.add((URIRef(subject_map[key]), RDF.type, PHEBEE_NS.Subject))
+
+    # Add ProjectSubjectId nodes and relationships to domain graph
+    for (project_id, project_subject_id) in pairs_seen:
+        subject_iri = subject_map[(project_id, project_subject_id)]
+        project_iri = f"{PHEBEE}/projects/{project_id}"
+        project_subject_iri = f"{project_iri}/{project_subject_id}"
+        
+        subject_ref = URIRef(subject_iri)
+        project_ref = URIRef(project_iri)
+        project_subject_ref = URIRef(project_subject_iri)
+        
+        # Add ProjectSubjectId node and relationships
+        g.add((project_subject_ref, RDF.type, PHEBEE_NS.ProjectSubjectId))
+        g.add((subject_ref, PHEBEE_NS.hasProjectSubjectId, project_subject_ref))
+        g.add((project_subject_ref, PHEBEE_NS.hasProject, project_ref))
+
+    graph_ttl = g.serialize(format="turtle", prefixes={"phebee": PHEBEE_NS, "obo": OBO, "dcterms": DCTERMS, "xsd": XSD})
     total_duration = time.time() - start_total_time
     logger.info("Total RDF generation process completed in %.2f seconds", total_duration)
 
-    return graph_ttl
-
-def create_or_find_creator(creator_id, creator_version, creator_name, creator_type, creator_exists_cache):
-    # Create the creator IRI
-    creator_id_safe = quote(creator_id, safe="")
-    
-    # Include version in the creator IRI for automated creators using /version/ path
-    if creator_type == "automated" and creator_version:
-        version_safe = quote(creator_version, safe="")
-        creator_iri = URIRef(f"{PHEBEE}/creator/{creator_id_safe}/version/{version_safe}")
-    else:
-        creator_iri = URIRef(f"{PHEBEE}/creator/{creator_id_safe}")
-
-    # Check if creator already exists.  If not, we need to create it.
-    logger.info("Checking if evidence creator exists: %s", creator_iri)
-    if creator_iri not in creator_exists_cache and not node_exists(creator_iri):
-        logger.info("Creating %s creator: %s", creator_type, creator_id)
-        created_iri = create_creator(creator_id, creator_type, creator_name, creator_version)
-        # Verify the IRIs match
-        if str(creator_iri) != created_iri:
-            logger.warning("Created creator IRI %s doesn't match expected IRI %s", created_iri, creator_iri)
-    else:
-        logger.info("Creator already exists.")
-    creator_exists_cache.append(creator_iri)
-
-    return creator_iri
+    created_manifest = {
+        "termlinks": [(iri, termlink_earliest_ts.get(iri)) for iri in created_termlinks],
+        "encounters": [(iri, None) for iri in created_encounters],
+        "notes": [(iri, note_ts.get(iri)) for iri in created_notes],
+        "annotations": [(iri, annotation_ts.get(iri)) for iri in created_annotations],
+    }
+    return graph_ttl, created_manifest, pairs_seen
 
 # -------------------
 # Lambda Handler
@@ -400,10 +406,22 @@ def lambda_handler(event, context):
 
     try:
         body = extract_body(event)
-        s3_key = body.get("s3_key")
-        if not s3_key:
-            return {"statusCode": 400, "body": json.dumps({"error": "Missing 's3_key'"})}
 
+        run_id = body.get("run_id")
+        batch_id = body.get("batch_id")
+        agent_iri = body.get("agent_iri")  # optional prov:Agent
+        if run_id is None or batch_id is None:
+            return {"statusCode": 400, "body": json.dumps({"error": "run_id and batch_id are required"})}
+
+        try:
+            batch_no = int(batch_id)
+        except ValueError:
+            return {"statusCode": 400, "body": json.dumps({"error": "batch_id must be an integer"})}
+
+        # Input shard location (deterministic)
+        s3_key = f"phebee/runs/{run_id}/input/batch-{batch_no:05d}.json"
+
+        # Read shard
         logger.info("Reading JSON from: s3://%s/%s", BUCKET_NAME, s3_key)
         obj = s3.get_object(Bucket=BUCKET_NAME, Key=s3_key)
         raw_data = obj["Body"].read().decode("utf-8")
@@ -416,43 +434,102 @@ def lambda_handler(event, context):
         except (ValidationError, ValueError) as ve:
             return {"statusCode": 400, "body": json.dumps({"error": "Invalid JSON", "details": str(ve)})}
 
-        turtle = generate_rdf(validated)
-        ttl_key = s3_key.replace("input/", "rdf/").replace(".json", ".ttl")
-        s3.put_object(Bucket=BUCKET_NAME, Key=ttl_key, Body=turtle.encode("utf-8"))
-        logger.info("Uploaded RDF to s3://%s/%s", BUCKET_NAME, ttl_key)
+        # ---- DDB subject resolution (one call per shard) ----
+        pairs: Set[Tuple[str, str]] = {(e.project_id, e.project_subject_id) for e in validated}
+        logger.info("Resolving %d (project_id, project_subject_id) pairs via DynamoDB", len(pairs))
+        subject_map = resolve_subjects(pairs)  # {(project_id, project_subject_id) -> subject_iri}
+        logger.info("Resolved %d subjects", len(subject_map))
 
-        s3_uri = f"s3://{BUCKET_NAME}/{ttl_key}"
+        # Provenance identifiers
+        activity_iri = f"{PHEBEE}/activity/run/{run_id}/batch/{batch_no:05d}"
+        # One named graph per run to group all batch activities for that run
+        run_prov_graph_iri = f"{PHEBEE}/provenance/run/{run_id}"
+        started_at = datetime.utcnow().isoformat(timespec="seconds") + "Z"
 
-        load_params = {
-            "source": s3_uri,
-            "format": "turtle",
-            "iamRoleArn": LOADER_ROLE_ARN,
-            "region": REGION,
-            "failOnError": "TRUE",
-            "updateSingleCardinalityProperties": "TRUE",
-            "queueRequest": "TRUE",
-            "parserConfiguration": {
-                "baseUri": "http://ods.nationwidechildrens.org/phebee",
-                "namedGraphUri": "http://ods.nationwidechildrens.org/phebee/subjects"
-            }
-        }
+        # Generate domain RDF and manifest of created entities
+        turtle, created, pairs_seen = generate_rdf(validated, subject_map)
 
-        response = start_load(load_params)
+        # Upload compressed domain TTL
+        ttl_key = f"phebee/runs/{run_id}/data/batch-{batch_no:05d}.ttl.gz"
+        _put_gzip_text(BUCKET_NAME, ttl_key, turtle, "text/turtle")
 
-        logger.info(response)
+        # Build N-Quads containing:
+        #   (a) PROV activity in the run-scoped graph
+        #   (b) Project-link triples in each project's graph
+        ds = ConjunctiveGraph()
 
+        # (a) Run provenance
+        prov_ctx = ds.get_context(URIRef(run_prov_graph_iri))
+        act = URIRef(activity_iri)
+
+        prov_ctx.add((act, RDF.type, PROV.Activity))
+        prov_ctx.add((act, PROV.startedAtTime, RdfLiteral(started_at, datatype=XSD.dateTime)))
+
+        if agent_iri:
+            ag_ref = URIRef(agent_iri)
+            prov_ctx.add((ag_ref, RDF.type, PROV.Agent))
+            prov_ctx.add((act, PROV.wasAssociatedWith, ag_ref))
+
+        inp = URIRef(f"s3://{BUCKET_NAME}/{s3_key}")
+        out = URIRef(f"s3://{BUCKET_NAME}/{ttl_key}")
+        prov_ctx.add((inp, RDF.type, PROV.Entity))
+        prov_ctx.add((out, RDF.type, PROV.Entity))
+        prov_ctx.add((act, PROV.used, inp))
+        prov_ctx.add((act, PROV.generated, out))
+
+        # Per-entity provenance (domain timestamps only)
+        def _gen(eiri: str, ts: Optional[str]):
+            ent = URIRef(eiri)
+            prov_ctx.add((ent, PROV.wasGeneratedBy, act))
+            if ts:
+                prov_ctx.add((ent, PROV.generatedAtTime, RdfLiteral(ts, datatype=XSD.dateTime)))
+
+        for eiri, ts in created.get("termlinks", []): _gen(eiri, ts)
+        for eiri, ts in created.get("notes", []): _gen(eiri, ts)
+        for eiri, ts in created.get("annotations", []): _gen(eiri, ts)
+        for eiri, _  in created.get("encounters", []): _gen(eiri, None)
+
+        ended_at = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+        prov_ctx.add((act, PROV.endedAtTime, RdfLiteral(ended_at, datatype=XSD.dateTime)))
+
+        # (b) Project-link triples (in each project graph)
+        for (project_id, project_subject_id) in pairs_seen:
+            subject_iri = subject_map[(project_id, project_subject_id)]
+            project_graph_iri = f"{PHEBEE}/projects/{project_id}"
+            project_ctx = ds.get_context(URIRef(project_graph_iri))
+
+            subject_ref = URIRef(subject_iri)
+            project_graph_ref = URIRef(project_graph_iri)
+            project_subject_iri = f"{project_graph_iri}/{project_subject_id}"
+            project_subject_ref = URIRef(project_subject_iri)
+
+            # Subject ↔ ProjectSubjectId link (no timestamps)
+            project_ctx.add((subject_ref, PHEBEE_NS.hasProjectSubjectId, project_subject_ref))
+            project_ctx.add((project_subject_ref, RDF.type, PHEBEE_NS.ProjectSubjectId))
+            project_ctx.add((project_subject_ref, PHEBEE_NS.hasProject, project_graph_ref))
+
+        nq_bytes = ds.serialize(format="nquads")
+
+        # Upload compressed N-Quads
+        nq_key = f"phebee/runs/{run_id}/prov/batch-{batch_no:05d}.nq.gz"
+        _put_gzip_bytes(BUCKET_NAME, nq_key, nq_bytes.encode('utf-8'), "application/n-quads")
+
+        logger.info("Wrote data=%s prov=%s", ttl_key, nq_key)
+
+        # IMPORTANT: do NOT start loaders here; finalizer will.
         return {
             "statusCode": 200,
             "body": json.dumps({
-                "message": "Bulk load started",
-                "load_id": response.get("payload")["loadId"],
-                "status": response.get("status")
+                "message": "Shard processed",
+                "run_id": run_id,
+                "batch_id": batch_no,
+                "data_key": ttl_key,
+                "prov_key": nq_key,
+                "prov_graph": run_prov_graph_iri,
+                "activity": activity_iri,
             }),
         }
 
     except Exception as e:
-        logger.exception("Bulk upload failed")
-        return {
-            "statusCode": 500,
-            "body": json.dumps({"error": "Bulk upload failed", "details": str(e)})
-        }
+        logger.exception("Shard processing failed")
+        return {"statusCode": 500, "body": json.dumps({"error": "Shard processing failed", "details": str(e)})}

@@ -36,16 +36,26 @@ def lambda_handler(event, context):
     mondo_version = get_current_term_source_version("mondo")
 
     project_subject_ids = body.get("project_subject_ids")
+    
+    # Pagination parameters
+    limit = body.get("limit", 50)
+    cursor = body.get("cursor")
 
-    subject_data = get_subjects(
+    result = get_subjects(
         project_iri=project_iri,
         hpo_version=hpo_version,
         mondo_version=mondo_version,
+        limit=limit,
+        cursor=cursor,
         term_iri=term_iri,
         term_source=term_source,
         term_source_version=term_source_version,
         project_subject_ids=project_subject_ids,
     )
+    
+    # Extract subjects and pagination info
+    subject_data = result["subjects"]
+    pagination = result["pagination"]
 
     if "phenopacket" in output_type:
         subject_data = subjects_to_phenopackets(subject_data, project_iri, hpo_version, mondo_version)
@@ -53,7 +63,7 @@ def lambda_handler(event, context):
     if output_type == "phenopacket_zip":
         s3_content = zip_phenopackets(subject_data)
     else:
-        s3_content = json.dumps(subject_data, indent=2)
+        s3_content = json.dumps({"subjects": subject_data, "pagination": pagination}, indent=2)
 
     if "output_s3_path" in body:
         bucket, key = parse_s3_path(body["output_s3_path"])
@@ -62,12 +72,12 @@ def lambda_handler(event, context):
         return {
             "statusCode": 200,
             "body": json.dumps(
-                {"s3_path": f"s3://{bucket}/{key}", "n_subjects": len(subject_data)}
+                {"s3_path": f"s3://{bucket}/{key}", "n_subjects": len(subject_data), "pagination": pagination}
             ),
         }
 
     return {
         "statusCode": 200,
-        "body": json.dumps({"body": subject_data, "n_subjects": len(subject_data)}),
+        "body": json.dumps({"body": subject_data, "n_subjects": len(subject_data), "pagination": pagination}),
         "headers": {"Content-Type": "application/json"},
     }

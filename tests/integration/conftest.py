@@ -10,10 +10,8 @@ from requests_aws4auth import AWS4Auth
 
 from phebee.utils.aws import get_client
 
-from test_reset_database import reset_database
 from step_function_utils import start_step_function, wait_for_step_function_completion
 from s3_utils import delete_s3_prefix
-from update_source_utils import update_source
 from constants import PROJECT_CONFIGS
 
 
@@ -158,6 +156,7 @@ def cloudformation_stack(request, aws_session, profile_name):
         force_reset = request.config.getoption("--force-database-reset")
         if force_reset:
             print("Resetting database...")
+            from test_reset_database import reset_database
             reset_database(stack_name)
 
     yield stack_name  # This is where the tests will use the stack
@@ -262,6 +261,7 @@ def update_hpo(request, cloudformation_stack, physical_resources):
         print("Skipping HPO update as requested via --skip-ontology-updates parameter")
         yield
     else:
+        from update_source_utils import update_source
         test_start_time = update_source(cloudformation_stack, "hpo", "UpdateHPOSFNArn")
         yield test_start_time
 
@@ -276,6 +276,7 @@ def update_mondo(request, cloudformation_stack, physical_resources):
         )
         yield
     else:
+        from update_source_utils import update_source
         test_start_time = update_source(
             cloudformation_stack, "mondo", "UpdateMondoSFNArn"
         )
@@ -290,6 +291,7 @@ def update_eco(request, cloudformation_stack, physical_resources):
         print("Skipping ECO update as requested via --skip-ontology-updates parameter")
         yield
     else:
+        from update_source_utils import update_source
         test_start_time = update_source(cloudformation_stack, "eco", "UpdateECOSFNArn")
         yield test_start_time
 
@@ -302,6 +304,8 @@ def test_project_id(cloudformation_stack):
     project_id = f"test-project-{uuid.uuid4().hex[:8]}"
     payload = {"project_id": project_id, "project_label": "Lambda-Initiated Project"}
 
+    print(f"Test project id: {project_id}")
+
     # Create the project by invoking the deployed Lambda
     create_response = lambda_client.invoke(
         FunctionName=f"{cloudformation_stack}-CreateProjectFunction",  # adjust if you've named it
@@ -309,10 +313,17 @@ def test_project_id(cloudformation_stack):
         Payload=json.dumps({"body": json.dumps(payload)}),
     )
 
-    body = json.loads(
-        json.loads(create_response["Payload"].read().decode("utf-8"))["body"]
-    )
-    assert create_response["StatusCode"] == 200, f"Invoke failed: {body}"
+    lambda_response = json.loads(create_response["Payload"].read().decode("utf-8"))
+    assert create_response["StatusCode"] == 200, f"Invoke failed: {lambda_response}"
+    
+    # Handle both direct response and API Gateway format
+    if "statusCode" in lambda_response:
+        assert lambda_response["statusCode"] == 200, f"Lambda failed: {lambda_response}"
+        body = json.loads(lambda_response["body"])
+    else:
+        # Direct Lambda response
+        body = lambda_response
+    
     assert body.get("project_created") is True
 
     yield body.get("project_id")

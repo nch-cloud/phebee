@@ -103,9 +103,10 @@ def test_project_query(physical_resources, test_project_id, upload_phenopacket_s
             print("body")
             print(body)
 
-            # Extract actual projectSubjectIds from the result
+            # Extract actual projectSubjectIds from the result - handle new pagination format
+            subjects_data = body["body"]  # Handle both old and new format
             actual_project_subject_iris = {
-                item["project_subject_iri"] for item in body["body"]
+                item["project_subject_iri"] for item in subjects_data
             }
 
         # Assert that the expected projectSubjectIds match the actual projectSubjectIds
@@ -169,9 +170,10 @@ def test_subject_specific_query(
             print("body")
             print(body)
 
-            # Extract actual projectSubjectIds from the result
+            # Extract actual projectSubjectIds from the result - handle new pagination format
+            subjects_data = body["body"]  # Handle both old and new format
             actual_project_subject_iris = {
-                item["project_subject_iri"] for item in body["body"]
+                item["project_subject_iri"] for item in subjects_data
             }
 
         # Assert that the expected projectSubjectIds match the actual projectSubjectIds
@@ -247,9 +249,10 @@ def test_term_filtering_query(
         actual_project_subject_iris = set()
         if "body" in result:
             body = json.loads(result["body"])
-            # Extract actual projectSubjectIds from the result
+            # Extract actual projectSubjectIds from the result - handle new pagination format
+            subjects_data = body["body"]  # Handle both old and new format
             actual_project_subject_iris = {
-                item["project_subject_iri"] for item in body["body"]
+                item["project_subject_iri"] for item in subjects_data
             }
 
         assert actual_project_subject_iris == set(
@@ -324,6 +327,7 @@ def export_phenopacket(physical_resources, project_id):
             "Failed to query the subjects and phenotypes."
         )
 
+        # New pagination format
         return body["body"]
 
     except ClientError as e:
@@ -575,3 +579,123 @@ def compare_phenopacket_data(pp_data_1, pp_data_2):
 
     # No changes expected, might need to adjust test set if HPO terms drift
     assert results == []
+
+
+@pytest.mark.integration
+def test_pagination_basic(physical_resources, test_project_id, upload_phenopacket_s3):
+    """Test basic pagination functionality with limit parameter."""
+    project_id = test_project_id
+    import_phenopacket(physical_resources, project_id)
+
+    # Test with limit=2
+    subject_pheno_query_input = json.dumps({
+        "project_id": project_id,
+        "limit": 2
+    })
+
+    lambda_client = get_client("lambda")
+    response = lambda_client.invoke(
+        FunctionName=physical_resources["GetSubjectsPhenotypesFunction"],
+        Payload=subject_pheno_query_input.encode("utf-8"),
+    )
+    result = json.loads(response["Payload"].read())
+    body = json.loads(result["body"])
+
+    # Should return exactly 2 subjects
+    subjects_data = body["body"]  # Handle both old and new format
+    assert len(subjects_data) == 2, f"Expected 2 subjects, got {len(subjects_data)}"
+    
+    # Should have pagination metadata
+    assert "pagination" in body, "Response should include pagination metadata"
+    pagination = body["pagination"]
+    assert pagination["limit"] == 2, "Pagination limit should match request"
+    assert pagination["has_more"] is True, "Should have more pages available"
+    assert pagination["next_cursor"] is not None, "Should provide next_cursor"
+
+
+@pytest.mark.integration 
+def test_pagination_cursor(physical_resources, test_project_id, upload_phenopacket_s3):
+    """Test cursor-based pagination across multiple pages."""
+    project_id = test_project_id
+    import_phenopacket(physical_resources, project_id)
+
+    # First, check how many subjects were actually imported without pagination
+    lambda_client = get_client("lambda")
+    check_response = lambda_client.invoke(
+        FunctionName=physical_resources["GetSubjectsPhenotypesFunction"],
+        Payload=json.dumps({"project_id": project_id}).encode("utf-8"),
+    )
+    check_result = json.loads(check_response["Payload"].read())
+    check_body = json.loads(check_result["body"])
+    total_imported = len(check_body["body"])
+    
+    print(f"Total subjects imported: {total_imported}")
+    assert total_imported == 4, f"Import failed - expected 4 subjects, got {total_imported}"
+
+    all_subjects = []
+    cursor = None
+    page_count = 0
+    
+    # Fetch all subjects using pagination
+    while True:
+        page_count += 1
+        query_input = {
+            "project_id": project_id,
+            "limit": 2
+        }
+        if cursor:
+            query_input["cursor"] = cursor
+            
+        response = lambda_client.invoke(
+            FunctionName=physical_resources["GetSubjectsPhenotypesFunction"],
+            Payload=json.dumps(query_input).encode("utf-8"),
+        )
+        result = json.loads(response["Payload"].read())
+        body = json.loads(result["body"])
+        
+        page_subjects = body["body"]
+        all_subjects.extend(page_subjects)
+        
+        pagination = body["pagination"]
+        if not pagination["has_more"]:
+            break
+            
+        cursor = pagination["next_cursor"]
+        assert cursor is not None, "next_cursor should be provided when has_more=True"
+        
+        # Safety check to prevent infinite loops
+        assert page_count < 10, "Too many pages, possible infinite loop"
+    
+    # Should have collected all subjects across pages
+    assert len(all_subjects) == total_imported, f"Pagination failed - expected {total_imported} subjects, got {len(all_subjects)}"
+    
+    # Subject IRIs should be unique (no duplicates across pages)
+    subject_iris = [s["subject_iri"] for s in all_subjects]
+    assert len(set(subject_iris)) == len(subject_iris), "Subjects should be unique across pages"
+
+
+@pytest.mark.integration
+def test_pagination_empty_cursor(physical_resources, test_project_id, upload_phenopacket_s3):
+    """Test pagination with invalid/empty cursor."""
+    project_id = test_project_id
+    import_phenopacket(physical_resources, project_id)
+
+    # Test with empty cursor (should work like no cursor)
+    subject_pheno_query_input = json.dumps({
+        "project_id": project_id,
+        "limit": 2,
+        "cursor": ""
+    })
+
+    lambda_client = get_client("lambda")
+    response = lambda_client.invoke(
+        FunctionName=physical_resources["GetSubjectsPhenotypesFunction"],
+        Payload=subject_pheno_query_input.encode("utf-8"),
+    )
+    result = json.loads(response["Payload"].read())
+    body = json.loads(result["body"])
+
+    # Should still return results (empty cursor ignored)
+    subjects_data = body["body"]  # Handle both old and new format
+    assert len(subjects_data) == 2, "Should return results with empty cursor"
+    assert "pagination" in body, "Should include pagination metadata"

@@ -10,6 +10,8 @@ def test_create_and_delete_text_annotation(api_base_url, sigv4_auth):
         "text_source_iri": text_source_iri,
         "span_start": 5,
         "span_end": 20,
+        "creator_iri": "http://ods.nationwidechildrens.org/phebee/creator/test-creator",
+        "term_iri": "http://purl.obolibrary.org/obo/HP_0001250",
         "metadata": '{"source": "API", "version": "1.0.0"}',
     }
 
@@ -45,6 +47,8 @@ def test_get_text_annotation(api_base_url, sigv4_auth):
         "text_source_iri": text_source_iri,
         "span_start": 3,
         "span_end": 9,
+        "creator_iri": "http://ods.nationwidechildrens.org/phebee/creator/test-creator",
+        "term_iri": "http://purl.obolibrary.org/obo/HP_0001250",
         "metadata": '{"note": "via API test"}',
     }
 
