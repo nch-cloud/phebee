@@ -224,7 +224,7 @@ def get_subjects(
     project_iri: str,
     hpo_version: str,
     mondo_version: str,
-    limit: int = 50,
+    limit: int = 200,
     cursor: str = None,
     term_iri: str = None,
     term_source: str = None,
@@ -313,7 +313,9 @@ def get_subjects(
     PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
 
-    SELECT ?subjectIRI ?termlink ?term ?term_label ?sourceNode ?sourceType ?qualifier
+    SELECT ?subjectIRI ?termlink ?term 
+           (GROUP_CONCAT(DISTINCT ?qualifier; separator="|") AS ?qualifiers_concat)
+           (COUNT(DISTINCT ?evidence) AS ?evidence_count)
     FROM <http://ods.nationwidechildrens.org/phebee/subjects>
     FROM <http://ods.nationwidechildrens.org/phebee/hpo~{hpo_version}>
     FROM <http://ods.nationwidechildrens.org/phebee/mondo~{mondo_version}>
@@ -325,8 +327,6 @@ def get_subjects(
             ?termlink rdf:type phebee:TermLink ;
                       phebee:sourceNode ?subjectIRI ;
                       phebee:hasTerm ?term .
-            BIND(?subjectIRI AS ?sourceNode)
-            BIND("subject" AS ?sourceType)
         }}
         UNION
         {{
@@ -336,8 +336,6 @@ def get_subjects(
             ?termlink rdf:type phebee:TermLink ;
                       phebee:sourceNode ?clinicalNote ;
                       phebee:hasTerm ?term .
-            BIND(?clinicalNote AS ?sourceNode)
-            BIND("clinical_note" AS ?sourceType)
         }}
         
         # Optional qualifiers
@@ -345,12 +343,12 @@ def get_subjects(
             ?termlink phebee:hasQualifyingTerm ?qualifier .
         }}
         
-        # Optional term labels
+        # Optional evidence for counting
         OPTIONAL {{
-            ?term rdfs:label ?term_label . 
-            FILTER(LANGMATCHES(LANG(?term_label),'en'))
+            ?termlink phebee:hasEvidence ?evidence .
         }}
     }}
+    GROUP BY ?subjectIRI ?termlink ?term
     """
 
     termlinks_result = execute_query(termlinks_query)
@@ -373,33 +371,50 @@ def get_subjects(
         subject_iri = binding["subjectIRI"]["value"]
         termlink_iri = binding["termlink"]["value"]
         term_iri_val = binding["term"]["value"]
-        qualifier_iri = binding.get("qualifier", {}).get("value")
+        qualifiers_concat = binding.get("qualifiers_concat", {}).get("value", "")
+        evidence_count = int(binding.get("evidence_count", {}).get("value", "0"))
         
         if subject_iri in subjects_map:
-            if termlink_iri not in subjects_map[subject_iri]["term_links"]:
-                subjects_map[subject_iri]["term_links"][termlink_iri] = {
-                    "termlink_iri": termlink_iri,
-                    "term_iri": term_iri_val,
-                    "term_label": binding.get("term_label", {}).get("value"),
-                    "source_node": binding.get("sourceNode", {}).get("value"),
-                    "source_type": binding.get("sourceType", {}).get("value"),
-                    "evidence": [],  # Empty for performance - evidence can be loaded separately if needed
-                    "qualifiers": set()
-                }
+            # Parse concatenated qualifiers
+            qualifiers = set()
+            if qualifiers_concat and qualifiers_concat.strip():
+                # Split by separator and filter out empty strings
+                qualifier_list = [q.strip() for q in qualifiers_concat.split("|") if q.strip()]
+                qualifiers.update(qualifier_list)
             
-            # Add qualifier if present
-            if qualifier_iri:
-                subjects_map[subject_iri]["term_links"][termlink_iri]["qualifiers"].add(qualifier_iri)
+            subjects_map[subject_iri]["term_links"][termlink_iri] = {
+                "term_iri": term_iri_val,
+                "qualifiers": qualifiers,
+                "evidence_count": evidence_count
+            }
     
     # Convert to final format
     subjects = []
     for subject in subjects_map.values():
-        # Convert term_links dict to sorted list and convert qualifiers sets to sorted lists
+        # Group term_links by term_iri
+        term_groups = {}
+        for termlink_iri, term_link in subject["term_links"].items():
+            term_iri = term_link["term_iri"]
+            if term_iri not in term_groups:
+                term_groups[term_iri] = {
+                    "term_iri": term_iri,
+                    "qualifiers": set(),
+                    "evidence_count": 0
+                }
+            # Merge qualifiers and sum evidence counts
+            term_groups[term_iri]["qualifiers"].update(term_link["qualifiers"])
+            term_groups[term_iri]["evidence_count"] += term_link["evidence_count"]
+        
+        # Convert to final format
         term_links = []
-        for term_link in subject["term_links"].values():
-            term_link["qualifiers"] = sorted(list(term_link["qualifiers"]))
-            term_links.append(term_link)
-        subject["term_links"] = sorted(term_links, key=lambda x: x["termlink_iri"])
+        for term_group in term_groups.values():
+            term_links.append({
+                "term_iri": term_group["term_iri"],
+                "qualifiers": sorted(list(term_group["qualifiers"])),
+                "evidence_count": term_group["evidence_count"]
+            })
+        
+        subject["term_links"] = sorted(term_links, key=lambda x: x["term_iri"])
         subjects.append(subject)
     
     # Sort by subject IRI to maintain consistent ordering

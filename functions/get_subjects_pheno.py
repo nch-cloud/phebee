@@ -1,4 +1,6 @@
 import json
+import gzip
+import base64
 from aws_lambda_powertools import Metrics, Logger, Tracer
 from phebee.utils.sparql import get_subjects
 from phebee.utils.aws import parse_s3_path, get_client, extract_body
@@ -38,7 +40,7 @@ def lambda_handler(event, context):
     project_subject_ids = body.get("project_subject_ids")
     
     # Pagination parameters
-    limit = body.get("limit", 50)
+    limit = body.get("limit", 200)
     cursor = body.get("cursor")
 
     result = get_subjects(
@@ -76,8 +78,19 @@ def lambda_handler(event, context):
             ),
         }
 
+    # Compress response for direct API calls
+    response_data = {"body": subject_data, "n_subjects": len(subject_data), "pagination": pagination}
+    json_str = json.dumps(response_data)
+    
+    # Compress the JSON response
+    compressed_data = gzip.compress(json_str.encode('utf-8'))
+    
     return {
         "statusCode": 200,
-        "body": json.dumps({"body": subject_data, "n_subjects": len(subject_data), "pagination": pagination}),
-        "headers": {"Content-Type": "application/json"},
+        "headers": {
+            "Content-Type": "application/json",
+            "Content-Encoding": "gzip"
+        },
+        "body": base64.b64encode(compressed_data).decode('utf-8'),
+        "isBase64Encoded": True
     }

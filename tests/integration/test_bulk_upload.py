@@ -528,17 +528,118 @@ def test_bulk_upload_with_qualifiers(test_payload_with_qualifiers, test_project_
     assert any({q_neg, q_fam}.issubset(qs) and q_hyp not in qs for qs in seen.values())
 
 
+def test_pagination_api_minimal_format_with_qualifiers(test_payload_with_qualifiers, test_project_id, physical_resources):
+    """Test that GetSubjectsPhenotypesFunction returns minimal format with gzip compression and qualifiers."""
+    _, _, _ = bulk_upload_run([test_payload_with_qualifiers], physical_resources)
+
+    get_subjects_fn = physical_resources["GetSubjectsPhenotypesFunction"]
+    
+    # Query subjects via pagination API
+    import boto3
+    import json
+    import gzip
+    import base64
+    
+    lambda_client = boto3.client('lambda', region_name='us-east-2')
+    
+    response = lambda_client.invoke(
+        FunctionName=get_subjects_fn,
+        Payload=json.dumps({
+            "project_id": test_project_id,
+            "limit": 10
+        }).encode('utf-8'),
+    )
+    
+    result = json.loads(response['Payload'].read())
+    assert result["statusCode"] == 200
+    
+    # Verify gzip compression headers
+    headers = result.get("headers", {})
+    assert headers.get("Content-Encoding") == "gzip"
+    assert headers.get("Content-Type") == "application/json"
+    assert result.get("isBase64Encoded") == True
+    
+    # Decompress response
+    compressed_data = base64.b64decode(result['body'])
+    decompressed_data = gzip.decompress(compressed_data)
+    subjects_response = json.loads(decompressed_data.decode('utf-8'))
+    
+    assert subjects_response["n_subjects"] == 1
+    subjects = subjects_response["body"]
+    assert len(subjects) == 1
+    
+    subject = subjects[0]
+    assert len(subject["term_links"]) == 2
+    
+    # Verify minimal format structure
+    for term_link in subject["term_links"]:
+        # Check minimal format fields are present
+        assert "term_iri" in term_link
+        assert "qualifiers" in term_link
+        assert "evidence_count" in term_link
+        
+        # Check removed fields are NOT present
+        removed_fields = ["termlink_iri", "term_label", "source_node", "source_type", "evidence"]
+        for field in removed_fields:
+            assert field not in term_link, f"Field '{field}' should be removed in minimal format"
+        
+        # Verify evidence count is a number
+        assert isinstance(term_link["evidence_count"], int)
+        assert term_link["evidence_count"] >= 0
+    
+    # Verify qualifiers are present and correct
+    qualifiers_found = []
+    for term_link in subject["term_links"]:
+        qualifiers = term_link.get("qualifiers", [])
+        assert len(qualifiers) > 0, f"No qualifiers found in term_link: {term_link['term_iri']}"
+        qualifiers_found.extend(qualifiers)
+    
+    # Expected qualifiers from the test data
+    q_neg = "http://ods.nationwidechildrens.org/phebee/qualifier/negated"
+    q_hyp = "http://ods.nationwidechildrens.org/phebee/qualifier/hypothetical"
+    q_fam = "http://ods.nationwidechildrens.org/phebee/qualifier/family"
+    
+    # Verify expected qualifiers are present
+    assert q_neg in qualifiers_found, "Missing 'negated' qualifier"
+    assert q_hyp in qualifiers_found, "Missing 'hypothetical' qualifier"
+    assert q_fam in qualifiers_found, "Missing 'family' qualifier"
+    
+    print(f"✅ Minimal format verified: {len(qualifiers_found)} total qualifiers found")
+    print(f"✅ Gzip compression verified: {len(compressed_data)} bytes compressed vs {len(decompressed_data)} bytes decompressed")
+
+
 def test_pagination_api_with_qualifiers(test_payload_with_qualifiers, test_project_id, physical_resources):
     """Test that GetSubjectsPhenotypesFunction (pagination API) includes qualifiers."""
     _, _, _ = bulk_upload_run([test_payload_with_qualifiers], physical_resources)
 
     get_subjects_fn = physical_resources["GetSubjectsPhenotypesFunction"]
     
-    # Query subjects via pagination API
-    subjects_response = invoke_lambda(get_subjects_fn, {
-        "project_id": test_project_id,
-        "limit": 10
-    })
+    # Query subjects via pagination API with proper decompression
+    import boto3
+    import json
+    import gzip
+    import base64
+    
+    lambda_client = boto3.client('lambda', region_name='us-east-2')
+    
+    response = lambda_client.invoke(
+        FunctionName=get_subjects_fn,
+        Payload=json.dumps({
+            "project_id": test_project_id,
+            "limit": 10
+        }).encode('utf-8'),
+    )
+    
+    result = json.loads(response['Payload'].read())
+    assert result["statusCode"] == 200
+    
+    # Decompress response
+    if result.get("isBase64Encoded"):
+        compressed_data = base64.b64decode(result['body'])
+        decompressed_data = gzip.decompress(compressed_data)
+        subjects_response = json.loads(decompressed_data.decode('utf-8'))
+    else:
+        subjects_response = json.loads(result['body'])
     
     assert subjects_response["n_subjects"] == 1
     subjects = subjects_response["body"]
@@ -551,7 +652,7 @@ def test_pagination_api_with_qualifiers(test_payload_with_qualifiers, test_proje
     qualifiers_found = []
     for term_link in subject["term_links"]:
         qualifiers = term_link.get("qualifiers", [])
-        assert len(qualifiers) > 0, f"No qualifiers found in term_link: {term_link['termlink_iri']}"
+        assert len(qualifiers) > 0, f"No qualifiers found in term_link: {term_link['term_iri']}"
         qualifiers_found.extend(qualifiers)
     
     # Expected qualifiers from the test data
@@ -569,6 +670,8 @@ def test_pagination_api_with_qualifiers(test_payload_with_qualifiers, test_proje
 def verify_uploaded_data(test_payload, test_project_id, physical_resources):
     """Verify that all uploaded data can be retrieved via API functions."""
     import boto3
+    import gzip
+    import base64
     
     # Get subjects for the project
     lambda_client = boto3.client('lambda', region_name='us-east-2')
@@ -583,7 +686,13 @@ def verify_uploaded_data(test_payload, test_project_id, physical_resources):
     subjects_result = json.loads(get_subjects_response["Payload"].read().decode("utf-8"))
     assert subjects_result["statusCode"] == 200, f"GetSubjectsPhenotypesFunction failed: {subjects_result}"
     
-    subjects_data = json.loads(subjects_result["body"])["body"]
+    # Handle gzip compressed response
+    if subjects_result.get("isBase64Encoded"):
+        compressed_data = base64.b64decode(subjects_result['body'])
+        decompressed_data = gzip.decompress(compressed_data)
+        subjects_data = json.loads(decompressed_data.decode('utf-8'))["body"]
+    else:
+        subjects_data = json.loads(subjects_result["body"])["body"]
     
     # Count unique subjects in test payload
     unique_subjects = len(set(entry["project_subject_id"] for entry in test_payload))
