@@ -669,6 +669,24 @@ Resources:
         - !Ref PheBeeS3WritePolicy
         - !Ref PheBeeDynamoDBReadPolicy
 
+  QueryProvenanceFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/
+      Handler: query_provenance.lambda_handler
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeNeptuneSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+
   GetSubjectsPhenotypesFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -1435,6 +1453,11 @@ Outputs:
     Value: !GetAtt GetLoadStatusFunction.Arn
     Export:
       Name: !Sub "${AWS::StackName}-GetLoadStatusFunctionArn"
+
+  QueryProvenanceFunctionArn:
+    Value: !GetAtt QueryProvenanceFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-QueryProvenanceFunctionArn"
 
   DynamoDBTableName:
     Description: Table name of the PheBee DynamoDB table
