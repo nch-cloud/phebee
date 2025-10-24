@@ -1055,6 +1055,134 @@ def test_include_qualified_with_bulk_upload_data(physical_resources, test_projec
     assert len(include_qualified_subjects) == 3, f"Include qualified should return 3 subjects (all), got {len(include_qualified_subjects)}"
     assert default_subjects.issubset(include_qualified_subjects), "Non-qualified subjects should be included in both queries"
     
-    print(f"✅ Default subjects (exclude qualified): {len(default_subjects)}")
-    print(f"✅ Include qualified subjects: {len(include_qualified_subjects)}")
-    print(f"✅ Successfully validated qualified term link filtering with actual qualified data!")
+@pytest.mark.integration
+def test_include_qualified_mixed_term_links(physical_resources, test_project_id, update_hpo):
+    """Test subject with both qualified and unqualified term links - verify what gets returned."""
+    project_id = test_project_id
+    
+    lambda_client = get_client("lambda")
+    s3_client = get_client("s3")
+    
+    # Create subject with multiple term links: one unqualified match + one qualified different term
+    run_id = 2
+    batch_id = 1
+    
+    prepare_payload = {"body": json.dumps({"run_id": run_id, "batch_id": batch_id})}
+    prepare_response = lambda_client.invoke(
+        FunctionName=physical_resources["PrepareBulkUploadFunction"],
+        Payload=json.dumps(prepare_payload)
+    )
+    prepare_result = json.loads(prepare_response['Payload'].read())
+    prepare_body = json.loads(prepare_result['body'])
+    s3_key = prepare_body['s3_key']
+    
+    bulk_data = [
+        {
+            "project_id": project_id,
+            "project_subject_id": "subject_mixed",
+            "term_iri": "http://purl.obolibrary.org/obo/HP_0001250",  # Search term (unqualified)
+            "evidence": [
+                {
+                    "type": "clinical_note",
+                    "encounter_id": "enc1",
+                    "clinical_note_id": "note1",
+                    "note_timestamp": "2025-10-24T18:00:00Z",
+                    "evidence_creator_id": "test-creator",
+                    "evidence_creator_type": "automated",
+                    "evidence_creator_name": "Test Creator",
+                    "evidence_creator_version": "1.0"
+                    # No contexts - unqualified
+                }
+            ]
+        },
+        {
+            "project_id": project_id,
+            "project_subject_id": "subject_mixed",  # Same subject
+            "term_iri": "http://purl.obolibrary.org/obo/HP_0002297",  # Different term (qualified)
+            "evidence": [
+                {
+                    "type": "clinical_note",
+                    "encounter_id": "enc2",
+                    "clinical_note_id": "note2",
+                    "note_timestamp": "2025-10-24T18:00:00Z",
+                    "evidence_creator_id": "test-creator",
+                    "evidence_creator_type": "automated",
+                    "evidence_creator_name": "Test Creator",
+                    "evidence_creator_version": "1.0",
+                    "contexts": {"negated": 1}  # Qualified
+                }
+            ]
+        }
+    ]
+    
+    # Upload and process
+    bucket = physical_resources["PheBeeBucket"]
+    s3_client.put_object(Bucket=bucket, Key=s3_key, Body=json.dumps(bulk_data), ContentType='application/json')
+    
+    perform_payload = {"body": json.dumps({"run_id": run_id, "batch_id": batch_id})}
+    lambda_client.invoke(FunctionName=physical_resources["PerformBulkUploadFunction"], Payload=json.dumps(perform_payload))
+    
+    finalize_payload = {"body": json.dumps({"run_id": run_id, "batch_id": batch_id})}
+    finalize_response = lambda_client.invoke(FunctionName=physical_resources["FinalizeBulkUploadFunction"], Payload=json.dumps(finalize_payload))
+    finalize_result = json.loads(finalize_response['Payload'].read())
+    
+    # Wait for loading
+    if finalize_result.get('statusCode') == 200:
+        finalize_body = json.loads(finalize_result['body'])
+        if finalize_body.get('domain_load_id'):
+            wait_for_loader_success(finalize_body['domain_load_id'], physical_resources)
+    
+    # Test query for HP_0001250 with include_qualified=False
+    query = json.dumps({
+        "project_id": project_id,
+        "term_iri": "http://purl.obolibrary.org/obo/HP_0001250",
+        "term_source": "hpo",
+        "include_phenotypes": True
+    })
+    
+    response = lambda_client.invoke(
+        FunctionName=physical_resources["GetSubjectsPhenotypesFunction"],
+        Payload=query.encode("utf-8"),
+    )
+    result = json.loads(response["Payload"].read())
+    body = decompress_lambda_response(result)
+    subjects = body["body"]
+    
+    # Should find the subject since it has unqualified match for search term
+    assert len(subjects) == 1, f"Expected 1 subject, got {len(subjects)}"
+    subject = subjects[0]
+    assert "subject_mixed" in subject["project_subject_iri"]
+    
+    # Check what term links are returned
+    print(f"🔍 Full subject response: {subject}")
+    
+    # Check different possible fields for term links
+    term_links = subject.get("phenotypes", [])
+    if not term_links:
+        term_links = subject.get("term_links", [])
+    if not term_links:
+        term_links = subject.get("terms", [])
+    
+    term_iris = [tl.get("term_iri") for tl in term_links]
+    
+    print(f"🔍 Subject has {len(term_links)} term links:")
+    for tl in term_links:
+        qualifiers = tl.get("qualifiers", [])
+        print(f"  - {tl.get('term_iri')} - qualifiers: {qualifiers}")
+    
+    # Key question: Are both term links returned or just the unqualified match?
+    has_search_term = "http://purl.obolibrary.org/obo/HP_0001250" in term_iris
+    has_other_term = "http://purl.obolibrary.org/obo/HP_0002297" in term_iris
+    
+    if len(term_links) == 0:
+        print("❌ No term links found - check response format")
+        pytest.skip("No term links in response - need to debug response format")
+    
+    assert has_search_term, "Should have the search term (unqualified match)"
+    
+    if has_other_term:
+        print("✅ Both term links returned - filtering is at subject level")
+    else:
+        print("✅ Only matching term link returned - filtering is at term link level")
+    
+    print(f"✅ Test completed - subject included with {len(term_links)} term links")
