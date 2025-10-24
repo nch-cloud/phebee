@@ -230,6 +230,7 @@ def get_subjects(
     term_source: str = None,
     term_source_version: str = None,
     project_subject_ids: list[str] = None,
+    include_qualified: bool = False,
 ) -> dict:
     # Build optional clauses
     project_subject_ids_clause = ""
@@ -246,13 +247,28 @@ def get_subjects(
     term_graphs = ""
     if term_iri:
         term_graphs = f"FROM <http://ods.nationwidechildrens.org/phebee/{term_source}~{term_source_version}>"
+        
+        # Build qualifier exclusion filter
+        qualifier_filter = ""
+        if not include_qualified:
+            qualifier_filter = """
+        # Exclude term links with negated, hypothetical, or family qualifiers
+        FILTER NOT EXISTS {
+            ?termlink phebee:hasQualifyingTerm ?excludedQualifier .
+            VALUES ?excludedQualifier {
+                <http://ods.nationwidechildrens.org/phebee/qualifier/negated>
+                <http://ods.nationwidechildrens.org/phebee/qualifier/hypothetical>
+                <http://ods.nationwidechildrens.org/phebee/qualifier/family>
+            }
+        }"""
+        
         term_filter_clause = f"""
         # Find subjects with term links (direct or via clinical notes)
         ?termlink rdf:type phebee:TermLink ;
                   phebee:sourceNode ?srcNode ;
                   phebee:hasTerm ?term .
         ?srcNode (phebee:hasEncounter/phebee:hasSubject)? ?subjectIRI .
-        ?term rdfs:subClassOf* <{term_iri}> .
+        ?term rdfs:subClassOf* <{term_iri}> .{qualifier_filter}
         """
 
     subjects_query = f"""

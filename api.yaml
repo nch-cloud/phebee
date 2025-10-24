@@ -195,6 +195,10 @@ paths:
                   type: string
                 term_iri:
                   type: string
+                include_qualified:
+                  type: boolean
+                  default: false
+                  description: Include term links with negated, hypothetical, or family qualifiers when filtering by term_iri
                 include_terms:
                   type: boolean
                 limit:
