@@ -11,6 +11,8 @@ SUBJECT_CREATED = "subject_created"
 SUBJECT_LINKED = "subject_linked"
 SUBJECT_TERM_LINK_CREATED = "subject_term_link_created"
 SUBJECT_TERM_EVIDENCE_ADDED = "subject_term_evidence_added"
+BULK_IMPORT_SUCCESS = "bulk_import_success"
+BULK_IMPORT_FAILURE = "bulk_import_failure"
 
 
 def fire_event(detail_type: str, detail: dict):
@@ -19,6 +21,8 @@ def fire_event(detail_type: str, detail: dict):
         SUBJECT_LINKED,
         SUBJECT_TERM_LINK_CREATED,
         SUBJECT_TERM_EVIDENCE_ADDED,
+        BULK_IMPORT_SUCCESS,
+        BULK_IMPORT_FAILURE,
     ]:
         raise Exception(f"Unknown detail type passed: {detail_type}")
 

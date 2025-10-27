@@ -1,0 +1,65 @@
+{
+  "Comment": "Monitor Neptune bulk loads and fire completion events",
+  "StartAt": "CheckLoadStatus",
+  "TimeoutSeconds": 14400,
+  "States": {
+    "CheckLoadStatus": {
+      "Type": "Task",
+      "Resource": "${CheckBulkLoadStatusFunctionArn}",
+      "ResultPath": "$.checkResult",
+      "Next": "EvaluateStatus",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ]
+    },
+    "EvaluateStatus": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.checkResult.status",
+          "StringEquals": "SUCCESS",
+          "Next": "FireSuccessEvent"
+        },
+        {
+          "Variable": "$.checkResult.status",
+          "StringEquals": "FAILED",
+          "Next": "FireFailureEvent"
+        }
+      ],
+      "Default": "WaitAndRetry"
+    },
+    "WaitAndRetry": {
+      "Type": "Wait",
+      "Seconds": 60,
+      "Next": "CheckLoadStatus"
+    },
+    "FireSuccessEvent": {
+      "Type": "Task",
+      "Resource": "${FireBulkEventFunctionArn}",
+      "Parameters": {
+        "event_type": "BULK_IMPORT_SUCCESS",
+        "run_id.$": "$.run_id",
+        "domain_load_id.$": "$.domain_load_id",
+        "prov_load_id.$": "$.prov_load_id"
+      },
+      "End": true
+    },
+    "FireFailureEvent": {
+      "Type": "Task",
+      "Resource": "${FireBulkEventFunctionArn}",
+      "Parameters": {
+        "event_type": "BULK_IMPORT_FAILURE",
+        "run_id.$": "$.run_id",
+        "domain_status.$": "$.checkResult.domain_status",
+        "prov_status.$": "$.checkResult.prov_status",
+        "error.$": "$.checkResult.error"
+      },
+      "End": true
+    }
+  }
+}

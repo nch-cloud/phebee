@@ -9,10 +9,12 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 s3 = boto3.client("s3")
+stepfunctions = boto3.client("stepfunctions")
 
 BUCKET_NAME     = os.environ["PheBeeBucketName"]
 REGION          = os.environ["Region"]
 LOADER_ROLE_ARN = os.environ["LoaderRoleArn"]
+BULK_LOAD_MONITOR_SFN_ARN = os.environ.get("BulkLoadMonitorSFNArn")
 
 
 def _list_keys(prefix: str, suffix: str | None = None) -> list[str]:
@@ -162,6 +164,24 @@ def lambda_handler(event, context):
     logger.info(resp_domain)
     logger.info(resp_prov)
 
+    domain_load_id = resp_domain.get("payload", {}).get("loadId")
+    prov_load_id = resp_prov.get("payload", {}).get("loadId")
+
+    # Start Step Function to monitor load completion and fire events
+    if BULK_LOAD_MONITOR_SFN_ARN and domain_load_id and prov_load_id:
+        try:
+            stepfunctions.start_execution(
+                stateMachineArn=BULK_LOAD_MONITOR_SFN_ARN,
+                input=json.dumps({
+                    "run_id": run_id,
+                    "domain_load_id": domain_load_id,
+                    "prov_load_id": prov_load_id
+                })
+            )
+            logger.info(f"Started bulk load monitor for run_id: {run_id}")
+        except Exception as e:
+            logger.error(f"Failed to start bulk load monitor: {e}")
+
     return {
         "statusCode": 200,
         "body": json.dumps({
@@ -169,8 +189,8 @@ def lambda_handler(event, context):
             "run_id": run_id,
             "mode": mode,
             "parallelism": parallelism,
-            "domain_load_id": resp_domain.get("payload", {}).get("loadId"),
-            "prov_load_id":   resp_prov.get("payload", {}).get("loadId"),
+            "domain_load_id": domain_load_id,
+            "prov_load_id": prov_load_id,
             "counts": {
                 "inputs": len(input_keys),
                 "data":   len(data_keys),
