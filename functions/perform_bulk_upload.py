@@ -171,6 +171,7 @@ def generate_rdf(
     created_encounters: set[str] = set()
     created_notes: set[str] = set()
     created_annotations: set[str] = set()
+    created_subjects: set[str] = set()
 
     # Domain timestamps we can carry to PROV
     termlink_earliest_ts: dict[str, Optional[str]] = {}
@@ -394,6 +395,7 @@ def generate_rdf(
         "encounters": [(iri, None) for iri in created_encounters],
         "notes": [(iri, note_ts.get(iri)) for iri in created_notes],
         "annotations": [(iri, annotation_ts.get(iri)) for iri in created_annotations],
+        "subjects": [(subject_map[key], None) for key in pairs_seen],
     }
     return graph_ttl, created_manifest, pairs_seen
 
@@ -488,6 +490,7 @@ def lambda_handler(event, context):
         for eiri, ts in created.get("notes", []): _gen(eiri, ts)
         for eiri, ts in created.get("annotations", []): _gen(eiri, ts)
         for eiri, _  in created.get("encounters", []): _gen(eiri, None)
+        for eiri, _  in created.get("subjects", []): _gen(eiri, None)
 
         ended_at = datetime.utcnow().isoformat(timespec="seconds") + "Z"
         prov_ctx.add((act, PROV.endedAtTime, RdfLiteral(ended_at, datatype=XSD.dateTime)))

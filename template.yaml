@@ -164,6 +164,7 @@ Resources:
               - !GetAtt CreateTermLinkFunction.Arn
               - !GetAtt GetTermLinkFunction.Arn
               - !GetAtt RemoveTermLinkFunction.Arn
+              - !GetAtt QueryProvenanceFunction.Arn
           - Effect: Allow
             Action:
               - states:StartSyncExecution
@@ -672,6 +673,7 @@ Resources:
   QueryProvenanceFunction:
     Type: AWS::Serverless::Function
     Properties:
+      FunctionName: !Sub ${AWS::StackName}-QueryProvenanceFunction
       CodeUri: functions/
       Handler: query_provenance.lambda_handler
       Environment:

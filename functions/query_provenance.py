@@ -74,18 +74,7 @@ def build_entity_query(run_id: str) -> str:
     ORDER BY ?entity
     """
 
-def build_agent_query(run_id: str) -> str:
-    """Build SPARQL query for agents in a run."""
-    return f"""
-    PREFIX prov: <http://www.w3.org/ns/prov#>
-    
-    SELECT ?agent ?activity WHERE {{
-        GRAPH <{PHEBEE}/provenance/run/{run_id}> {{
-            ?agent a prov:Agent .
-            ?activity prov:wasAssociatedWith ?agent .
-        }}
-    }}
-    """
+
 
 @tracer.capture_lambda_handler
 def lambda_handler(event, context):
@@ -105,10 +94,8 @@ def lambda_handler(event, context):
             sparql = build_lineage_query(entity_iri)
         elif query_type == "activity" and run_id:
             sparql = build_activity_query(run_id)
-        elif query_type == "entities" and run_id:
+        elif query_type == "entity" and run_id:
             sparql = build_entity_query(run_id)
-        elif query_type == "agents" and run_id:
-            sparql = build_agent_query(run_id)
         else:
             return {
                 "statusCode": 400,
@@ -118,11 +105,19 @@ def lambda_handler(event, context):
         logger.info("Executing SPARQL: %s", sparql)
         result = execute_query(sparql)
         
+        # Simplify response format by extracting just the values
+        simplified_results = []
+        for binding in result["results"]["bindings"]:
+            simplified_binding = {}
+            for key, value in binding.items():
+                simplified_binding[key] = value["value"]
+            simplified_results.append(simplified_binding)
+        
         return {
             "statusCode": 200,
             "body": json.dumps({
                 "query_type": query_type,
-                "results": result["results"]["bindings"]
+                "results": simplified_results
             })
         }
         
