@@ -7,6 +7,7 @@ integration-test:
         - CAPABILITY_AUTO_EXPAND
         - CAPABILITY_NAMED_IAM
       parameter_overrides:
+        - AppName=phebee-integration-test
         - VpcId=
         - SubnetId1=
         - SubnetId2=
@@ -23,6 +24,7 @@ dev:
         - CAPABILITY_AUTO_EXPAND
         - CAPABILITY_NAMED_IAM
       parameter_overrides:
+        - AppName=phebee-dev
         - VpcId=
         - SubnetId1=
         - SubnetId2=
@@ -39,9 +41,11 @@ staging:
         - CAPABILITY_AUTO_EXPAND
         - CAPABILITY_NAMED_IAM
       parameter_overrides:
+        - AppName=phebee-staging
         - VpcId=
         - SubnetId1=
         - SubnetId2=
+        - S3AccessLogBucketName=
         - RunOntologyUpdatesOnSchedule=true
       tags:
         - app=phebee
@@ -54,9 +58,11 @@ prod:
         - CAPABILITY_AUTO_EXPAND
         - CAPABILITY_NAMED_IAM
       parameter_overrides:
+        - AppName=phebee-prod
         - VpcId=
         - SubnetId1=
         - SubnetId2=
+        - S3AccessLogBucketName=
         - RunOntologyUpdatesOnSchedule=true
       tags:
         - app=phebee

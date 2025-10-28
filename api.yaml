@@ -1,7 +1,7 @@
 openapi: "3.0.1"
 info:
   title:
-    Fn::Sub: "phebee-${AWS::AccountId}-${AWS::Region}-${AWS::StackName}"
+    Fn::Sub: "phebee-${AWS::AccountId}-${AWS::Region}-${AppName}"
   version: "2020-11-06 15:32:29UTC"
 
 paths:
@@ -36,7 +36,7 @@ paths:
         payloadFormatVersion: "2.0"
         type: "aws_proxy"
         uri:
-          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-CreateProjectFunction/invocations
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-CreateProjectFunction/invocations
         connectionType: "INTERNET"
         timeoutInMillis: 30000
 
@@ -66,7 +66,7 @@ paths:
         payloadFormatVersion: "2.0"
         type: "aws_proxy"
         uri:
-          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-RemoveProjectFunction/invocations
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-RemoveProjectFunction/invocations
         connectionType: "INTERNET"
         timeoutInMillis: 30000
 
@@ -107,7 +107,7 @@ paths:
         payloadFormatVersion: "2.0"
         type: "aws_proxy"
         uri:
-          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-CreateSubjectFunction/invocations
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-CreateSubjectFunction/invocations
         connectionType: "INTERNET"
         timeoutInMillis: 30000
 
@@ -137,7 +137,7 @@ paths:
         payloadFormatVersion: "2.0"
         type: "aws_proxy"
         uri:
-          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-GetSubjectFunction/invocations
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-GetSubjectFunction/invocations
         connectionType: "INTERNET"
         timeoutInMillis: 30000
 
@@ -167,7 +167,7 @@ paths:
         payloadFormatVersion: "2.0"
         type: "aws_proxy"
         uri:
-          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-RemoveSubjectFunction/invocations
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-RemoveSubjectFunction/invocations
         connectionType: "INTERNET"
         timeoutInMillis: 30000
 
@@ -218,7 +218,7 @@ paths:
         payloadFormatVersion: "2.0"
         type: "aws_proxy"
         uri:
-          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-GetSubjectsPhenotypesFunction/invocations
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-GetSubjectsPhenotypesFunction/invocations
         connectionType: "INTERNET"
         timeoutInMillis: 30000
 
@@ -246,7 +246,7 @@ paths:
         payloadFormatVersion: "2.0"
         type: "aws_proxy"
         uri:
-          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-GetSourceInfoFunction/invocations
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-GetSourceInfoFunction/invocations
         connectionType: "INTERNET"
         timeoutInMillis: 30000
 
@@ -286,7 +286,7 @@ paths:
         payloadFormatVersion: "2.0"
         type: "aws_proxy"
         uri:
-          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-CreateEncounterFunction/invocations
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-CreateEncounterFunction/invocations
         connectionType: "INTERNET"
         timeoutInMillis: 30000
 
@@ -328,7 +328,7 @@ paths:
         payloadFormatVersion: "2.0"
         type: "aws_proxy"
         uri:
-          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-GetEncounterFunction/invocations
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-GetEncounterFunction/invocations
         connectionType: "INTERNET"
         timeoutInMillis: 30000
 
@@ -367,7 +367,7 @@ paths:
         payloadFormatVersion: "2.0"
         type: "aws_proxy"
         uri:
-          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-RemoveEncounterFunction/invocations
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-RemoveEncounterFunction/invocations
         connectionType: "INTERNET"
         timeoutInMillis: 30000
 
@@ -409,7 +409,7 @@ paths:
         payloadFormatVersion: "2.0"
         type: "aws_proxy"
         uri:
-          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-CreateClinicalNoteFunction/invocations
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-CreateClinicalNoteFunction/invocations
         connectionType: "INTERNET"
         timeoutInMillis: 30000
 
@@ -448,7 +448,7 @@ paths:
         payloadFormatVersion: "2.0"
         type: "aws_proxy"
         uri:
-          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-GetClinicalNoteFunction/invocations
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-GetClinicalNoteFunction/invocations
         connectionType: "INTERNET"
         timeoutInMillis: 30000
 
@@ -487,7 +487,7 @@ paths:
         payloadFormatVersion: "2.0"
         type: "aws_proxy"
         uri:
-          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-RemoveClinicalNoteFunction/invocations
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-RemoveClinicalNoteFunction/invocations
         connectionType: "INTERNET"
         timeoutInMillis: 30000
 
@@ -531,7 +531,7 @@ paths:
         payloadFormatVersion: "2.0"
         type: "aws_proxy"
         uri:
-          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-CreateCreatorFunction/invocations
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-CreateCreatorFunction/invocations
         connectionType: "INTERNET"
         timeoutInMillis: 30000
 
@@ -567,7 +567,7 @@ paths:
         payloadFormatVersion: "2.0"
         type: "aws_proxy"
         uri:
-          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-GetCreatorFunction/invocations
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-GetCreatorFunction/invocations
         connectionType: "INTERNET"
         timeoutInMillis: 30000
 
@@ -603,7 +603,7 @@ paths:
         payloadFormatVersion: "2.0"
         type: "aws_proxy"
         uri:
-          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-RemoveCreatorFunction/invocations
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-RemoveCreatorFunction/invocations
         connectionType: "INTERNET"
         timeoutInMillis: 30000
 
@@ -649,7 +649,7 @@ paths:
         payloadFormatVersion: "2.0"
         type: "aws_proxy"
         uri:
-          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-CreateTextAnnotationFunction/invocations
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-CreateTextAnnotationFunction/invocations
         connectionType: "INTERNET"
         timeoutInMillis: 30000
 
@@ -685,7 +685,7 @@ paths:
         payloadFormatVersion: "2.0"
         type: "aws_proxy"
         uri:
-          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-GetTextAnnotationFunction/invocations
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-GetTextAnnotationFunction/invocations
         connectionType: "INTERNET"
         timeoutInMillis: 30000
 
@@ -721,7 +721,7 @@ paths:
         payloadFormatVersion: "2.0"
         type: "aws_proxy"
         uri:
-          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-RemoveTextAnnotationFunction/invocations
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-RemoveTextAnnotationFunction/invocations
         connectionType: "INTERNET"
         timeoutInMillis: 30000
 
@@ -768,7 +768,7 @@ paths:
         payloadFormatVersion: "2.0"
         type: "aws_proxy"
         uri:
-          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-CreateTermLinkFunction/invocations
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-CreateTermLinkFunction/invocations
         connectionType: "INTERNET"
         timeoutInMillis: 30000
 
@@ -804,7 +804,7 @@ paths:
         payloadFormatVersion: "2.0"
         type: "aws_proxy"
         uri:
-          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-GetTermLinkFunction/invocations
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-GetTermLinkFunction/invocations
         connectionType: "INTERNET"
         timeoutInMillis: 30000
 
@@ -840,7 +840,7 @@ paths:
         payloadFormatVersion: "2.0"
         type: "aws_proxy"
         uri:
-          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-RemoveTermLinkFunction/invocations
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-RemoveTermLinkFunction/invocations
         connectionType: "INTERNET"
         timeoutInMillis: 30000
 
@@ -934,7 +934,7 @@ paths:
         payloadFormatVersion: "2.0"
         type: "aws_proxy"
         uri:
-          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-QueryProvenanceFunction/invocations
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-QueryProvenanceFunction/invocations
         connectionType: "INTERNET"
         timeoutInMillis: 30000
 

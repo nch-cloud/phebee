@@ -13,6 +13,13 @@ Globals:
         POWERTOOLS_SERVICE_NAME: phebee
 
 Parameters:
+  AppName:
+    Type: String
+    Description: "Application name used for resource naming (e.g., phebee-dev-2)"
+    Default: phebee
+    AllowedPattern: "^[a-z0-9-]+$"
+    ConstraintDescription: "Must contain only lowercase letters, numbers, and hyphens"
+
   VpcId:
     Default: false
     Description: "VPC in which Neptune is supposed to run. ex: vpc-xxxxxxxxxxxxxx"
@@ -78,7 +85,7 @@ Resources:
   SAMLogs:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub /aws/vendedlogs/states/step_functions/phebee-${AWS::StackName}
+      LogGroupName: !Sub /aws/vendedlogs/states/step_functions/phebee-${AppName}
 
   #################
   # IAM
@@ -252,7 +259,7 @@ Resources:
           - Effect: Allow
             Action:
               - rds:DescribeDBClusters
-            Resource: !Sub arn:${AWS::Partition}:rds:${AWS::Region}:${AWS::AccountId}:cluster:${AWS::StackName}-neptune-cluster
+            Resource: !Sub arn:${AWS::Partition}:rds:${AWS::Region}:${AWS::AccountId}:cluster:${AppName}-neptune-cluster
   
   PheBeeNeptuneLoadPolicy:
     Type: AWS::IAM::ManagedPolicy
@@ -322,7 +329,7 @@ Resources:
   NeptuneLoaderRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub phebee-neptune-loader-role-${AWS::StackName}
+      RoleName: !Sub phebee-neptune-loader-role-${AppName}
       AssumeRolePolicyDocument:
         Version: 2012-10-17
         Statement:
@@ -337,7 +344,7 @@ Resources:
     Type: AWS::IAM::Role
     Condition: EnableScheduledOntologyUpdate
     Properties:
-      RoleName: !Sub PheBeeInvokeOntologyUpdatersRole-${AWS::StackName}
+      RoleName: !Sub PheBeeInvokeOntologyUpdatersRole-${AppName}
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -364,7 +371,7 @@ Resources:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: Amazon Neptune Created
-      GroupName: !Sub phebee-neptune-sg-${AWS::StackName}
+      GroupName: !Sub phebee-neptune-sg-${AppName}
       VpcId: !Ref VpcId
       SecurityGroupIngress:
         - SourceSecurityGroupId: !Ref PheBeeLambdaSecurityGroup
@@ -380,12 +387,12 @@ Resources:
       - !Ref SubnetId1
       - !Ref SubnetId2
       DBSubnetGroupDescription: Subnet group for PheBee subnets
-      DBSubnetGroupName: !Sub phebee-neptune-subnets-${AWS::StackName}
+      DBSubnetGroupName: !Sub phebee-neptune-subnets-${AppName}
 
   PheBeeNeptuneCluster:
     Type: AWS::Neptune::DBCluster
     Properties:
-      DBClusterIdentifier: !Sub ${AWS::StackName}-neptune-cluster
+      DBClusterIdentifier: !Sub ${AppName}-neptune-cluster
       StorageEncrypted: true
       # Associating the role here is necessary to pass it as the role to use for our bulk loader
       AssociatedRoles:
@@ -424,7 +431,7 @@ Resources:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: Amazon Neptune Created
-      GroupName: !Sub phebee-lambda-sg-${AWS::StackName}
+      GroupName: !Sub phebee-lambda-sg-${AppName}
       VpcId: !Ref VpcId
       SecurityGroupEgress:
         # Egress is needed to allow test suite to invoke lambdas and receive a response
@@ -435,7 +442,7 @@ Resources:
   DownloadGithubReleaseFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AWS::StackName}-DownloadGithubReleaseFunction
+      FunctionName: !Sub ${AppName}-DownloadGithubReleaseFunction
       CodeUri: functions
       Handler: download_github_release.lambda_handler
       MemorySize: 1024
@@ -457,7 +464,7 @@ Resources:
   UpdateInstallTimestampFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AWS::StackName}-UpdateInstallTimestampFunction
+      FunctionName: !Sub ${AppName}-UpdateInstallTimestampFunction
       CodeUri: functions
       Handler: update_install_timestamp.lambda_handler
       MemorySize: 512
@@ -471,7 +478,7 @@ Resources:
   StartLoadFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AWS::StackName}-StartLoadFunction
+      FunctionName: !Sub ${AppName}-StartLoadFunction
       CodeUri: functions
       Handler: start_load.lambda_handler
       MemorySize: 512
@@ -491,7 +498,7 @@ Resources:
   GetLoadStatusFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AWS::StackName}-GetLoadStatusFunction
+      FunctionName: !Sub ${AppName}-GetLoadStatusFunction
       CodeUri: functions
       Handler: get_load_status.lambda_handler
       MemorySize: 512
@@ -511,7 +518,7 @@ Resources:
   GetSourceInfoFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AWS::StackName}-GetSourceInfoFunction
+      FunctionName: !Sub ${AppName}-GetSourceInfoFunction
       CodeUri: functions
       Handler: get_source_info.lambda_handler
       MemorySize: 512
@@ -524,7 +531,7 @@ Resources:
   GetSubjectFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AWS::StackName}-GetSubjectFunction
+      FunctionName: !Sub ${AppName}-GetSubjectFunction
       CodeUri: functions
       Handler: get_subject.lambda_handler
       MemorySize: 512
@@ -546,7 +553,7 @@ Resources:
   CreateSubjectFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AWS::StackName}-CreateSubjectFunction
+      FunctionName: !Sub ${AppName}-CreateSubjectFunction
       CodeUri: functions
       Handler: create_subject.lambda_handler
       MemorySize: 512
@@ -569,7 +576,7 @@ Resources:
   RemoveSubjectFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AWS::StackName}-RemoveSubjectFunction
+      FunctionName: !Sub ${AppName}-RemoveSubjectFunction
       CodeUri: functions
       Handler: remove_subject.lambda_handler
       MemorySize: 512
@@ -590,7 +597,7 @@ Resources:
   CreateProjectFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AWS::StackName}-CreateProjectFunction
+      FunctionName: !Sub ${AppName}-CreateProjectFunction
       CodeUri: functions
       Handler: create_project.lambda_handler
       MemorySize: 512
@@ -611,7 +618,7 @@ Resources:
   RemoveProjectFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AWS::StackName}-RemoveProjectFunction
+      FunctionName: !Sub ${AppName}-RemoveProjectFunction
       CodeUri: functions
       Handler: remove_project.lambda_handler
       MemorySize: 512
@@ -632,7 +639,7 @@ Resources:
   ParsePhenopacketCollectionFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AWS::StackName}-ParsePhenopacketCollectionFunction
+      FunctionName: !Sub ${AppName}-ParsePhenopacketCollectionFunction
       CodeUri: functions
       Handler: parse_phenopacket_collection.lambda_handler
       MemorySize: 512
@@ -646,7 +653,7 @@ Resources:
   ProcessPhenopacketFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AWS::StackName}-ProcessPhenopacketFunction
+      FunctionName: !Sub ${AppName}-ProcessPhenopacketFunction
       CodeUri: functions
       Handler: process_phenopacket.lambda_handler
       MemorySize: 512
@@ -657,7 +664,7 @@ Resources:
   ExportPhenopacketsFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AWS::StackName}-ExportPhenopacketsFunction
+      FunctionName: !Sub ${AppName}-ExportPhenopacketsFunction
       CodeUri: functions
       Handler: export_phenopackets.lambda_handler
       MemorySize: 512
@@ -673,7 +680,7 @@ Resources:
   QueryProvenanceFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AWS::StackName}-QueryProvenanceFunction
+      FunctionName: !Sub ${AppName}-QueryProvenanceFunction
       CodeUri: functions/
       Handler: query_provenance.lambda_handler
       Environment:
@@ -692,7 +699,7 @@ Resources:
   GetSubjectsPhenotypesFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AWS::StackName}-GetSubjectsPhenotypesFunction
+      FunctionName: !Sub ${AppName}-GetSubjectsPhenotypesFunction
       CodeUri: functions
       Handler: get_subjects_pheno.lambda_handler
       MemorySize: 2048
@@ -719,7 +726,7 @@ Resources:
   ResetDatabaseFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AWS::StackName}-ResetDatabaseFunction
+      FunctionName: !Sub ${AppName}-ResetDatabaseFunction
       CodeUri: functions
       Handler: reset_database.lambda_handler
       MemorySize: 512
@@ -745,7 +752,7 @@ Resources:
   CreateEncounterFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AWS::StackName}-CreateEncounterFunction
+      FunctionName: !Sub ${AppName}-CreateEncounterFunction
       CodeUri: functions
       Handler: create_encounter.lambda_handler
       MemorySize: 512
@@ -766,7 +773,7 @@ Resources:
   GetEncounterFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AWS::StackName}-GetEncounterFunction
+      FunctionName: !Sub ${AppName}-GetEncounterFunction
       CodeUri: functions
       Handler: get_encounter.lambda_handler
       MemorySize: 512
@@ -786,7 +793,7 @@ Resources:
   RemoveEncounterFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AWS::StackName}-RemoveEncounterFunction
+      FunctionName: !Sub ${AppName}-RemoveEncounterFunction
       CodeUri: functions
       Handler: remove_encounter.lambda_handler
       MemorySize: 512
@@ -807,7 +814,7 @@ Resources:
   CreateClinicalNoteFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AWS::StackName}-CreateClinicalNoteFunction
+      FunctionName: !Sub ${AppName}-CreateClinicalNoteFunction
       CodeUri: functions
       Handler: create_clinical_note.lambda_handler
       MemorySize: 512
@@ -828,7 +835,7 @@ Resources:
   GetClinicalNoteFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AWS::StackName}-GetClinicalNoteFunction
+      FunctionName: !Sub ${AppName}-GetClinicalNoteFunction
       CodeUri: functions
       Handler: get_clinical_note.lambda_handler
       MemorySize: 512
@@ -848,7 +855,7 @@ Resources:
   RemoveClinicalNoteFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AWS::StackName}-RemoveClinicalNoteFunction
+      FunctionName: !Sub ${AppName}-RemoveClinicalNoteFunction
       CodeUri: functions
       Handler: remove_clinical_note.lambda_handler
       MemorySize: 512
@@ -869,7 +876,7 @@ Resources:
   CreateCreatorFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AWS::StackName}-CreateCreatorFunction
+      FunctionName: !Sub ${AppName}-CreateCreatorFunction
       CodeUri: functions
       Handler: create_creator.lambda_handler
       MemorySize: 512
@@ -890,7 +897,7 @@ Resources:
   GetCreatorFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AWS::StackName}-GetCreatorFunction
+      FunctionName: !Sub ${AppName}-GetCreatorFunction
       CodeUri: functions
       Handler: get_creator.lambda_handler
       MemorySize: 512
@@ -910,7 +917,7 @@ Resources:
   RemoveCreatorFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AWS::StackName}-RemoveCreatorFunction
+      FunctionName: !Sub ${AppName}-RemoveCreatorFunction
       CodeUri: functions
       Handler: remove_creator.lambda_handler
       MemorySize: 512
@@ -931,7 +938,7 @@ Resources:
   CreateTextAnnotationFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AWS::StackName}-CreateTextAnnotationFunction
+      FunctionName: !Sub ${AppName}-CreateTextAnnotationFunction
       CodeUri: functions
       Handler: create_text_annotation.lambda_handler
       MemorySize: 512
@@ -952,7 +959,7 @@ Resources:
   GetTextAnnotationFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AWS::StackName}-GetTextAnnotationFunction
+      FunctionName: !Sub ${AppName}-GetTextAnnotationFunction
       CodeUri: functions
       Handler: get_text_annotation.lambda_handler
       MemorySize: 512
@@ -972,7 +979,7 @@ Resources:
   RemoveTextAnnotationFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AWS::StackName}-RemoveTextAnnotationFunction
+      FunctionName: !Sub ${AppName}-RemoveTextAnnotationFunction
       CodeUri: functions
       Handler: remove_text_annotation.lambda_handler
       MemorySize: 512
@@ -993,7 +1000,7 @@ Resources:
   CreateTermLinkFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AWS::StackName}-CreateTermLinkFunction
+      FunctionName: !Sub ${AppName}-CreateTermLinkFunction
       CodeUri: functions
       Handler: create_term_link.lambda_handler
       MemorySize: 512
@@ -1014,7 +1021,7 @@ Resources:
   GetTermLinkFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AWS::StackName}-GetTermLinkFunction
+      FunctionName: !Sub ${AppName}-GetTermLinkFunction
       CodeUri: functions
       Handler: get_term_link.lambda_handler
       MemorySize: 512
@@ -1034,7 +1041,7 @@ Resources:
   RemoveTermLinkFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AWS::StackName}-RemoveTermLinkFunction
+      FunctionName: !Sub ${AppName}-RemoveTermLinkFunction
       CodeUri: functions
       Handler: remove_term_link.lambda_handler
       MemorySize: 512
@@ -1055,7 +1062,7 @@ Resources:
   PrepareSubjectTermLinksPayloadFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AWS::StackName}-PrepareSubjectTermLinksPayloadFunction
+      FunctionName: !Sub ${AppName}-PrepareSubjectTermLinksPayloadFunction
       CodeUri: functions
       Handler: prepare_subject_term_links_payload.lambda_handler
       MemorySize: 512
@@ -1069,7 +1076,7 @@ Resources:
   PrepareBulkUploadFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AWS::StackName}-PrepareBulkUploadFunction
+      FunctionName: !Sub ${AppName}-PrepareBulkUploadFunction
       CodeUri: functions
       Handler: prepare_bulk_upload.lambda_handler
       MemorySize: 512
@@ -1084,7 +1091,7 @@ Resources:
   PerformBulkUploadFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AWS::StackName}-PerformBulkUploadFunction
+      FunctionName: !Sub ${AppName}-PerformBulkUploadFunction
       CodeUri: functions
       Handler: perform_bulk_upload.lambda_handler
       MemorySize: 1024
@@ -1110,7 +1117,7 @@ Resources:
   FinalizeBulkUploadFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AWS::StackName}-FinalizeBulkUploadFunction
+      FunctionName: !Sub ${AppName}-FinalizeBulkUploadFunction
       CodeUri: functions
       Handler: finalize_bulk_upload.lambda_handler
       MemorySize: 1024
@@ -1144,7 +1151,7 @@ Resources:
   CheckBulkLoadStatusFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AWS::StackName}-CheckBulkLoadStatusFunction
+      FunctionName: !Sub ${AppName}-CheckBulkLoadStatusFunction
       CodeUri: functions
       Handler: check_bulk_load_status.lambda_handler
       MemorySize: 256
@@ -1166,7 +1173,7 @@ Resources:
   FireBulkEventFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AWS::StackName}-FireBulkEventFunction
+      FunctionName: !Sub ${AppName}-FireBulkEventFunction
       CodeUri: functions
       Handler: fire_bulk_event.lambda_handler
       MemorySize: 256
@@ -1301,7 +1308,7 @@ Resources:
   ImportPhenopacketsSFN:
     Type: AWS::Serverless::StateMachine
     Properties:
-      Name: !Sub ImportPhenopacketsSFN-${AWS::StackName}
+      Name: !Sub ImportPhenopacketsSFN-${AppName}
       DefinitionUri: statemachine/import_phenopackets.asl.json
       Logging:
         Destinations:
@@ -1333,7 +1340,7 @@ Resources:
             Action:
               - states:StartExecution
             Resource:
-              - !Sub arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:ImportPhenopacketsSFN-${AWS::StackName}
+              - !Sub arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:ImportPhenopacketsSFN-${AppName}
 
 
   #################
@@ -1455,7 +1462,7 @@ Resources:
   PheBeeBus:
     Type: AWS::Events::EventBus
     Properties:
-      Name: !Sub phebee-bus-${AWS::StackName}
+      Name: !Sub phebee-bus-${AppName}
 
   ####################
   # Scheduled Updates
@@ -1465,7 +1472,7 @@ Resources:
     Type: AWS::Events::Rule
     Condition: EnableScheduledOntologyUpdate
     Properties:
-      Name: !Sub UpdateHPO-OnSchedule-${AWS::StackName}
+      Name: !Sub UpdateHPO-OnSchedule-${AppName}
       ScheduleExpression: !Ref HPOScheduleExpression
       State: ENABLED
       Targets:
@@ -1477,7 +1484,7 @@ Resources:
     Type: AWS::Events::Rule
     Condition: EnableScheduledOntologyUpdate
     Properties:
-      Name: !Sub UpdateMondo-OnSchedule-${AWS::StackName}
+      Name: !Sub UpdateMondo-OnSchedule-${AppName}
       ScheduleExpression: !Ref MondoScheduleExpression
       State: ENABLED
       Targets:
@@ -1489,7 +1496,7 @@ Resources:
     Type: AWS::Events::Rule
     Condition: EnableScheduledOntologyUpdate
     Properties:
-      Name: !Sub UpdateECO-OnSchedule-${AWS::StackName}
+      Name: !Sub UpdateECO-OnSchedule-${AppName}
       ScheduleExpression: !Ref ECOScheduleExpression
       State: ENABLED
       Targets:
@@ -1516,48 +1523,48 @@ Outputs:
   PrepareBulkUploadFunctionArn:
     Value: !GetAtt PrepareBulkUploadFunction.Arn
     Export:
-      Name: !Sub "${AWS::StackName}-PrepareBulkUploadFunctionArn"
+      Name: !Sub "${AppName}-PrepareBulkUploadFunctionArn"
 
   PerformBulkUploadFunctionArn:
     Value: !GetAtt PerformBulkUploadFunction.Arn
     Export:
-      Name: !Sub "${AWS::StackName}-PerformBulkUploadFunctionArn"
+      Name: !Sub "${AppName}-PerformBulkUploadFunctionArn"
 
   FinalizeBulkUploadFunctionArn:
     Value: !GetAtt FinalizeBulkUploadFunction.Arn
     Export:
-      Name: !Sub "${AWS::StackName}-FinalizeBulkUploadFunctionArn"
+      Name: !Sub "${AppName}-FinalizeBulkUploadFunctionArn"
 
   CheckBulkLoadStatusFunctionArn:
     Value: !GetAtt CheckBulkLoadStatusFunction.Arn
     Export:
-      Name: !Sub "${AWS::StackName}-CheckBulkLoadStatusFunctionArn"
+      Name: !Sub "${AppName}-CheckBulkLoadStatusFunctionArn"
 
   FireBulkEventFunctionArn:
     Value: !GetAtt FireBulkEventFunction.Arn
     Export:
-      Name: !Sub "${AWS::StackName}-FireBulkEventFunctionArn"
+      Name: !Sub "${AppName}-FireBulkEventFunctionArn"
 
   BulkLoadMonitorSFNArn:
     Value: !Ref BulkLoadMonitorSFN
     Export:
-      Name: !Sub "${AWS::StackName}-BulkLoadMonitorSFNArn"
+      Name: !Sub "${AppName}-BulkLoadMonitorSFNArn"
 
   GetLoadStatusFunctionArn:
     Value: !GetAtt GetLoadStatusFunction.Arn
     Export:
-      Name: !Sub "${AWS::StackName}-GetLoadStatusFunctionArn"
+      Name: !Sub "${AppName}-GetLoadStatusFunctionArn"
 
   QueryProvenanceFunctionArn:
     Value: !GetAtt QueryProvenanceFunction.Arn
     Export:
-      Name: !Sub "${AWS::StackName}-QueryProvenanceFunctionArn"
+      Name: !Sub "${AppName}-QueryProvenanceFunctionArn"
 
   DynamoDBTableName:
     Description: Table name of the PheBee DynamoDB table
     Value: !Ref DynamoDBTable
     Export:
-      Name: !Sub ${AWS::StackName}-DynamoDBTableName
+      Name: !Sub ${AppName}-DynamoDBTableName
 
   Region:
     Value: !Sub ${AWS::Region}
@@ -1572,8 +1579,12 @@ Outputs:
     Description: Base URL for the HTTP API
     Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
 
+  AppName:
+    Description: Application name used for resource naming
+    Value: !Ref AppName
+
   PheBeeBus:
     Description: Name of the custom EventBridge bus for PheBee events
     Value: !Ref PheBeeBus
     Export:
-      Name: !Sub "${AWS::StackName}-PheBeeBus"
+      Name: !Sub "${AppName}-PheBeeBus"
