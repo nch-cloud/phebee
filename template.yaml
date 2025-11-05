@@ -82,6 +82,16 @@ Conditions:
   EnableScheduledOntologyUpdate: !Equals [!Ref RunOntologyUpdatesOnSchedule, "true"]
 
 Resources:
+  PheBeeUtilsLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: !Sub ${AppName}-phebee-utils
+      ContentUri: layers/phebee-utils/
+      CompatibleRuntimes:
+        - python3.11
+    Metadata:
+      BuildMethod: python3.11
+
   SAMLogs:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -446,6 +456,8 @@ Resources:
       CodeUri: functions
       Handler: download_github_release.lambda_handler
       MemorySize: 1024
+      Layers:
+        - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           PheBeeBucketName: !Ref PheBeeBucket
@@ -468,6 +480,8 @@ Resources:
       CodeUri: functions
       Handler: update_install_timestamp.lambda_handler
       MemorySize: 512
+      Layers:
+        - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           PheBeeDynamoTable: !Ref DynamoDBTable
@@ -482,6 +496,8 @@ Resources:
       CodeUri: functions
       Handler: start_load.lambda_handler
       MemorySize: 512
+      Layers:
+        - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
@@ -502,6 +518,8 @@ Resources:
       CodeUri: functions
       Handler: get_load_status.lambda_handler
       MemorySize: 512
+      Layers:
+        - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
@@ -522,6 +540,8 @@ Resources:
       CodeUri: functions
       Handler: get_source_info.lambda_handler
       MemorySize: 512
+      Layers:
+        - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           PheBeeDynamoTable: !Ref DynamoDBTable
@@ -535,6 +555,8 @@ Resources:
       CodeUri: functions
       Handler: get_subject.lambda_handler
       MemorySize: 512
+      Layers:
+        - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
@@ -557,6 +579,8 @@ Resources:
       CodeUri: functions
       Handler: create_subject.lambda_handler
       MemorySize: 512
+      Layers:
+        - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
@@ -580,6 +604,8 @@ Resources:
       CodeUri: functions
       Handler: remove_subject.lambda_handler
       MemorySize: 512
+      Layers:
+        - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
@@ -601,6 +627,8 @@ Resources:
       CodeUri: functions
       Handler: create_project.lambda_handler
       MemorySize: 512
+      Layers:
+        - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
@@ -622,6 +650,8 @@ Resources:
       CodeUri: functions
       Handler: remove_project.lambda_handler
       MemorySize: 512
+      Layers:
+        - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
@@ -643,6 +673,8 @@ Resources:
       CodeUri: functions
       Handler: parse_phenopacket_collection.lambda_handler
       MemorySize: 512
+      Layers:
+        - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           PheBeeBucketName: !Ref PheBeeBucket
@@ -657,6 +689,8 @@ Resources:
       CodeUri: functions
       Handler: process_phenopacket.lambda_handler
       MemorySize: 512
+      Layers:
+        - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           PheBeeBucketName: !Ref PheBeeBucket
@@ -668,6 +702,8 @@ Resources:
       CodeUri: functions
       Handler: export_phenopackets.lambda_handler
       MemorySize: 512
+      Layers:
+        - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           PheBeeBucketName: !Ref PheBeeBucket
@@ -683,6 +719,8 @@ Resources:
       FunctionName: !Sub ${AppName}-QueryProvenanceFunction
       CodeUri: functions/
       Handler: query_provenance.lambda_handler
+      Layers:
+        - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
@@ -704,6 +742,8 @@ Resources:
       Handler: get_subjects_pheno.lambda_handler
       MemorySize: 2048
       Timeout: 300
+      Layers:
+        - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
@@ -731,6 +771,8 @@ Resources:
       Handler: reset_database.lambda_handler
       MemorySize: 512
       Timeout: 300
+      Layers:
+        - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
@@ -756,6 +798,8 @@ Resources:
       CodeUri: functions
       Handler: create_encounter.lambda_handler
       MemorySize: 512
+      Layers:
+        - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
@@ -777,6 +821,8 @@ Resources:
       CodeUri: functions
       Handler: get_encounter.lambda_handler
       MemorySize: 512
+      Layers:
+        - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
@@ -797,6 +843,8 @@ Resources:
       CodeUri: functions
       Handler: remove_encounter.lambda_handler
       MemorySize: 512
+      Layers:
+        - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
@@ -818,6 +866,8 @@ Resources:
       CodeUri: functions
       Handler: create_clinical_note.lambda_handler
       MemorySize: 512
+      Layers:
+        - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
@@ -839,6 +889,8 @@ Resources:
       CodeUri: functions
       Handler: get_clinical_note.lambda_handler
       MemorySize: 512
+      Layers:
+        - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
@@ -859,6 +911,8 @@ Resources:
       CodeUri: functions
       Handler: remove_clinical_note.lambda_handler
       MemorySize: 512
+      Layers:
+        - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
@@ -880,6 +934,8 @@ Resources:
       CodeUri: functions
       Handler: create_creator.lambda_handler
       MemorySize: 512
+      Layers:
+        - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
@@ -901,6 +957,8 @@ Resources:
       CodeUri: functions
       Handler: get_creator.lambda_handler
       MemorySize: 512
+      Layers:
+        - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
@@ -921,6 +979,8 @@ Resources:
       CodeUri: functions
       Handler: remove_creator.lambda_handler
       MemorySize: 512
+      Layers:
+        - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
@@ -942,6 +1002,8 @@ Resources:
       CodeUri: functions
       Handler: create_text_annotation.lambda_handler
       MemorySize: 512
+      Layers:
+        - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
@@ -963,6 +1025,8 @@ Resources:
       CodeUri: functions
       Handler: get_text_annotation.lambda_handler
       MemorySize: 512
+      Layers:
+        - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
@@ -983,6 +1047,8 @@ Resources:
       CodeUri: functions
       Handler: remove_text_annotation.lambda_handler
       MemorySize: 512
+      Layers:
+        - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
@@ -1004,6 +1070,8 @@ Resources:
       CodeUri: functions
       Handler: create_term_link.lambda_handler
       MemorySize: 512
+      Layers:
+        - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
@@ -1025,6 +1093,8 @@ Resources:
       CodeUri: functions
       Handler: get_term_link.lambda_handler
       MemorySize: 512
+      Layers:
+        - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
@@ -1045,6 +1115,8 @@ Resources:
       CodeUri: functions
       Handler: remove_term_link.lambda_handler
       MemorySize: 512
+      Layers:
+        - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
@@ -1080,6 +1152,8 @@ Resources:
       CodeUri: functions
       Handler: prepare_bulk_upload.lambda_handler
       MemorySize: 512
+      Layers:
+        - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           PheBeeBucketName: !Ref PheBeeBucket
@@ -1096,6 +1170,8 @@ Resources:
       Handler: perform_bulk_upload.lambda_handler
       MemorySize: 1024
       Timeout: 900
+      Layers:
+        - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
@@ -1122,6 +1198,8 @@ Resources:
       Handler: finalize_bulk_upload.lambda_handler
       MemorySize: 1024
       Timeout: 300
+      Layers:
+        - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
@@ -1156,6 +1234,8 @@ Resources:
       Handler: check_bulk_load_status.lambda_handler
       MemorySize: 256
       Timeout: 60
+      Layers:
+        - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
@@ -1178,6 +1258,8 @@ Resources:
       Handler: fire_bulk_event.lambda_handler
       MemorySize: 256
       Timeout: 60
+      Layers:
+        - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           PheBeeBus: !Ref PheBeeBus
