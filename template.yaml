@@ -1168,7 +1168,7 @@ Resources:
       FunctionName: !Sub ${AppName}-PerformBulkUploadFunction
       CodeUri: functions
       Handler: perform_bulk_upload.lambda_handler
-      MemorySize: 1024
+      MemorySize: 10240
       Timeout: 900
       Layers:
         - !Ref PheBeeUtilsLayer
