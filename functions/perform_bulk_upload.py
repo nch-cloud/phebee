@@ -62,7 +62,7 @@ class ClinicalNoteEvidence(BaseModel):
     evidence_creator_version: Optional[str] = None
     note_timestamp: Optional[str] = None
     note_type: Optional[str] = None
-    author_prov_type: Optional[str] = None
+    provider_type: Optional[str] = None
     author_specialty: Optional[str] = None
     span_start: Optional[int] = None
     span_end: Optional[int] = None
@@ -305,12 +305,13 @@ def generate_rdf(
                     g.add((note_ref, PHEBEE_NS.clinicalNoteId, RdfLiteral(evidence.clinical_note_id)))
                     g.add((note_ref, PHEBEE_NS.hasEncounter, encounter_ref))
                     if evidence.note_timestamp:
-                        g.add((note_ref, DCTERMS.created, RdfLiteral(evidence.note_timestamp, datatype=XSD.dateTime)))
                         g.add((note_ref, PHEBEE_NS.noteTimestamp, RdfLiteral(evidence.note_timestamp, datatype=XSD.dateTime)))
-                    if evidence.author_prov_type:
-                        g.add((note_ref, PHEBEE_NS.providerType, RdfLiteral(evidence.author_prov_type)))
+                    if evidence.provider_type:
+                        g.add((note_ref, PHEBEE_NS.providerType, RdfLiteral(evidence.provider_type)))
                     if evidence.author_specialty:
                         g.add((note_ref, PHEBEE_NS.authorSpecialty, RdfLiteral(evidence.author_specialty)))
+                    if evidence.note_type:
+                        g.add((note_ref, PHEBEE_NS.noteType, RdfLiteral(evidence.note_type)))
                     note_iris.add(note_iri_str)
                     new_notes_count += 1
                     created_notes.add(note_iri_str)

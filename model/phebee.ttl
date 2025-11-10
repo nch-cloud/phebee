@@ -139,6 +139,12 @@ phebee:authorSpecialty a owl:DatatypeProperty ;
     rdfs:label "Author Specialty" ;
     rdfs:comment "The medical specialty of the provider who authored the note." .
 
+phebee:noteType a owl:DatatypeProperty ;
+    rdfs:domain phebee:ClinicalNote ;
+    rdfs:range xsd:string ;
+    rdfs:label "Note Type" ;
+    rdfs:comment "The type or category of the clinical note (e.g., Progress Note, Discharge Summary)." .
+
 phebee:spanStart a owl:DatatypeProperty ;
     rdfs:domain phebee:TextAnnotation ;
     rdfs:range xsd:integer ;

@@ -284,7 +284,7 @@ def test_payload_with_new_fields(test_project_id):
                     "evidence_creator_type": "automated",
                     "evidence_creator_name": "Robot Creator",
                     "evidence_creator_version": "1.2",
-                    "author_prov_type": "Physician",
+                    "provider_type": "Physician",
                     "author_specialty": "Neurology"
                 }
             ]

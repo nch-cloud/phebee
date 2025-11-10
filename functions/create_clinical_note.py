@@ -11,6 +11,7 @@ def lambda_handler(event, context):
         note_timestamp = body.get("note_timestamp")  # Optional
         provider_type = body.get("provider_type")  # Optional
         author_specialty = body.get("author_specialty")  # Optional
+        note_type = body.get("note_type")  # Optional
 
         if not encounter_iri or not clinical_note_id:
             return {
@@ -18,7 +19,7 @@ def lambda_handler(event, context):
                 "body": json.dumps({"message": "Missing required fields: encounter_iri and clinical_note_id"})
             }
 
-        create_clinical_note(encounter_iri, clinical_note_id, note_timestamp, provider_type, author_specialty)
+        create_clinical_note(encounter_iri, clinical_note_id, note_timestamp, provider_type, author_specialty, note_type)
 
         note_iri = f"{encounter_iri}/note/{clinical_note_id}"
 
