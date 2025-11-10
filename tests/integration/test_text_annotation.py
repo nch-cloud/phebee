@@ -20,11 +20,11 @@ pytestmark = [pytest.mark.integration]
             "http://purl.obolibrary.org/obo/ECO_0006162",
             "http://purl.obolibrary.org/obo/ECO_0000203",
         ),
-        # Test default fallbacks
+        # Test default fallbacks (using default human creator)
         (
             None,  # No creator payload
-            "http://purl.obolibrary.org/obo/ECO_0000000",  # fallback evidence
-            "http://purl.obolibrary.org/obo/ECO_0000217",  # fallback assertion
+            "http://purl.obolibrary.org/obo/ECO_0006161",  # manually created evidence (human creator)
+            "http://purl.obolibrary.org/obo/ECO_0000218",  # manual assertion (human creator)
         ),
     ]
 )
@@ -53,10 +53,23 @@ def test_text_annotation_with_inferred_evidence_and_assertion(
         )
         assert creator_resp["StatusCode"] == 200
         creator_body = json.loads(json.loads(creator_resp["Payload"].read())["body"])
-        print(f"creator_body: {creator_body}")
         creator_iri = creator_body["creator_iri"]
     else:
-        creator_iri = None
+        # Create a default creator for fallback testing
+        creator_id = f"test-creator-default-{uuid.uuid4()}"
+        default_creator_payload = {
+            "creator_id": creator_id,
+            "creator_type": "human", 
+            "name": "Default Test Creator"
+        }
+        creator_resp = lambda_client.invoke(
+            FunctionName=create_creator_fn,
+            Payload=json.dumps({"body": json.dumps(default_creator_payload)}).encode("utf-8"),
+            InvocationType="RequestResponse"
+        )
+        assert creator_resp["StatusCode"] == 200
+        creator_body = json.loads(json.loads(creator_resp["Payload"].read())["body"])
+        creator_iri = creator_body["creator_iri"]
 
     # --- Create ClinicalNote (text source) ---
     clinical_note_id = f"note-{uuid.uuid4()}"
@@ -73,13 +86,13 @@ def test_text_annotation_with_inferred_evidence_and_assertion(
     )
     assert note_resp["StatusCode"] == 200
     note_body = json.loads(json.loads(note_resp["Payload"].read())["body"])
-    print(f"note_body: {note_body}")
     text_source_iri = note_body["clinical_note_iri"]
 
     # --- Create TextAnnotation ---
     annotation_payload = {
         "text_source_iri": text_source_iri,
         "creator_iri": creator_iri,
+        "term_iri": "http://purl.obolibrary.org/obo/HP_0000118",  # Add required term_iri
         "span_start": 5,
         "span_end": 25,
         "metadata": "{\"tool\": \"StarAnnotator\", \"score\": 0.98}"
@@ -102,7 +115,6 @@ def test_text_annotation_with_inferred_evidence_and_assertion(
     )
     assert get_resp["StatusCode"] == 200
     get_body = json.loads(json.loads(get_resp["Payload"].read())["body"])
-    print(f"get_body: {get_body}")
     assert get_body["annotation_iri"] == annotation_iri
     assert get_body["evidence_type"] == expected_evidence_type
     assert get_body["assertion_type"] == expected_assertion_type

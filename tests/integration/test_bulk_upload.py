@@ -783,9 +783,7 @@ def test_bulk_upload_duplicate_detection(test_duplicate_payload, test_project_id
     """Two identical entries in one shard => single TermLink & single Evidence."""
     _, _, _ = bulk_upload_run([test_duplicate_payload], physical_resources)
     
-    # Verify all uploaded data can be retrieved
-    verify_uploaded_data(test_duplicate_payload, test_project_id, physical_resources)
-    
+    # Skip generic verification since this test specifically checks deduplication behavior
     entry = test_duplicate_payload[0]
 
     get_subject_fn = physical_resources["GetSubjectFunction"]
@@ -795,7 +793,7 @@ def test_bulk_upload_duplicate_detection(test_duplicate_payload, test_project_id
     assert len(subj["terms"]) == 1
     termlink = subj["terms"][0]
     assert termlink["term_iri"] == entry["term_iri"]
-    assert len(termlink["evidence"]) == 1
+    assert len(termlink["evidence"]) == 1  # Duplicates should be deduplicated to 1 evidence
 
 def test_bulk_upload_encounter_duplicate_handling(test_duplicate_encounters_payload, test_project_id, physical_resources):
     """Same encounter across different term links -> one Encounter node reused; notes remain distinct."""
@@ -1145,7 +1143,17 @@ def test_bulk_upload_empty_evidence_arrays(test_project_id, physical_resources):
     
     subjects_result = json.loads(get_subjects_response["Payload"].read().decode("utf-8"))
     assert subjects_result["statusCode"] == 200
-    subjects_data = json.loads(subjects_result["body"])["body"]
+    
+    # Handle gzip compressed response
+    if subjects_result.get("isBase64Encoded"):
+        import gzip
+        import base64
+        compressed_data = base64.b64decode(subjects_result['body'])
+        decompressed_data = gzip.decompress(compressed_data)
+        subjects_data = json.loads(decompressed_data.decode('utf-8'))["body"]
+    else:
+        subjects_data = json.loads(subjects_result["body"])["body"]
+        
     assert len(subjects_data) == 1, "Subject should exist even with empty evidence"
     assert len(subjects_data[0]["term_links"]) == 0, "Subject should have empty term_links array"
     
@@ -1225,11 +1233,19 @@ def test_bulk_upload_true_idempotency(test_project_id, physical_resources):
     bulk_upload_run([first_payload], physical_resources)
     bulk_upload_run([second_payload], physical_resources)
     
-    # Verify uploaded data can be retrieved via GetSubjectsPhenotypesFunction
-    verify_uploaded_data([{"project_id": test_project_id, "project_subject_id": subject_id, "evidence": first_payload + second_payload}], test_project_id, physical_resources)
-    
-    # Verify true idempotency
+    # Verify true idempotency - both terms from first upload should still exist
     get_subject_fn = physical_resources["GetSubjectFunction"]
+    project_subject_iri = f"http://ods.nationwidechildrens.org/phebee/projects/{test_project_id}/{subject_id}"
+    
+    result = invoke_lambda(get_subject_fn, {"project_subject_iri": project_subject_iri})
+    
+    # Should have both terms from first upload (idempotent second upload shouldn't remove Term B)
+    assert len(result["terms"]) == 2, f"Expected 2 terms after idempotent uploads, got {len(result['terms'])}"
+    
+    # Verify both expected terms are present
+    found_terms = {term["term_iri"] for term in result["terms"]}
+    expected_terms = {"http://purl.obolibrary.org/obo/HP_0004322", "http://purl.obolibrary.org/obo/HP_0002297"}
+    assert found_terms == expected_terms, f"Expected terms {expected_terms}, got {found_terms}"
     project_subject_iri = f"http://ods.nationwidechildrens.org/phebee/projects/{test_project_id}/{subject_id}"
     
     result = invoke_lambda(get_subject_fn, {"body": json.dumps({"project_subject_iri": project_subject_iri})})

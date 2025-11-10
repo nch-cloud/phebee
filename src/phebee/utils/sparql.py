@@ -29,17 +29,29 @@ import hashlib
 import time
 from collections import defaultdict
 from typing import List, Optional, Sequence
-from aws_lambda_powertools import Metrics, Logger, Tracer
+try:
+    from aws_lambda_powertools import Metrics, Logger, Tracer
+    logger = Logger()
+    tracer = Tracer()
+    metrics = Metrics()
+except ImportError:
+    # For testing environments where aws_lambda_powertools isn't available
+    class NoOpLogger:
+        def info(self, *args, **kwargs): pass
+        def debug(self, *args, **kwargs): pass
+        def error(self, *args, **kwargs): pass
+        def warning(self, *args, **kwargs): pass
+    
+    logger = NoOpLogger()
+    tracer = None
+    metrics = None
+
 from datetime import datetime
 from urllib.parse import quote
 from collections import defaultdict
 from phebee.constants import SPARQL_SEPARATOR, PHEBEE
 from .neptune import execute_query, execute_update
 from .aws import get_current_timestamp
-
-logger = Logger()
-tracer = Tracer()
-metrics = Metrics()
 
 
 def node_exists(iri: str) -> bool:
@@ -407,19 +419,21 @@ def get_subjects(
     # Convert to final format
     subjects = []
     for subject in subjects_map.values():
-        # Group term_links by term_iri
+        # Group term_links by term_iri AND qualifier combination
         term_groups = {}
         for termlink_iri, term_link in subject["term_links"].items():
             term_iri = term_link["term_iri"]
-            if term_iri not in term_groups:
-                term_groups[term_iri] = {
+            qualifiers_key = tuple(sorted(term_link["qualifiers"]))
+            group_key = (term_iri, qualifiers_key)
+            
+            if group_key not in term_groups:
+                term_groups[group_key] = {
                     "term_iri": term_iri,
-                    "qualifiers": set(),
+                    "qualifiers": term_link["qualifiers"].copy(),
                     "evidence_count": 0
                 }
-            # Merge qualifiers and sum evidence counts
-            term_groups[term_iri]["qualifiers"].update(term_link["qualifiers"])
-            term_groups[term_iri]["evidence_count"] += term_link["evidence_count"]
+            # Sum evidence counts for same term+qualifier combination
+            term_groups[group_key]["evidence_count"] += term_link["evidence_count"]
         
         # Convert to final format
         term_links = []

@@ -146,7 +146,7 @@ def test_project_query(physical_resources, test_project_id, upload_phenopacket_s
 
         actual_project_subject_iris = set()
         if "body" in result:
-            body = json.loads(result["body"])
+            body = decompress_lambda_response(result)
 
             print("body")
             print(body)
@@ -213,7 +213,7 @@ def test_subject_specific_query(
 
         actual_project_subject_iris = set()
         if "body" in result:
-            body = json.loads(result["body"])
+            body = decompress_lambda_response(result)
 
             print("body")
             print(body)
@@ -296,7 +296,7 @@ def test_term_filtering_query(
         result = json.loads(response["Payload"].read())
         actual_project_subject_iris = set()
         if "body" in result:
-            body = json.loads(result["body"])
+            body = decompress_lambda_response(result)
             # Extract actual projectSubjectIds from the result - handle new pagination format
             subjects_data = body["body"]  # Handle both old and new format
             actual_project_subject_iris = {
@@ -366,7 +366,7 @@ def export_phenopacket(physical_resources, project_id):
 
         print(result)
 
-        body = json.loads(result["body"])
+        body = decompress_lambda_response(result)
 
         print("body")
         print(body)
@@ -408,7 +408,7 @@ def export_phenopacket_zip_to_s3(physical_resources, project_id, bucket, key):
 
         print(result)
 
-        body = json.loads(result["body"])
+        body = decompress_lambda_response(result)
 
         print("body")
         print(body)
@@ -589,7 +589,7 @@ comparison_schema = {
     "phenotypicFeatures": {
         "type": "list",
         "items": {
-            "type": {"id": "strict", "label": "strict"},
+            "type": {"id": "strict", "label": "optional_export"},
             "excluded": "strict_if_present",  # Strict comparison if present, valid if absent in both
             "source": "optional_export",
             "onset": "optional_import",
@@ -647,7 +647,7 @@ def test_pagination_basic(physical_resources, test_project_id, upload_phenopacke
         Payload=subject_pheno_query_input.encode("utf-8"),
     )
     result = json.loads(response["Payload"].read())
-    body = json.loads(result["body"])
+    body = decompress_lambda_response(result)
 
     # Should return exactly 2 subjects
     subjects_data = body["body"]  # Handle both old and new format
@@ -674,7 +674,7 @@ def test_pagination_cursor(physical_resources, test_project_id, upload_phenopack
         Payload=json.dumps({"project_id": project_id}).encode("utf-8"),
     )
     check_result = json.loads(check_response["Payload"].read())
-    check_body = json.loads(check_result["body"])
+    check_body = decompress_lambda_response(check_result)
     total_imported = len(check_body["body"])
     
     print(f"Total subjects imported: {total_imported}")
@@ -699,7 +699,7 @@ def test_pagination_cursor(physical_resources, test_project_id, upload_phenopack
             Payload=json.dumps(query_input).encode("utf-8"),
         )
         result = json.loads(response["Payload"].read())
-        body = json.loads(result["body"])
+        body = decompress_lambda_response(result)
         
         page_subjects = body["body"]
         all_subjects.extend(page_subjects)
@@ -741,7 +741,7 @@ def test_pagination_empty_cursor(physical_resources, test_project_id, upload_phe
         Payload=subject_pheno_query_input.encode("utf-8"),
     )
     result = json.loads(response["Payload"].read())
-    body = json.loads(result["body"])
+    body = decompress_lambda_response(result)
 
     # Should still return results (empty cursor ignored)
     subjects_data = body["body"]  # Handle both old and new format

@@ -29,17 +29,29 @@ import hashlib
 import time
 from collections import defaultdict
 from typing import List, Optional, Sequence
-from aws_lambda_powertools import Metrics, Logger, Tracer
+try:
+    from aws_lambda_powertools import Metrics, Logger, Tracer
+    logger = Logger()
+    tracer = Tracer()
+    metrics = Metrics()
+except ImportError:
+    # For testing environments where aws_lambda_powertools isn't available
+    class NoOpLogger:
+        def info(self, *args, **kwargs): pass
+        def debug(self, *args, **kwargs): pass
+        def error(self, *args, **kwargs): pass
+        def warning(self, *args, **kwargs): pass
+    
+    logger = NoOpLogger()
+    tracer = None
+    metrics = None
+
 from datetime import datetime
 from urllib.parse import quote
 from collections import defaultdict
 from phebee.constants import SPARQL_SEPARATOR, PHEBEE
 from .neptune import execute_query, execute_update
 from .aws import get_current_timestamp
-
-logger = Logger()
-tracer = Tracer()
-metrics = Metrics()
 
 
 def node_exists(iri: str) -> bool:
@@ -407,19 +419,21 @@ def get_subjects(
     # Convert to final format
     subjects = []
     for subject in subjects_map.values():
-        # Group term_links by term_iri
+        # Group term_links by term_iri AND qualifier combination
         term_groups = {}
         for termlink_iri, term_link in subject["term_links"].items():
             term_iri = term_link["term_iri"]
-            if term_iri not in term_groups:
-                term_groups[term_iri] = {
+            qualifiers_key = tuple(sorted(term_link["qualifiers"]))
+            group_key = (term_iri, qualifiers_key)
+            
+            if group_key not in term_groups:
+                term_groups[group_key] = {
                     "term_iri": term_iri,
-                    "qualifiers": set(),
+                    "qualifiers": term_link["qualifiers"].copy(),
                     "evidence_count": 0
                 }
-            # Merge qualifiers and sum evidence counts
-            term_groups[term_iri]["qualifiers"].update(term_link["qualifiers"])
-            term_groups[term_iri]["evidence_count"] += term_link["evidence_count"]
+            # Sum evidence counts for same term+qualifier combination
+            term_groups[group_key]["evidence_count"] += term_link["evidence_count"]
         
         # Convert to final format
         term_links = []
@@ -526,6 +540,12 @@ def get_term_links_with_evidence(
               "span_end": Optional[int],
               "text_source": Optional[str],           # IRI of ClinicalNote/TextSource
               "metadata": Optional[dict | str],       # JSON-decoded when possible
+              # ClinicalNote-specific (when text_source is a ClinicalNote)
+              "clinical_note_id": Optional[str],
+              "note_timestamp": Optional[str],        # xsd:dateTime (ISO)
+              "note_type": Optional[str],
+              "provider_type": Optional[str],
+              "author_specialty": Optional[str],
             },
             ...
           ],
@@ -667,6 +687,68 @@ def get_term_links_with_evidence(
                     "metadata": _maybe_json(b.get("metadata", {}).get("value")) if b.get("metadata") else None,
                 }
 
+    # -------------------------------
+    # 3) Separate query for clinical note details (only for ClinicalNote text sources)
+    # -------------------------------
+    clinical_notes = {ev["text_source"] for ev in evidence_details.values() if ev.get("text_source")}
+    note_details = {}
+    logger.info(f"Found {len(clinical_notes)} unique clinical note text sources: {list(clinical_notes)}")
+    
+    if clinical_notes:
+        logger.info(f"Querying {len(clinical_notes)} clinical notes for additional details")
+        note_list = list(clinical_notes)
+        CHUNK = 500
+        for i in range(0, len(note_list), CHUNK):
+            chunk = note_list[i : i + CHUNK]
+            note_vals = " ".join(f"<{n}>" for n in chunk)
+            
+            sparql_notes = f"""
+            PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+            
+            SELECT ?note ?clinical_note_id ?note_timestamp ?note_type ?provider_type ?author_specialty
+            WHERE {{
+              VALUES ?note {{ {note_vals} }}
+              GRAPH <http://ods.nationwidechildrens.org/phebee/subjects> {{
+                ?note a phebee:ClinicalNote .
+                OPTIONAL {{ ?note phebee:clinicalNoteId ?clinical_note_id }}
+                OPTIONAL {{ ?note phebee:noteTimestamp ?note_timestamp }}
+                OPTIONAL {{ ?note phebee:noteType ?note_type }}
+                OPTIONAL {{ ?note phebee:providerType ?provider_type }}
+                OPTIONAL {{ ?note phebee:authorSpecialty ?author_specialty }}
+              }}
+            }}
+            """
+            
+            logger.info(f"Executing clinical note query: {sparql_notes}")
+            note_res = execute_query(sparql_notes)
+            logger.info(f"Clinical note query returned {len(note_res['results']['bindings'])} results")
+            
+            for b in note_res["results"]["bindings"]:
+                note_iri = b["note"]["value"]
+                note_data = {
+                    "clinical_note_id": b.get("clinical_note_id", {}).get("value"),
+                    "note_timestamp": b.get("note_timestamp", {}).get("value"),
+                    "note_type": b.get("note_type", {}).get("value"),
+                    "provider_type": b.get("provider_type", {}).get("value"),
+                    "author_specialty": b.get("author_specialty", {}).get("value"),
+                }
+                note_details[note_iri] = note_data
+                logger.info(f"Clinical note {note_iri} details: {note_data}")
+
+    # Merge clinical note details into evidence details
+    logger.info(f"Merging clinical note details. Evidence count: {len(evidence_details)}, Note details count: {len(note_details)}")
+    for ev_iri, ev_data in evidence_details.items():
+        text_source = ev_data.get("text_source")
+        if text_source:
+            logger.info(f"Evidence {ev_iri} has text_source: {text_source}")
+            if text_source in note_details:
+                logger.info(f"Merging clinical note details for {text_source}: {note_details[text_source]}")
+                ev_data.update(note_details[text_source])
+            else:
+                logger.info(f"No note details found for text_source: {text_source}")
+        else:
+            logger.info(f"Evidence {ev_iri} has no text_source")
+
     # Attach evidence details to each link (dedup & stable order)
     for link_obj in links.values():
         seen = set()
@@ -681,7 +763,7 @@ def get_term_links_with_evidence(
         link_obj["evidence"] = sorted(detailed, key=lambda x: x["evidence_iri"])
 
     # -------------------------------
-    # 3) Optional labels for distinct terms (small, bounded UNION)
+    # 4) Optional labels for distinct terms (small, bounded UNION)
     # -------------------------------
     if hpo_version and mondo_version and distinct_terms:
         term_vals = " ".join(f"<{t}>" for t in distinct_terms)
@@ -816,6 +898,7 @@ def create_clinical_note(
     note_timestamp: str = None,
     provider_type: str = None,
     author_specialty: str = None,
+    note_type: str = None,
 ):
     clinical_note_iri = f"{encounter_iri}/note/{clinical_note_id}"
     now_iso = get_current_timestamp()
@@ -840,6 +923,11 @@ def create_clinical_note(
     if author_specialty:
         triples.append(
             f'<{clinical_note_iri}> phebee:authorSpecialty "{author_specialty}"'
+        )
+        
+    if note_type:
+        triples.append(
+            f'<{clinical_note_iri}> phebee:noteType "{note_type}"'
         )
 
     triples_block = " .\n        ".join(triples)

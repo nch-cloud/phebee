@@ -14,10 +14,11 @@ def test_term_link(physical_resources):
     get_fn = physical_resources["GetTermLinkFunction"]
     remove_fn = physical_resources["RemoveTermLinkFunction"]
 
-    # --- Setup dummy IRIs ---
-    source_node_iri = "http://example.org/phebee/subject/test-subject"
+    # --- Setup unique IRIs for this test run ---
+    test_id = str(uuid.uuid4())
+    source_node_iri = f"http://example.org/phebee/subject/test-subject-{test_id}"
     term_iri = "http://purl.obolibrary.org/obo/HP_0000118"
-    creator_iri = "http://ods.nationwidechildrens.org/phebee/creator/test-creator"
+    creator_iri = f"http://ods.nationwidechildrens.org/phebee/creator/test-creator-{test_id}"
     
     payload = {
         "source_node_iri": source_node_iri,
