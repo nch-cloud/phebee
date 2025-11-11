@@ -163,6 +163,7 @@ Resources:
               - !GetAtt CreateSubjectFunction.Arn
               - !GetAtt ExportPhenopacketsFunction.Arn
               - !GetAtt GetSubjectFunction.Arn
+              - !GetAtt GetSubjectTermInfoFunction.Arn
               - !GetAtt GetSubjectsPhenotypesFunction.Arn
               - !GetAtt RemoveSubjectFunction.Arn
               - !GetAtt RemoveProjectFunction.Arn
@@ -554,6 +555,30 @@ Resources:
       FunctionName: !Sub ${AppName}-GetSubjectFunction
       CodeUri: functions
       Handler: get_subject.lambda_handler
+      MemorySize: 512
+      Layers:
+        - !Ref PheBeeUtilsLayer
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Sub ${AWS::Region}
+          PheBeeDynamoTable: !Ref DynamoDBTable
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+        - !Ref PheBeeDynamoDBReadPolicy
+
+  GetSubjectTermInfoFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AppName}-GetSubjectTermInfoFunction
+      CodeUri: functions
+      Handler: get_subject_term_info.lambda_handler
       MemorySize: 512
       Layers:
         - !Ref PheBeeUtilsLayer

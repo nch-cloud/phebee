@@ -621,16 +621,11 @@ def get_term_links_with_counts(
                 "term_label": None,
                 "qualifiers": sorted(list(term_link["qualifiers"])),
                 "evidence_count": 0,
-                "term_links": []
+                "term_link_count": 0
             }
         
-        # Add this TermLink to the group
-        term_groups[group_key]["term_links"].append({
-            "termlink_iri": term_link["termlink_iri"],
-            "evidence_count": term_link["evidence_count"],
-            "source_iri": term_link["source_iri"],
-            "source_type": term_link["source_type"]
-        })
+        # Count this TermLink in the group
+        term_groups[group_key]["term_link_count"] += 1
         
         # Sum evidence counts for the group total
         term_groups[group_key]["evidence_count"] += term_link["evidence_count"]
@@ -1798,7 +1793,127 @@ def generate_termlink_hash(source_node_iri: str, term_iri: str, qualifiers=None)
     return hashlib.sha256(key_string.encode()).hexdigest()
 
 
-def check_existing_term_links(termlink_iris, batch_size=1000):
+def get_subject_term_info(
+    subject_iri: str,
+    term_iri: str,
+    qualifiers: list[str] = None,
+    hpo_version: str | None = None,
+    mondo_version: str | None = None,
+) -> dict:
+    """
+    Get detailed term link information for a specific term on a subject.
+    
+    Args:
+        subject_iri: The subject IRI
+        term_iri: The specific term IRI
+        qualifiers: List of qualifier IRIs (optional)
+        hpo_version: HPO version (optional)
+        mondo_version: MONDO version (optional)
+    
+    Returns:
+        Dict with term details and term_links array
+    """
+    qualifiers = qualifiers or []
+    
+    # Build qualifier filter
+    qualifier_filter = ""
+    if qualifiers:
+        qualifier_values = " ".join([f"<{q}>" for q in qualifiers])
+        qualifier_filter = f"""
+        {{
+            SELECT ?link WHERE {{
+                ?link phebee:hasQualifyingTerm ?q .
+                VALUES ?q {{ {qualifier_values} }}
+            }}
+            GROUP BY ?link
+            HAVING (COUNT(?q) = {len(qualifiers)})
+        }}
+        """
+    else:
+        qualifier_filter = "FILTER NOT EXISTS { ?link phebee:hasQualifyingTerm ?q }"
+    
+    sparql_links = f"""
+    PREFIX rdf:    <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+    PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+
+    SELECT ?link ?source_node ?source_type
+           (COUNT(DISTINCT ?evidence) AS ?evidence_count) 
+           (GROUP_CONCAT(DISTINCT ?qualifier; separator="|") AS ?qualifiers_str)
+    WHERE {{
+        VALUES ?subject {{ <{subject_iri}> }}
+        VALUES ?term {{ <{term_iri}> }}
+
+        GRAPH <http://ods.nationwidechildrens.org/phebee/subjects> {{
+            ?link a phebee:TermLink ;
+                  phebee:hasTerm ?term ;
+                  phebee:sourceNode ?source_node .
+            ?source_node phebee:hasEncounter/phebee:hasSubject ?subject .
+            
+            # Get source type
+            ?source_node a ?source_type .
+
+            OPTIONAL {{
+                ?link phebee:hasEvidence ?evidence .
+                MINUS {{ ?evidence a phebee:TermLink }}
+            }}
+            
+            OPTIONAL {{
+                ?link phebee:hasQualifyingTerm ?qualifier .
+            }}
+            
+            # Apply qualifier filter
+            {qualifier_filter}
+        }}
+    }}
+    GROUP BY ?link ?source_node ?source_type
+    """
+
+    res = execute_query(sparql_links)
+    
+    if not res["results"]["bindings"]:
+        return None
+
+    # Get term label
+    term_label = None
+    if term_iri.startswith("http://purl.obolibrary.org/obo/"):
+        label_query = f"""
+        PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+        SELECT ?label WHERE {{
+            <{term_iri}> rdfs:label ?label .
+        }}
+        """
+        label_results = execute_query(label_query)
+        if label_results["results"]["bindings"]:
+            term_label = label_results["results"]["bindings"][0]["label"]["value"]
+
+    # Process term links
+    term_links = []
+    total_evidence_count = 0
+    
+    for row in res["results"]["bindings"]:
+        link_iri = row["link"]["value"]
+        source_iri = row["source_node"]["value"]
+        source_type = row["source_type"]["value"].split("#")[-1]
+        evidence_count = int(row.get("evidence_count", {}).get("value", "0"))
+        
+        term_links.append({
+            "termlink_iri": link_iri,
+            "evidence_count": evidence_count,
+            "source_iri": source_iri,
+            "source_type": source_type
+        })
+        
+        total_evidence_count += evidence_count
+
+    return {
+        "term_iri": term_iri,
+        "term_label": term_label,
+        "qualifiers": sorted(qualifiers),
+        "evidence_count": total_evidence_count,
+        "term_links": term_links
+    }
+
+
     """
     Check which term links from a list already exist in the database.
     Uses batching to handle large numbers of IRIs efficiently.

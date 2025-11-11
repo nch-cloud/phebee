@@ -141,6 +141,44 @@ paths:
         connectionType: "INTERNET"
         timeoutInMillis: 30000
 
+  /subject/term-info:
+    post:
+      summary: Retrieve detailed term link information for a specific term on a subject
+      description: |
+        Returns detailed information about a specific term associated with a subject, including all term links
+        and their evidence details. This endpoint provides the detailed view that complements the summary
+        information returned by the /subject endpoint.
+      operationId: getSubjectTermInfo
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - subject_iri
+                - term_iri
+              properties:
+                subject_iri:
+                  type: string
+                term_iri:
+                  type: string
+                qualifiers:
+                  type: array
+                  items:
+                    type: string
+      security:
+        - sigv4: []
+      x-amazon-apigateway-integration:
+        credentials:
+          Fn::GetAtt: [PheBeeAPIRole, Arn]
+        payloadFormatVersion: "2.0"
+        type: "aws_proxy"
+        uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-GetSubjectTermInfoFunction/invocations
+        connectionType: "INTERNET"
+        timeoutInMillis: 30000
+
   /subject/remove:
     post:
       summary: Remove a subject from the graph

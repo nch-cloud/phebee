@@ -856,11 +856,11 @@ def test_bulk_upload_encounter_in_batch_duplicate_handling(test_duplicate_encoun
     subj = invoke_lambda(get_subject_fn, {"project_subject_iri": project_subject_iri})
     subject_iri = subj["subject_iri"]
 
-    # With new grouped structure: one term group with evidence_count=3 and 3 term_links
+    # With new grouped structure: one term group with evidence_count=3 and term_link_count=3
     assert len(subj["terms"]) == 1  # one grouped term
     term = subj["terms"][0]
     assert term["evidence_count"] == 3  # three pieces of evidence total
-    assert len(term["term_links"]) == 3  # three separate term links from different notes
+    assert term["term_link_count"] == 3  # three separate term links from different notes
 
     encounter_id = e["evidence"][0]["encounter_id"]
     encounter_iri = f"{subject_iri}/encounter/{encounter_id}"
@@ -967,16 +967,71 @@ def test_bulk_upload_subject_deduplication(test_payload, test_project_id, physic
     assert term1["term_iri"] == "http://purl.obolibrary.org/obo/HP_0002297"
     assert term1["evidence_count"] == 1
     assert term1["qualifiers"] == []
-    assert len(term1["term_links"]) == 1
-    assert term1["term_links"][0]["source_type"] == "ClinicalNote"
+    assert term1["term_link_count"] == 1
     
     # Second term: HP_0004322 (from note-001)
     term2 = terms[1]
     assert term2["term_iri"] == "http://purl.obolibrary.org/obo/HP_0004322"
     assert term2["evidence_count"] == 1
     assert term2["qualifiers"] == []
-    assert len(term2["term_links"]) == 1
-    assert term2["term_links"][0]["source_type"] == "ClinicalNote"
+    assert term2["term_link_count"] == 1
+
+
+def test_bulk_upload_two_layer_retrieval(test_payload, test_project_id, physical_resources):
+    """Test the two-layer retrieval pattern: GetSubject summary + GetSubjectTermInfo details."""
+    # Upload test data
+    bulk_upload_run([test_payload], physical_resources)
+    
+    get_subject_fn = physical_resources["GetSubjectFunction"]
+    get_subject_term_info_fn = physical_resources["GetSubjectTermInfoFunction"]
+    
+    # Layer 1: Get subject summary
+    entry = test_payload[0]  # First entry has subject_id_1
+    project_subject_iri = f"http://ods.nationwidechildrens.org/phebee/projects/{entry['project_id']}/{entry['project_subject_id']}"
+    
+    subject_result = invoke_lambda(get_subject_fn, {"body": json.dumps({"project_subject_iri": project_subject_iri})})
+    
+    # Verify summary structure
+    assert "subject_iri" in subject_result
+    assert "terms" in subject_result
+    assert len(subject_result["terms"]) == 2  # Should have 2 terms for subject_id_1
+    
+    # Layer 2: Get detailed info for each term
+    subject_iri = subject_result["subject_iri"]
+    
+    for term in subject_result["terms"]:
+        term_iri = term["term_iri"]
+        qualifiers = term["qualifiers"]
+        expected_evidence_count = term["evidence_count"]
+        expected_term_link_count = term["term_link_count"]
+        
+        # Call GetSubjectTermInfo
+        term_info_result = invoke_lambda(get_subject_term_info_fn, {
+            "body": json.dumps({
+                "subject_iri": subject_iri,
+                "term_iri": term_iri,
+                "qualifiers": qualifiers
+            })
+        })
+        
+        # Verify detailed structure matches summary
+        assert term_info_result["term_iri"] == term_iri
+        assert term_info_result["qualifiers"] == qualifiers
+        assert term_info_result["evidence_count"] == expected_evidence_count
+        assert len(term_info_result["term_links"]) == expected_term_link_count
+        
+        # Verify term_links structure
+        total_evidence_from_links = 0
+        for term_link in term_info_result["term_links"]:
+            assert "termlink_iri" in term_link
+            assert "evidence_count" in term_link
+            assert "source_iri" in term_link
+            assert "source_type" in term_link
+            assert term_link["evidence_count"] > 0
+            total_evidence_from_links += term_link["evidence_count"]
+        
+        # Verify evidence counts match between summary and detail
+        assert total_evidence_from_links == expected_evidence_count
 
 
 def test_bulk_upload_encounter_deduplication(test_payload, test_project_id, physical_resources):
@@ -1008,12 +1063,14 @@ def test_bulk_upload_encounter_deduplication(test_payload, test_project_id, phys
     assert encounter_result["subject_iri"] == subject_iri
     
     # Verify subject has consistent structure after duplicate uploads
-    assert len(subject_result["terms"]) > 0, "Subject should have at least one term link"
+    assert len(subject_result["terms"]) > 0, "Subject should have at least one term"
     
-    # Verify each term link has evidence
+    # Verify each term has evidence and term_link_count
     for term in subject_result["terms"]:
         assert "evidence_count" in term
-        assert term["evidence_count"] > 0, "Each term link should have evidence"
+        assert term["evidence_count"] > 0, "Each term should have evidence"
+        assert "term_link_count" in term
+        assert term["term_link_count"] > 0, "Each term should have term_links"
 
 
 def test_bulk_upload_creates_dynamodb_records(test_payload, test_project_id, physical_resources):
