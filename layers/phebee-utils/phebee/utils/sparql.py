@@ -516,6 +516,137 @@ def split_predicate(pred: str):
     ).lower()
 
 
+def get_term_links_with_counts(
+    source_node_iri: str,
+    hpo_version: str | None = None,
+    mondo_version: str | None = None,
+) -> list[dict]:
+    """
+    Lightweight version that returns term links with evidence counts only.
+    Groups by unique combinations of term_iri + qualifiers.
+    For detailed evidence, use a separate API call.
+    
+    Returns:
+      [
+        {
+          "termlink_iri": str,
+          "term_iri": str,
+          "term_label": Optional[str],
+          "evidence_count": int,
+          "qualifiers": [str, ...]
+        },
+        ...
+      ]
+    """
+    
+    # Query to get individual term links with their evidence counts and qualifiers
+    sparql_links = f"""
+    PREFIX rdf:    <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+    PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+
+    SELECT ?link ?term (COUNT(DISTINCT ?evidence) AS ?evidence_count) 
+           (GROUP_CONCAT(DISTINCT ?qualifier; separator="|") AS ?qualifiers_str)
+    WHERE {{
+      VALUES ?subject {{ <{source_node_iri}> }}
+
+      GRAPH <http://ods.nationwidechildrens.org/phebee/subjects> {{
+        ?link a phebee:TermLink ;
+              phebee:hasTerm ?term ;
+              phebee:sourceNode ?srcNode .
+        ?srcNode phebee:hasEncounter/phebee:hasSubject ?subject .
+
+        OPTIONAL {{
+          ?link phebee:hasEvidence ?evidence .
+          MINUS {{ ?evidence a phebee:TermLink }}
+        }}
+        
+        OPTIONAL {{
+          ?link phebee:hasQualifyingTerm ?qualifier .
+        }}
+      }}
+    }}
+    GROUP BY ?link ?term
+    """
+
+    res = execute_query(sparql_links)
+
+    # First collect all term links
+    term_links = {}
+    distinct_terms = set()
+
+    for row in res["results"]["bindings"]:
+        link_iri = row["link"]["value"]
+        term_iri = row["term"]["value"]
+        evidence_count = int(row.get("evidence_count", {}).get("value", "0"))
+        qualifiers_str = row.get("qualifiers_str", {}).get("value", "")
+        
+        qualifiers = set()
+        if qualifiers_str and qualifiers_str.strip():
+            qualifier_list = [q.strip() for q in qualifiers_str.split("|") if q.strip()]
+            qualifiers.update(qualifier_list)
+        
+        term_links[link_iri] = {
+            "term_iri": term_iri,
+            "qualifiers": qualifiers,
+            "evidence_count": evidence_count
+        }
+        distinct_terms.add(term_iri)
+
+    # Group by term_iri AND qualifier combination
+    term_groups = {}
+    for termlink_iri, term_link in term_links.items():
+        term_iri = term_link["term_iri"]
+        qualifiers_key = tuple(sorted(term_link["qualifiers"]))
+        group_key = (term_iri, qualifiers_key)
+        
+        if group_key not in term_groups:
+            term_groups[group_key] = {
+                "termlink_iri": termlink_iri,  # Use first termlink_iri as representative
+                "term_iri": term_iri,
+                "term_label": None,
+                "qualifiers": sorted(list(term_link["qualifiers"])),
+                "evidence_count": 0
+            }
+        # Sum evidence counts for same term+qualifier combination
+        term_groups[group_key]["evidence_count"] += term_link["evidence_count"]
+
+    # Convert to list
+    links = list(term_groups.values())
+
+    # Optional labels for terms (lightweight)
+    if hpo_version and mondo_version and distinct_terms:
+        term_vals = " ".join(f"<{t}>" for t in distinct_terms)
+        sparql_labels = f"""
+        PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+
+        SELECT ?term (SAMPLE(?lbl) AS ?term_label)
+        WHERE {{
+          VALUES ?term {{ {term_vals} }}
+          {{
+            GRAPH <http://ods.nationwidechildrens.org/phebee/hpo~{hpo_version}> {{
+              ?term rdfs:label ?lbl .
+              FILTER(LANGMATCHES(LANG(?lbl),'en'))
+            }}
+          }}
+          UNION
+          {{
+            GRAPH <http://ods.nationwidechildrens.org/phebee/mondo~{mondo_version}> {{
+              ?term rdfs:label ?lbl .
+              FILTER(LANGMATCHES(LANG(?lbl),'en'))
+            }}
+          }}
+        }}
+        GROUP BY ?term
+        """
+        lab_res = execute_query(sparql_labels)
+        label_map = {b["term"]["value"]: b["term_label"]["value"] for b in lab_res["results"]["bindings"] if "term_label" in b}
+        
+        for link_obj in links:
+            link_obj["term_label"] = label_map.get(link_obj["term_iri"])
+
+    return links
+
+
 def get_term_links_with_evidence(
     source_node_iri: str,
     hpo_version: str | None = None,

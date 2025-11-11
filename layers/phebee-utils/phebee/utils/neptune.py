@@ -1,7 +1,22 @@
 import requests
 import json
 import os
-from aws_lambda_powertools import Metrics, Logger, Tracer
+try:
+    from aws_lambda_powertools import Metrics, Logger, Tracer
+    logger = Logger()
+    tracer = Tracer()
+    metrics = Metrics()
+except ImportError:
+    # For testing environments where aws_lambda_powertools isn't available
+    class NoOpLogger:
+        def info(self, *args, **kwargs): pass
+        def debug(self, *args, **kwargs): pass
+        def error(self, *args, **kwargs): pass
+        def warning(self, *args, **kwargs): pass
+    
+    logger = NoOpLogger()
+    tracer = None
+    metrics = None
 import boto3
 from urllib.parse import urlparse
 from botocore.auth import SigV4Auth
@@ -9,10 +24,6 @@ from botocore.awsrequest import AWSRequest
 from types import SimpleNamespace
 from time import sleep
 from .aws import exponential_backoff
-
-logger = Logger()
-tracer = Tracer()
-metrics = Metrics()
 
 
 def execute_update(query: str):

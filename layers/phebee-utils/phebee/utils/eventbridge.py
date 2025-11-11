@@ -2,10 +2,11 @@ import boto3
 import json
 import os
 
-# Initialize the boto3 client for EventBridge
-eventbridge_client = boto3.client("events")
+def _get_eventbridge_client():
+    return boto3.client("events")
 
-phebee_bus = os.environ["PheBeeBus"]
+def _get_phebee_bus():
+    return os.environ["PheBeeBus"]
 
 SUBJECT_CREATED = "subject_created"
 SUBJECT_LINKED = "subject_linked"
@@ -30,7 +31,7 @@ def fire_event(detail_type: str, detail: dict):
         "Source": "PheBee",
         "DetailType": detail_type,
         "Detail": json.dumps(detail),
-        "EventBusName": phebee_bus,
+        "EventBusName": _get_phebee_bus(),
     }
 
-    eventbridge_client.put_events(Entries=[event])
+    _get_eventbridge_client().put_events(Entries=[event])

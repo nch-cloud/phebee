@@ -16,12 +16,14 @@ logger = logging.getLogger(__name__)
 # Globals / Clients / Config
 # ---------------------------
 
-TABLE_NAME = os.environ["PheBeeDynamoTable"]
+def _get_table_name():
+    return os.environ["PheBeeDynamoTable"]
 
-# Use both resource (nice marshalling) and client (for transact/batch APIs)
-_dy_resource = boto3.resource("dynamodb")
-_dy_client = boto3.client("dynamodb")
-_table = _dy_resource.Table(TABLE_NAME)
+def _get_table():
+    return boto3.resource("dynamodb").Table(_get_table_name())
+
+def _get_client():
+    return boto3.client("dynamodb")
 
 
 # ---------------------------
@@ -34,9 +36,9 @@ def get_source_records(source_name: str, dynamodb=None):
     NOTE: Uses the low-level client to keep the { "S": ... } wire format,
     since existing callers expect that structure.
     """
-    client = dynamodb or _dy_client
+    client = dynamodb or _get_client()
     query_args = {
-        "TableName": TABLE_NAME,
+        "TableName": _get_table_name(),
         "KeyConditionExpression": "PK = :pk_value",
         "ExpressionAttributeValues": {":pk_value": {"S": f"SOURCE~{source_name}"}},
     }
@@ -68,22 +70,23 @@ def reset_dynamodb_table():
     Deletes ALL items from the table (paged scan + batch_writer).
     For dev/test only. PITR is enabled in template for safety.
     """
+    table = _get_table()
     # Paginated scan + batch delete
     last_evaluated_key = None
     while True:
         if last_evaluated_key:
-            scan = _table.scan(ExclusiveStartKey=last_evaluated_key)
+            scan = table.scan(ExclusiveStartKey=last_evaluated_key)
         else:
-            scan = _table.scan()
+            scan = table.scan()
 
         items = scan.get("Items", [])
         if not items:
             break
 
-        with _table.batch_writer() as batch:
+        with table.batch_writer() as batch:
             for item in items:
                 # Build the key from table key schema (PK/SK)
-                key = {k["AttributeName"]: item[k["AttributeName"]] for k in _table.key_schema}
+                key = {k["AttributeName"]: item[k["AttributeName"]] for k in table.key_schema}
                 batch.delete_item(Key=key)
 
         last_evaluated_key = scan.get("LastEvaluatedKey")
@@ -123,10 +126,10 @@ def _batch_get_forward(pairs: List[Tuple[str, str]]) -> Dict[Tuple[str, str], st
     out: Dict[Tuple[str, str], str] = {}
 
     for batch in _chunks(keys, 100):
-        req = {TABLE_NAME: {"Keys": batch}}
-        resp = _dy_client.batch_get_item(RequestItems=req)
+        req = {_get_table_name(): {"Keys": batch}}
+        resp = _get_client().batch_get_item(RequestItems=req)
 
-        items = resp.get("Responses", {}).get(TABLE_NAME, [])
+        items = resp.get("Responses", {}).get(_get_table_name(), [])
         for it in items:
             pk = it["PK"]["S"]
             sk = it["SK"]["S"]
@@ -136,26 +139,26 @@ def _batch_get_forward(pairs: List[Tuple[str, str]]) -> Dict[Tuple[str, str], st
             out[(proj, psid)] = subject_iri
 
         # Retry unprocessed keys with simple backoff
-        unproc = resp.get("UnprocessedKeys", {}).get(TABLE_NAME, {}).get("Keys", [])
+        unproc = resp.get("UnprocessedKeys", {}).get(_get_table_name(), {}).get("Keys", [])
         backoff = 0.05
         while unproc:
             time.sleep(backoff)
             backoff = min(0.5, backoff * 2)
-            resp = _dy_client.batch_get_item(RequestItems={TABLE_NAME: {"Keys": unproc}})
-            items = resp.get("Responses", {}).get(TABLE_NAME, [])
+            resp = _get_client().batch_get_item(RequestItems={_get_table_name(): {"Keys": unproc}})
+            items = resp.get("Responses", {}).get(_get_table_name(), [])
             for it in items:
                 pk = it["PK"]["S"]; sk = it["SK"]["S"]
                 proj = pk.split("#", 1)[1]
                 psid = sk.split("#", 1)[1]
                 subject_iri = it["subject_iri"]["S"]
                 out[(proj, psid)] = subject_iri
-            unproc = resp.get("UnprocessedKeys", {}).get(TABLE_NAME, {}).get("Keys", [])
+            unproc = resp.get("UnprocessedKeys", {}).get(_get_table_name(), {}).get("Keys", [])
 
     return out
 
 def _get_forward(project_id: str, project_subject_id: str) -> Optional[Dict]:
     """Single GetItem for forward mapping (used after losing a race)."""
-    resp = _table.get_item(Key={"PK": psid_pk(project_id), "SK": psid_sk(project_subject_id)})
+    resp = _get_table().get_item(Key={"PK": psid_pk(project_id), "SK": psid_sk(project_subject_id)})
     return resp.get("Item")
 
 def resolve_subjects(
@@ -197,11 +200,11 @@ def resolve_subjects(
     for proj, psid in misses:
         subject_iri = f"{PHEBEE}/subjects/{uuid.uuid4()}"
         try:
-            _dy_client.transact_write_items(
+            _get_client().transact_write_items(
                 TransactItems=[
                     {
                         "Put": {
-                            "TableName": TABLE_NAME,
+                            "TableName": _get_table_name(),
                             "Item": {
                                 "PK": {"S": psid_pk(proj)},
                                 "SK": {"S": psid_sk(psid)},
@@ -215,7 +218,7 @@ def resolve_subjects(
                     },
                     {
                         "Put": {
-                            "TableName": TABLE_NAME,
+                            "TableName": _get_table_name(),
                             "Item": {
                                 "PK": {"S": subj_pk(subject_iri)},
                                 "SK": {"S": subj_sk(proj, psid)},
