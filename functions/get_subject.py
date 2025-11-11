@@ -43,12 +43,13 @@ def get_subject_info(project_subject_iri: str):
     if subject is None:
         return None
     
-    # Query for subject-term links, their terms, and evidence
+    # Query for subject-term links with evidence counts only (lightweight)
     hpo_version = get_current_term_source_version("hpo")
     mondo_version = get_current_term_source_version("mondo")
 
-    # TODO: Maybe the versions should be in a dictionary?
-    terms = get_term_links_with_evidence(subject["subject_iri"], hpo_version, mondo_version)
+    # Use the lightweight version that only returns counts
+    from phebee.utils.sparql import get_term_links_with_counts
+    terms = get_term_links_with_counts(subject["subject_iri"], hpo_version, mondo_version)
     subject["terms"] = terms
 
     return subject
