@@ -493,6 +493,85 @@ def create_test_project(request, cloudformation_stack, physical_resources):
         )
 
 
+@pytest.fixture
+def test_payload(test_project_id):
+    import uuid
+    subject_id = f"subj-{uuid.uuid4()}"
+    term_iri = "http://purl.obolibrary.org/obo/HP_0004322"
+    encounter_id = str(uuid.uuid4())
+    
+    return [
+        {
+            "project_id": test_project_id,
+            "project_subject_id": subject_id,
+            "term_iri": term_iri,
+            "evidence": [
+                {
+                    "type": "clinical_note",
+                    "encounter_id": encounter_id,
+                    "clinical_note_id": "note-001",
+                    "note_timestamp": "2025-06-06T12:00:00Z",
+                    "evidence_creator_id": "robot-creator",
+                    "evidence_creator_type": "automated",
+                    "evidence_creator_name": "Robot Creator",
+                    "evidence_creator_version": "1.2"
+                }
+            ]
+        }
+    ]
+
+
+@pytest.fixture
+def test_payload_with_qualifiers(test_project_id):
+    import uuid
+    subject_id = f"subj-{uuid.uuid4()}"
+    term_iri = "http://purl.obolibrary.org/obo/HP_0004322"
+    encounter_id = str(uuid.uuid4())
+    
+    return [
+        {
+            "project_id": test_project_id,
+            "project_subject_id": subject_id,
+            "term_iri": term_iri,
+            "evidence": [
+                {
+                    "type": "clinical_note",
+                    "encounter_id": encounter_id,
+                    "clinical_note_id": "note-qual-1",
+                    "note_timestamp": "2025-06-06T12:00:00Z",
+                    "evidence_creator_id": "robot-creator",
+                    "evidence_creator_type": "automated",
+                    "evidence_creator_name": "Robot Creator",
+                    "evidence_creator_version": "1.2",
+                    "contexts": {
+                        "negated": 1
+                    }
+                }
+            ]
+        },
+        {
+            "project_id": test_project_id,
+            "project_subject_id": subject_id,
+            "term_iri": term_iri,
+            "evidence": [
+                {
+                    "type": "clinical_note",
+                    "encounter_id": encounter_id,
+                    "clinical_note_id": "note-qual-2",
+                    "note_timestamp": "2025-06-06T12:00:00Z",
+                    "evidence_creator_id": "robot-creator",
+                    "evidence_creator_type": "automated",
+                    "evidence_creator_name": "Robot Creator",
+                    "evidence_creator_version": "1.2",
+                    "contexts": {
+                        "hypothetical": 1
+                    }
+                }
+            ]
+        }
+    ]
+
+
 def pytest_collection_modifyitems(session, config, items):
     # Separate tests marked with 'run_first' from other tests
     run_first_tests = [item for item in items if "run_first" in item.keywords]

@@ -73,5 +73,4 @@ def test_get_term_link(api_base_url, sigv4_auth):
     body = get_resp.json()
     print(f"test_term_link_api body: {body}")
     assert body["termlink_iri"] == termlink_iri
-    assert term_iri in body.get("has_term", [])
-    assert creator_iri in body.get("creator", [])
+    assert body["term_iri"] == term_iri

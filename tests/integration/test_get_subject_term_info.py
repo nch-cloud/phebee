@@ -27,7 +27,7 @@ def invoke_lambda(name, payload):
 @pytest.mark.integration
 def test_get_subject_term_info_basic(test_payload, test_project_id, physical_resources):
     """Test GetSubjectTermInfo with basic term (no qualifiers)."""
-    from .test_bulk_upload import bulk_upload_run
+    from test_bulk_upload import bulk_upload_run
     
     # Upload test data first
     bulk_upload_run([test_payload], physical_resources)
@@ -118,7 +118,7 @@ def test_get_subject_term_info_missing_params(physical_resources):
 @pytest.mark.integration
 def test_get_subject_term_info_with_qualifiers(test_payload_with_qualifiers, test_project_id, physical_resources):
     """Test GetSubjectTermInfo with qualifiers."""
-    from .test_bulk_upload import bulk_upload_run
+    from test_bulk_upload import bulk_upload_run
     
     # Upload test data with qualifiers
     bulk_upload_run([test_payload_with_qualifiers], physical_resources)
