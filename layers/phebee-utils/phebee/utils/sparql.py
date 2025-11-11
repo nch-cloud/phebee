@@ -523,28 +523,36 @@ def get_term_links_with_counts(
 ) -> list[dict]:
     """
     Lightweight version that returns term links with evidence counts only.
-    Groups by unique combinations of term_iri + qualifiers.
-    For detailed evidence, use a separate API call.
+    Groups by unique combinations of term_iri + qualifiers, but preserves individual TermLinks.
     
     Returns:
       [
         {
-          "termlink_iri": str,
           "term_iri": str,
           "term_label": Optional[str],
-          "evidence_count": int,
-          "qualifiers": [str, ...]
+          "qualifiers": [str, ...],
+          "evidence_count": int,  # Total across all term_links
+          "term_links": [
+            {
+              "termlink_iri": str,
+              "evidence_count": int,
+              "source_iri": str,
+              "source_type": str
+            },
+            ...
+          ]
         },
         ...
       ]
     """
     
-    # Query to get individual term links with their evidence counts and qualifiers
+    # Query to get individual term links with their evidence counts, qualifiers, and source info
     sparql_links = f"""
     PREFIX rdf:    <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
     PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
 
-    SELECT ?link ?term (COUNT(DISTINCT ?evidence) AS ?evidence_count) 
+    SELECT ?link ?term ?source_node ?source_type
+           (COUNT(DISTINCT ?evidence) AS ?evidence_count) 
            (GROUP_CONCAT(DISTINCT ?qualifier; separator="|") AS ?qualifiers_str)
     WHERE {{
       VALUES ?subject {{ <{source_node_iri}> }}
@@ -552,8 +560,11 @@ def get_term_links_with_counts(
       GRAPH <http://ods.nationwidechildrens.org/phebee/subjects> {{
         ?link a phebee:TermLink ;
               phebee:hasTerm ?term ;
-              phebee:sourceNode ?srcNode .
-        ?srcNode phebee:hasEncounter/phebee:hasSubject ?subject .
+              phebee:sourceNode ?source_node .
+        ?source_node phebee:hasEncounter/phebee:hasSubject ?subject .
+        
+        # Get source type
+        ?source_node a ?source_type .
 
         OPTIONAL {{
           ?link phebee:hasEvidence ?evidence .
@@ -565,18 +576,20 @@ def get_term_links_with_counts(
         }}
       }}
     }}
-    GROUP BY ?link ?term
+    GROUP BY ?link ?term ?source_node ?source_type
     """
 
     res = execute_query(sparql_links)
 
-    # First collect all term links
+    # First collect all term links with their details
     term_links = {}
     distinct_terms = set()
 
     for row in res["results"]["bindings"]:
         link_iri = row["link"]["value"]
         term_iri = row["term"]["value"]
+        source_iri = row["source_node"]["value"]
+        source_type = row["source_type"]["value"].split("#")[-1]  # Extract class name
         evidence_count = int(row.get("evidence_count", {}).get("value", "0"))
         qualifiers_str = row.get("qualifiers_str", {}).get("value", "")
         
@@ -586,13 +599,16 @@ def get_term_links_with_counts(
             qualifiers.update(qualifier_list)
         
         term_links[link_iri] = {
+            "termlink_iri": link_iri,
             "term_iri": term_iri,
             "qualifiers": qualifiers,
-            "evidence_count": evidence_count
+            "evidence_count": evidence_count,
+            "source_iri": source_iri,
+            "source_type": source_type
         }
         distinct_terms.add(term_iri)
 
-    # Group by term_iri AND qualifier combination
+    # Group by term_iri AND qualifier combination, preserving individual TermLinks
     term_groups = {}
     for termlink_iri, term_link in term_links.items():
         term_iri = term_link["term_iri"]
@@ -601,19 +617,28 @@ def get_term_links_with_counts(
         
         if group_key not in term_groups:
             term_groups[group_key] = {
-                "termlink_iri": termlink_iri,  # Use first termlink_iri as representative
                 "term_iri": term_iri,
                 "term_label": None,
                 "qualifiers": sorted(list(term_link["qualifiers"])),
-                "evidence_count": 0
+                "evidence_count": 0,
+                "term_links": []
             }
-        # Sum evidence counts for same term+qualifier combination
+        
+        # Add this TermLink to the group
+        term_groups[group_key]["term_links"].append({
+            "termlink_iri": term_link["termlink_iri"],
+            "evidence_count": term_link["evidence_count"],
+            "source_iri": term_link["source_iri"],
+            "source_type": term_link["source_type"]
+        })
+        
+        # Sum evidence counts for the group total
         term_groups[group_key]["evidence_count"] += term_link["evidence_count"]
 
     # Convert to list
     links = list(term_groups.values())
 
-    # Optional labels for terms (lightweight)
+    # Optional labels for terms
     if hpo_version and mondo_version and distinct_terms:
         term_vals = " ".join(f"<{t}>" for t in distinct_terms)
         sparql_labels = f"""

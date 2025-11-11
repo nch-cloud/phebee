@@ -1,5 +1,5 @@
 from aws_lambda_powertools import Metrics, Logger, Tracer
-from phebee.utils.sparql import get_term_links_with_evidence, get_subject
+from phebee.utils.sparql import get_term_links_with_evidence, get_subject, get_term_links_with_counts
 from phebee.utils.aws import extract_body
 from phebee.utils.dynamodb import get_current_term_source_version
 import json
@@ -43,12 +43,12 @@ def get_subject_info(project_subject_iri: str):
     if subject is None:
         return None
     
-    # Query for subject-term links, their terms, and evidence (detailed version for compatibility)
+    # Query for subject-term links with evidence counts and source information
     hpo_version = get_current_term_source_version("hpo")
     mondo_version = get_current_term_source_version("mondo")
 
-    # Use the detailed version for now to maintain test compatibility
-    terms = get_term_links_with_evidence(subject["subject_iri"], hpo_version, mondo_version)
+    # Use the new enhanced lightweight version with term_links structure
+    terms = get_term_links_with_counts(subject["subject_iri"], hpo_version, mondo_version)
     subject["terms"] = terms
 
     return subject

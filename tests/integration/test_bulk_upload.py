@@ -503,25 +503,35 @@ def test_bulk_upload_with_qualifiers(test_payload_with_qualifiers, test_project_
     subj = invoke_lambda(get_subject_fn, {"project_subject_iri": project_subject_iri})
     assert len(subj["terms"]) == 2
 
-    # Verify qualifiers are included in the GetSubjectFunction response
-    term_qualifiers = []
+    # Verify new response structure with term_links array
     for term in subj["terms"]:
         assert "qualifiers" in term, "Each term should have qualifiers field"
-        term_qualifiers.append(set(term["qualifiers"]))
+        assert "evidence_count" in term, "Each term should have total evidence_count"
+        assert "term_links" in term, "Each term should have term_links array"
         assert term["term_iri"] == subject_entry["term_iri"], "Both terms should have same term_iri"
         assert term["evidence_count"] > 0, "Each term should have evidence"
+        
+        # Verify term_links structure
+        for term_link in term["term_links"]:
+            assert "termlink_iri" in term_link
+            assert "evidence_count" in term_link
+            assert "source_iri" in term_link
+            assert "source_type" in term_link
+            assert term_link["evidence_count"] > 0
 
     # Verify we have two different qualifier sets (same term, different qualifiers = separate elements)
+    term_qualifiers = [set(term["qualifiers"]) for term in subj["terms"]]
     assert len(term_qualifiers) == 2, "Should have exactly 2 different qualifier sets"
     assert term_qualifiers[0] != term_qualifiers[1], "The two elements should have different qualifier sets"
 
     # Collect qualifiers per termlink (legacy verification)
     seen = {}
     for term in subj["terms"]:
-        tr = invoke_lambda(get_termlink_fn, {"termlink_iri": term["termlink_iri"]})
-        q = set(tr.get("has_qualifying_term", []))
-        seen[term["termlink_iri"]] = q
-        print("qualifiers:", term["termlink_iri"], q)
+        for term_link in term["term_links"]:
+            tr = invoke_lambda(get_termlink_fn, {"termlink_iri": term_link["termlink_iri"]})
+            q = set(tr.get("has_qualifying_term", []))
+            seen[term_link["termlink_iri"]] = q
+            print("qualifiers:", term_link["termlink_iri"], q)
 
     # Expect one link with negated + hypothetical, another with negated + family
     q_neg = "http://ods.nationwidechildrens.org/phebee/qualifier/negated"
