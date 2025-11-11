@@ -1640,27 +1640,93 @@ def get_term_link(termlink_iri: str) -> dict:
     sparql = f"""
     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
     PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-    PREFIX dcterms: <http://purl.org/dc/terms/>
-    PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+    PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
     
-    SELECT ?p ?o WHERE {{
-        <{termlink_iri}> ?p ?o .
+    SELECT ?term ?source_node ?source_type ?qualifier ?evidence ?evidenceType ?assertionType ?spanStart ?spanEnd
+    WHERE {{
+        GRAPH <http://ods.nationwidechildrens.org/phebee/subjects> {{
+            <{termlink_iri}> a phebee:TermLink ;
+                           phebee:hasTerm ?term ;
+                           phebee:sourceNode ?source_node .
+            
+            OPTIONAL {{
+                ?source_node a ?source_type .
+            }}
+            
+            OPTIONAL {{
+                <{termlink_iri}> phebee:hasQualifyingTerm ?qualifier .
+            }}
+            
+            OPTIONAL {{
+                <{termlink_iri}> phebee:hasEvidence ?evidence .
+                ?evidence phebee:evidenceType ?evidenceType ;
+                         phebee:assertionType ?assertionType .
+                
+                OPTIONAL {{
+                    ?evidence phebee:spanStart ?spanStart ;
+                             phebee:spanEnd ?spanEnd .
+                }}
+            }}
+        }}
     }}
     """
     results = execute_query(sparql)
-
-    properties = {}
     bindings = results["results"]["bindings"]
-    for binding in bindings:
-        pred = binding["p"]["value"]
-        obj = binding["o"]["value"]
-        key = split_predicate(pred)
-        properties.setdefault(key, []).append(obj)
-
-    if len(bindings) > 0:
-        return flatten_response({"termlink_iri": termlink_iri}, properties)
-    else:
+    
+    if not bindings:
         return None
+    
+    # Get basic term link info from first row
+    first_row = bindings[0]
+    term_iri = first_row["term"]["value"]
+    source_node_iri = first_row["source_node"]["value"]
+    source_type = first_row.get("source_type", {}).get("value", "").split("#")[-1] if "source_type" in first_row else "Unknown"
+    
+    # Get term label
+    term_label = None
+    label_query = f"""
+    PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+    SELECT ?label WHERE {{
+        <{term_iri}> rdfs:label ?label .
+    }}
+    """
+    label_results = execute_query(label_query)
+    if label_results["results"]["bindings"]:
+        term_label = label_results["results"]["bindings"][0]["label"]["value"]
+    
+    # Collect qualifiers and evidence
+    qualifiers = set()
+    evidence_map = {}
+    
+    for row in bindings:
+        if "qualifier" in row:
+            qualifiers.add(row["qualifier"]["value"])
+        
+        if "evidence" in row:
+            evidence_iri = row["evidence"]["value"]
+            if evidence_iri not in evidence_map:
+                evidence_map[evidence_iri] = {
+                    "evidence_iri": evidence_iri,
+                    "evidenceType": row["evidenceType"]["value"],
+                    "assertionType": row["assertionType"]["value"]
+                }
+                
+                # Add span info if present (TextAnnotation)
+                if "spanStart" in row and "spanEnd" in row:
+                    evidence_map[evidence_iri]["spanStart"] = int(row["spanStart"]["value"])
+                    evidence_map[evidence_iri]["spanEnd"] = int(row["spanEnd"]["value"])
+    
+    return {
+        "termlink_iri": termlink_iri,
+        "term_iri": term_iri,
+        "term_label": term_label,
+        "source_node": {
+            "iri": source_node_iri,
+            "type": source_type
+        },
+        "qualifiers": sorted(list(qualifiers)),
+        "evidence": list(evidence_map.values())
+    }
 
 
 def attach_evidence_to_term_link(termlink_iri: str, evidence_iri: str) -> None:

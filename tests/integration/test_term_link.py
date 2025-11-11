@@ -54,8 +54,10 @@ def test_term_link(physical_resources):
     get_body = json.loads(json.loads(get_resp["Payload"].read())["body"])
     print(f"test_term_link get_body: {get_body}")
     assert get_body["termlink_iri"] == termlink_iri
-    assert term_iri in get_body.get("has_term", [])
-    assert creator_iri in get_body.get("creator", [])
+    assert get_body["term_iri"] == term_iri
+    assert get_body["source_node"]["iri"] == source_node_iri
+    assert get_body["qualifiers"] == []  # No qualifiers in this test
+    assert get_body["evidence"] == []  # No evidence in this test
     
     # TODO: Test evidence
 
@@ -141,13 +143,10 @@ def test_term_link_with_qualifiers(physical_resources):
     get_body = json.loads(json.loads(get_resp["Payload"].read())["body"])
     print(f"test_term_link_with_qualifiers get_body: {get_body}")
     assert get_body["termlink_iri"] == termlink_iri
-    assert term_iri in get_body.get("has_term", [])
-    assert creator_iri in get_body.get("creator", [])
-    
-    # Verify qualifiers are present
-    has_qualifying_term = get_body.get("has_qualifying_term", [])
-    for qualifier in qualifiers:
-        assert qualifier in has_qualifying_term
+    assert get_body["term_iri"] == term_iri
+    assert get_body["source_node"]["iri"] == source_node_iri
+    assert set(get_body["qualifiers"]) == set(qualifiers)  # Check qualifiers match
+    assert get_body["evidence"] == []  # No evidence in this test
     
     # --- Create a different term link with different qualifiers ---
     different_qualifiers = [

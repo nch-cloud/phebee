@@ -17,7 +17,7 @@ def lambda_handler(event, context):
 
         if not result:
             return {
-                "statusCode": 200,
+                "statusCode": 404,
                 "body": json.dumps({"message": "TermLink not found"})
             }
 
