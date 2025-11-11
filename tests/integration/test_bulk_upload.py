@@ -856,7 +856,11 @@ def test_bulk_upload_encounter_in_batch_duplicate_handling(test_duplicate_encoun
     subj = invoke_lambda(get_subject_fn, {"project_subject_iri": project_subject_iri})
     subject_iri = subj["subject_iri"]
 
-    assert len(subj["terms"]) == 3  # three separate term links for same term from different notes
+    # With new grouped structure: one term group with evidence_count=3 and 3 term_links
+    assert len(subj["terms"]) == 1  # one grouped term
+    term = subj["terms"][0]
+    assert term["evidence_count"] == 3  # three pieces of evidence total
+    assert len(term["term_links"]) == 3  # three separate term links from different notes
 
     encounter_id = e["evidence"][0]["encounter_id"]
     encounter_iri = f"{subject_iri}/encounter/{encounter_id}"
@@ -931,38 +935,48 @@ def test_term_link_source_node(test_payload, test_project_id, physical_resources
 
 
 def test_bulk_upload_subject_deduplication(test_payload, test_project_id, physical_resources):
-    """Same project_subject_id in multiple uploads -> one subject node (functional verification)."""
+    """Same project_subject_id in multiple uploads -> one subject node (idempotency verification)."""
+    get_subject_fn = physical_resources["GetSubjectFunction"]
+    entry = test_payload[0]  # First entry has subject_id_1
+    project_subject_iri = f"http://ods.nationwidechildrens.org/phebee/projects/{entry['project_id']}/{entry['project_subject_id']}"
+    
     # First upload
     bulk_upload_run([test_payload], physical_resources)
+    
+    # Get subject result after first upload
+    subject_result_1 = invoke_lambda(get_subject_fn, {"body": json.dumps({"project_subject_iri": project_subject_iri})})
     
     # Second upload with same project_subject_id - this should be idempotent
     bulk_upload_run([test_payload], physical_resources)
     
-    # Verify all uploaded data can be retrieved
-    verify_uploaded_data(test_payload, test_project_id, physical_resources)
+    # Get subject result after second upload
+    subject_result_2 = invoke_lambda(get_subject_fn, {"body": json.dumps({"project_subject_iri": project_subject_iri})})
     
-    get_subject_fn = physical_resources["GetSubjectFunction"]
-    entry = test_payload[0]
-    project_subject_iri = f"http://ods.nationwidechildrens.org/phebee/projects/{entry['project_id']}/{entry['project_subject_id']}"
+    # Verify idempotency: both results should be identical
+    assert subject_result_1 == subject_result_2, "Duplicate uploads should produce identical results"
     
-    # Verify we can still retrieve the subject and it has consistent structure
-    subject_result = invoke_lambda(get_subject_fn, {"body": json.dumps({"project_subject_iri": project_subject_iri})})
+    # Verify exact expected structure based on test_payload
+    # Subject 1 should have exactly 2 terms: HP_0004322 and HP_0002297
+    assert len(subject_result_1["terms"]) == 2, "Subject should have exactly 2 terms"
     
-    # If there were duplicate subjects, the GetSubject function would fail or return inconsistent data
-    assert "subject_iri" in subject_result
-    assert subject_result["subject_iri"].startswith("http://ods.nationwidechildrens.org/phebee/subjects/")
-    assert "terms" in subject_result
+    # Sort terms by term_iri for consistent comparison
+    terms = sorted(subject_result_1["terms"], key=lambda t: t["term_iri"])
     
-    # The key test: verify the system is functional and consistent after duplicate uploads
-    # We don't assert exact counts since other tests may have added data, but we verify structure
-    assert len(subject_result["terms"]) > 0, "Subject should have at least one term link"
+    # First term: HP_0002297 (from note-002)
+    term1 = terms[0]
+    assert term1["term_iri"] == "http://purl.obolibrary.org/obo/HP_0002297"
+    assert term1["evidence_count"] == 1
+    assert term1["qualifiers"] == []
+    assert len(term1["term_links"]) == 1
+    assert term1["term_links"][0]["source_type"] == "ClinicalNote"
     
-    # Verify each term link has evidence
-    for term in subject_result["terms"]:
-        assert "evidence_count" in term
-        assert term["evidence_count"] > 0, "Each term link should have evidence"
-        assert "term_iri" in term
-        assert "termlink_iri" in term
+    # Second term: HP_0004322 (from note-001)
+    term2 = terms[1]
+    assert term2["term_iri"] == "http://purl.obolibrary.org/obo/HP_0004322"
+    assert term2["evidence_count"] == 1
+    assert term2["qualifiers"] == []
+    assert len(term2["term_links"]) == 1
+    assert term2["term_links"][0]["source_type"] == "ClinicalNote"
 
 
 def test_bulk_upload_encounter_deduplication(test_payload, test_project_id, physical_resources):
