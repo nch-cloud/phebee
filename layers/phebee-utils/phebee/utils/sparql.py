@@ -1815,22 +1815,27 @@ def get_subject_term_info(
     """
     qualifiers = qualifiers or []
     
-    # Build qualifier filter
-    qualifier_filter = ""
-    if qualifiers:
-        qualifier_values = " ".join([f"<{q}>" for q in qualifiers])
-        qualifier_filter = f"""
-        {{
-            SELECT ?link WHERE {{
-                ?link phebee:hasQualifyingTerm ?q .
-                VALUES ?q {{ {qualifier_values} }}
-            }}
-            GROUP BY ?link
-            HAVING (COUNT(?q) = {len(qualifiers)})
-        }}
-        """
-    else:
-        qualifier_filter = "FILTER NOT EXISTS { ?link phebee:hasQualifyingTerm ?q }"
+    # Build qualifier filter - optimized approach
+    def build_qualifier_filter(qualifiers):
+        if not qualifiers:
+            return "FILTER NOT EXISTS { ?link phebee:hasQualifyingTerm ?q }"
+        
+        # Build required qualifier patterns
+        required_patterns = []
+        for qualifier in qualifiers:
+            required_patterns.append(f"?link phebee:hasQualifyingTerm <{qualifier}> .")
+        
+        # Build exclusion filter for other qualifiers
+        qualifier_list = " ".join(f"<{q}>" for q in qualifiers)
+        exclusion_filter = f"""FILTER NOT EXISTS {{
+            ?link phebee:hasQualifyingTerm ?other .
+            FILTER(?other NOT IN ({qualifier_list}))
+        }}"""
+        
+        # Combine required patterns and exclusion
+        return "\n            ".join(required_patterns) + "\n            " + exclusion_filter
+    
+    qualifier_filter = build_qualifier_filter(qualifiers)
     
     sparql_links = f"""
     PREFIX rdf:    <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
@@ -1861,7 +1866,7 @@ def get_subject_term_info(
                 ?link phebee:hasQualifyingTerm ?qualifier .
             }}
             
-            # Apply qualifier filter
+            # Apply optimized qualifier filter
             {qualifier_filter}
         }}
     }}

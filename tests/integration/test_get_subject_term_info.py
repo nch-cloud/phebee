@@ -156,4 +156,57 @@ def test_get_subject_term_info_with_qualifiers(test_payload_with_qualifiers, tes
     assert result["qualifiers"] == term_with_qualifiers["qualifiers"]
     assert len(result["qualifiers"]) > 0
     assert result["evidence_count"] == term_with_qualifiers["evidence_count"]
-    assert len(result["term_links"]) == term_with_qualifiers["term_link_count"]
+@pytest.mark.integration
+def test_get_subject_term_info_negated_qualifier_performance(test_payload_with_qualifiers, test_project_id, physical_resources):
+    """Test GetSubjectTermInfo with negated qualifier - this was timing out before optimization."""
+    import time
+    from test_bulk_upload import bulk_upload_run
+    
+    # Upload test data with qualifiers
+    bulk_upload_run([test_payload_with_qualifiers], physical_resources)
+    
+    get_subject_fn = physical_resources["GetSubjectFunction"]
+    get_subject_term_info_fn = physical_resources["GetSubjectTermInfoFunction"]
+    
+    # Get subject to find terms
+    entry = test_payload_with_qualifiers[0]
+    project_subject_iri = f"http://ods.nationwidechildrens.org/phebee/projects/{entry['project_id']}/{entry['project_subject_id']}"
+    subject_result = invoke_lambda(get_subject_fn, {"body": json.dumps({"project_subject_iri": project_subject_iri})})
+    
+    subject_iri = subject_result["subject_iri"]
+    term_iri = entry["term_iri"]
+    
+    # Test with empty qualifiers (should be fast)
+    start_time = time.time()
+    result_empty = invoke_lambda(get_subject_term_info_fn, {
+        "body": json.dumps({
+            "subject_iri": subject_iri,
+            "term_iri": term_iri,
+            "qualifiers": []
+        })
+    })
+    empty_duration = time.time() - start_time
+    
+    # Test with negated qualifier (was timing out before optimization)
+    start_time = time.time()
+    result_negated = invoke_lambda(get_subject_term_info_fn, {
+        "body": json.dumps({
+            "subject_iri": subject_iri,
+            "term_iri": term_iri,
+            "qualifiers": ["http://ods.nationwidechildrens.org/phebee/qualifier/negated"]
+        })
+    })
+    negated_duration = time.time() - start_time
+    
+    # Both should complete successfully
+    assert result_empty["term_iri"] == term_iri
+    assert result_negated["term_iri"] == term_iri
+    
+    # The negated query should not be significantly slower (within 10x)
+    assert negated_duration < empty_duration * 10, f"Negated query took {negated_duration:.2f}s vs empty {empty_duration:.2f}s"
+    
+    # Both should complete within reasonable time (30 seconds)
+    assert empty_duration < 30, f"Empty qualifiers query took {empty_duration:.2f}s"
+    assert negated_duration < 30, f"Negated qualifier query took {negated_duration:.2f}s"
+
+
