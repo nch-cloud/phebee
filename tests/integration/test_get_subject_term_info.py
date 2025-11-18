@@ -162,21 +162,68 @@ def test_get_subject_term_info_negated_qualifier_performance(test_payload_with_q
     import time
     from test_bulk_upload import bulk_upload_run
     
-    # Upload test data with qualifiers
-    bulk_upload_run([test_payload_with_qualifiers], physical_resources)
+    # Create test data with BOTH qualified and unqualified term links
+    import uuid
+    subject_id = f"subj-{uuid.uuid4()}"
+    term_iri = "http://purl.obolibrary.org/obo/HP_0004322"
+    encounter_id = str(uuid.uuid4())
+    
+    test_data_with_mixed_qualifiers = [
+        # Entry with NO qualifiers (for empty qualifiers test)
+        {
+            "project_id": test_project_id,
+            "project_subject_id": subject_id,
+            "term_iri": term_iri,
+            "evidence": [
+                {
+                    "type": "clinical_note",
+                    "encounter_id": encounter_id,
+                    "clinical_note_id": "note-no-qual",
+                    "note_timestamp": "2025-06-06T12:00:00Z",
+                    "evidence_creator_id": "robot-creator",
+                    "evidence_creator_type": "automated",
+                    "evidence_creator_name": "Robot Creator",
+                    "evidence_creator_version": "1.2"
+                    # No contexts = no qualifiers
+                }
+            ]
+        },
+        # Entry with negated qualifier
+        {
+            "project_id": test_project_id,
+            "project_subject_id": subject_id,
+            "term_iri": term_iri,
+            "evidence": [
+                {
+                    "type": "clinical_note",
+                    "encounter_id": encounter_id,
+                    "clinical_note_id": "note-negated",
+                    "note_timestamp": "2025-06-06T12:00:00Z",
+                    "evidence_creator_id": "robot-creator",
+                    "evidence_creator_type": "automated",
+                    "evidence_creator_name": "Robot Creator",
+                    "evidence_creator_version": "1.2",
+                    "contexts": {
+                        "negated": 1
+                    }
+                }
+            ]
+        }
+    ]
+    
+    # Upload test data with mixed qualifiers
+    bulk_upload_run([test_data_with_mixed_qualifiers], physical_resources)
     
     get_subject_fn = physical_resources["GetSubjectFunction"]
     get_subject_term_info_fn = physical_resources["GetSubjectTermInfoFunction"]
     
     # Get subject to find terms
-    entry = test_payload_with_qualifiers[0]
-    project_subject_iri = f"http://ods.nationwidechildrens.org/phebee/projects/{entry['project_id']}/{entry['project_subject_id']}"
+    project_subject_iri = f"http://ods.nationwidechildrens.org/phebee/projects/{test_project_id}/{subject_id}"
     subject_result = invoke_lambda(get_subject_fn, {"body": json.dumps({"project_subject_iri": project_subject_iri})})
     
     subject_iri = subject_result["subject_iri"]
-    term_iri = entry["term_iri"]
     
-    # Test with empty qualifiers (should be fast)
+    # Test with empty qualifiers (should find the unqualified term link)
     start_time = time.time()
     result_empty = invoke_lambda(get_subject_term_info_fn, {
         "body": json.dumps({
@@ -201,6 +248,10 @@ def test_get_subject_term_info_negated_qualifier_performance(test_payload_with_q
     # Both should complete successfully
     assert result_empty["term_iri"] == term_iri
     assert result_negated["term_iri"] == term_iri
+    
+    # Verify correct qualifier filtering
+    assert result_empty["qualifiers"] == []
+    assert result_negated["qualifiers"] == ["http://ods.nationwidechildrens.org/phebee/qualifier/negated"]
     
     # The negated query should not be significantly slower (within 10x)
     assert negated_duration < empty_duration * 10, f"Negated query took {negated_duration:.2f}s vs empty {empty_duration:.2f}s"
