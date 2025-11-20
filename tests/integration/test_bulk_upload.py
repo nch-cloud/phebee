@@ -577,9 +577,12 @@ def test_pagination_api_minimal_format_with_qualifiers(test_payload_with_qualifi
         assert "evidence_count" in term_link
         
         # Check removed fields are NOT present
-        removed_fields = ["termlink_iri", "term_label", "source_node", "source_type", "evidence"]
+        removed_fields = ["termlink_iri", "source_node", "source_type", "evidence"]
         for field in removed_fields:
             assert field not in term_link, f"Field '{field}' should be removed in minimal format"
+        
+        # term_label should be present (even if None) for API consistency
+        assert "term_label" in term_link, "term_label should be present for consistency"
         
         # Verify evidence count is a number
         assert isinstance(term_link["evidence_count"], int)

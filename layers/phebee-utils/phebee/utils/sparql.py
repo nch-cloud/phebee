@@ -232,6 +232,31 @@ def camel_to_snake(name: str) -> str:
     return re.sub("([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
 
 
+def get_term_labels(term_iris: list[str], hpo_version: str, mondo_version: str) -> dict:
+    """Get labels for a list of term IRIs efficiently."""
+    if not term_iris:
+        return {}
+    
+    term_values = " ".join(f"<{iri}>" for iri in term_iris)
+    
+    query = f"""
+    PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+    
+    SELECT ?term ?label
+    FROM <http://ods.nationwidechildrens.org/phebee/hpo~{hpo_version}>
+    FROM <http://ods.nationwidechildrens.org/phebee/mondo~{mondo_version}>
+    WHERE {{
+        VALUES ?term {{ {term_values} }}
+        ?term rdfs:label ?label .
+        FILTER(LANGMATCHES(LANG(?label),'en'))
+    }}
+    """
+    
+    result = execute_query(query)
+    return {b["term"]["value"]: b["label"]["value"] 
+            for b in result["results"]["bindings"]}
+
+
 def get_subjects(
     project_iri: str,
     hpo_version: str,
@@ -252,20 +277,19 @@ def get_subjects(
 
     cursor_clause = ""
     if cursor:
-        cursor_clause = f'FILTER(STR(?subjectIRI) > "{cursor}")'
+        cursor_clause = f'FILTER(str(?subjectIRI) > "{cursor}")'
 
     # Phase 1: Get paginated subject IRIs with optional term filtering
-    term_filter_clause = ""
-    term_graphs = ""
     if term_iri:
+        # Optimized query when term filtering is needed
         term_graphs = f"FROM <http://ods.nationwidechildrens.org/phebee/{term_source}~{term_source_version}>"
         
-        # Build qualifier exclusion filter
+        # Build optimized qualifier exclusion filter
         qualifier_filter = ""
         if not include_qualified:
             qualifier_filter = """
         # Exclude term links with negated, hypothetical, or family qualifiers
-        FILTER NOT EXISTS {
+        MINUS {
             ?termlink phebee:hasQualifyingTerm ?excludedQualifier .
             VALUES ?excludedQualifier {
                 <http://ods.nationwidechildrens.org/phebee/qualifier/negated>
@@ -274,39 +298,72 @@ def get_subjects(
             }
         }"""
         
-        term_filter_clause = f"""
-        # Find subjects with term links (direct or via clinical notes)
-        ?termlink rdf:type phebee:TermLink ;
-                  phebee:sourceNode ?srcNode ;
-                  phebee:hasTerm ?term .
-        ?srcNode (phebee:hasEncounter/phebee:hasSubject)? ?subjectIRI .
-        ?term rdfs:subClassOf* <{term_iri}> .{qualifier_filter}
+        subjects_query = f"""
+        PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+        PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+        PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+
+        SELECT DISTINCT ?subjectIRI ?projectSubjectIRI
+        {term_graphs}
+        FROM <{project_iri}>
+        FROM <http://ods.nationwidechildrens.org/phebee/subjects>
+        WHERE {{
+            # Start with project constraint (most selective)
+            ?projectSubjectIRI phebee:hasProject <{project_iri}> .
+            ?subjectIRI phebee:hasProjectSubjectId ?projectSubjectIRI .
+            {project_subject_ids_clause}
+            
+            # Explicit UNION for term link patterns (no expensive property path)
+            {{
+                # Direct subject term links
+                ?termlink rdf:type phebee:TermLink ;
+                          phebee:sourceNode ?subjectIRI ;
+                          phebee:hasTerm ?term .
+            }}
+            UNION
+            {{
+                # Clinical note term links
+                ?encounter phebee:hasSubject ?subjectIRI .
+                ?clinicalNote phebee:hasEncounter ?encounter .
+                ?termlink rdf:type phebee:TermLink ;
+                          phebee:sourceNode ?clinicalNote ;
+                          phebee:hasTerm ?term .
+            }}
+            
+            # Term hierarchy check
+            ?term rdfs:subClassOf* <{term_iri}> .
+            
+            # Optimized qualifier filter
+            {qualifier_filter}
+            
+            # Cursor-based filtering
+            {cursor_clause}
+        }}
+        ORDER BY ?subjectIRI
+        LIMIT {limit + 1}
         """
+    else:
+        # Simple query when no term filtering (already efficient)
+        subjects_query = f"""
+        PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+        PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+        PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
 
-    subjects_query = f"""
-    PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-    PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
-    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
-
-    SELECT DISTINCT ?subjectIRI ?projectSubjectIRI
-    {term_graphs}
-    FROM <{project_iri}>
-    FROM <http://ods.nationwidechildrens.org/phebee/subjects>
-    WHERE {{
-        # Core subject-project relationship
-        ?projectSubjectIRI phebee:hasProject <{project_iri}> .
-        ?subjectIRI phebee:hasProjectSubjectId ?projectSubjectIRI .
-        {project_subject_ids_clause}
-        
-        # Term filtering (only if term_iri provided)
-        {term_filter_clause}
-        
-        # Cursor-based filtering
-        {cursor_clause}
-    }}
-    ORDER BY ?subjectIRI
-    LIMIT {limit + 1}
-    """
+        SELECT DISTINCT ?subjectIRI ?projectSubjectIRI
+        FROM <{project_iri}>
+        FROM <http://ods.nationwidechildrens.org/phebee/subjects>
+        WHERE {{
+            # Core subject-project relationship
+            ?projectSubjectIRI phebee:hasProject <{project_iri}> .
+            ?subjectIRI phebee:hasProjectSubjectId ?projectSubjectIRI .
+            {project_subject_ids_clause}
+            
+            # Cursor-based filtering
+            {cursor_clause}
+        }}
+        ORDER BY ?subjectIRI
+        LIMIT {limit + 1}
+        """
 
     subjects_result = execute_query(subjects_query)
     logger.info("Phase 1: Subject query returned %d subjects", len(subjects_result["results"]["bindings"]))
@@ -332,21 +389,18 @@ def get_subjects(
             }
         }
 
-    # Phase 2: Get term links for the paginated subjects
+    # Phase 2: Get term links for the paginated subjects (optimized)
     subject_iris = [binding["subjectIRI"]["value"] for binding in subject_bindings]
     subject_values = " ".join(f"<{iri}>" for iri in subject_iris)
     
+    # Optimized query without expensive SPARQL aggregation
     termlinks_query = f"""
     PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
     PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
 
-    SELECT ?subjectIRI ?termlink ?term 
-           (GROUP_CONCAT(DISTINCT ?qualifier; separator="|") AS ?qualifiers_concat)
-           (COUNT(DISTINCT ?evidence) AS ?evidence_count)
+    SELECT ?subjectIRI ?termlink ?term ?qualifier ?evidence
     FROM <http://ods.nationwidechildrens.org/phebee/subjects>
-    FROM <http://ods.nationwidechildrens.org/phebee/hpo~{hpo_version}>
-    FROM <http://ods.nationwidechildrens.org/phebee/mondo~{mondo_version}>
     WHERE {{
         VALUES ?subjectIRI {{ {subject_values} }}
         
@@ -376,7 +430,6 @@ def get_subjects(
             ?termlink phebee:hasEvidence ?evidence .
         }}
     }}
-    GROUP BY ?subjectIRI ?termlink ?term
     """
 
     termlinks_result = execute_query(termlinks_query)
@@ -394,29 +447,44 @@ def get_subjects(
             "term_links": {}
         }
     
-    # Add term links from Phase 2 results
+    # Process term links from Phase 2 results (do aggregation in Python)
     for binding in termlinks_result["results"]["bindings"]:
         subject_iri = binding["subjectIRI"]["value"]
         termlink_iri = binding["termlink"]["value"]
         term_iri_val = binding["term"]["value"]
-        qualifiers_concat = binding.get("qualifiers_concat", {}).get("value", "")
-        evidence_count = int(binding.get("evidence_count", {}).get("value", "0"))
+        qualifier = binding.get("qualifier", {}).get("value")
+        evidence = binding.get("evidence", {}).get("value")
         
         if subject_iri in subjects_map:
-            # Parse concatenated qualifiers
-            qualifiers = set()
-            if qualifiers_concat and qualifiers_concat.strip():
-                # Split by separator and filter out empty strings
-                qualifier_list = [q.strip() for q in qualifiers_concat.split("|") if q.strip()]
-                qualifiers.update(qualifier_list)
+            # Initialize term link if not exists
+            if termlink_iri not in subjects_map[subject_iri]["term_links"]:
+                subjects_map[subject_iri]["term_links"][termlink_iri] = {
+                    "term_iri": term_iri_val,
+                    "qualifiers": set(),
+                    "evidence_count": 0,
+                    "evidence_iris": set()
+                }
             
-            subjects_map[subject_iri]["term_links"][termlink_iri] = {
-                "term_iri": term_iri_val,
-                "qualifiers": qualifiers,
-                "evidence_count": evidence_count
-            }
+            # Add qualifier if present
+            if qualifier:
+                subjects_map[subject_iri]["term_links"][termlink_iri]["qualifiers"].add(qualifier)
+            
+            # Count unique evidence
+            if evidence:
+                subjects_map[subject_iri]["term_links"][termlink_iri]["evidence_iris"].add(evidence)
     
-    # Convert to final format
+    # Calculate evidence counts and collect unique terms for labels
+    unique_terms = set()
+    for subject in subjects_map.values():
+        for termlink_iri, term_link in subject["term_links"].items():
+            term_link["evidence_count"] = len(term_link["evidence_iris"])
+            del term_link["evidence_iris"]  # Remove temporary set
+            unique_terms.add(term_link["term_iri"])
+    
+    # Get term labels efficiently
+    term_labels = get_term_labels(list(unique_terms), hpo_version, mondo_version) if unique_terms else {}
+    
+    # Convert to final format with labels
     subjects = []
     for subject in subjects_map.values():
         # Group term_links by term_iri AND qualifier combination
@@ -429,6 +497,7 @@ def get_subjects(
             if group_key not in term_groups:
                 term_groups[group_key] = {
                     "term_iri": term_iri,
+                    "term_label": term_labels.get(term_iri),
                     "qualifiers": term_link["qualifiers"].copy(),
                     "evidence_count": 0
                 }
@@ -440,6 +509,7 @@ def get_subjects(
         for term_group in term_groups.values():
             term_links.append({
                 "term_iri": term_group["term_iri"],
+                "term_label": term_group["term_label"],
                 "qualifiers": sorted(list(term_group["qualifiers"])),
                 "evidence_count": term_group["evidence_count"]
             })

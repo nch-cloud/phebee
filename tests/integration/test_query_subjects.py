@@ -694,6 +694,8 @@ def test_pagination_cursor(physical_resources, test_project_id, upload_phenopack
         if cursor:
             query_input["cursor"] = cursor
             
+        print(f"Page {page_count} query: {query_input}")
+            
         response = lambda_client.invoke(
             FunctionName=physical_resources["GetSubjectsPhenotypesFunction"],
             Payload=json.dumps(query_input).encode("utf-8"),
@@ -705,14 +707,22 @@ def test_pagination_cursor(physical_resources, test_project_id, upload_phenopack
         all_subjects.extend(page_subjects)
         
         pagination = body["pagination"]
+        print(f"Page {page_count} returned {len(page_subjects)} subjects")
+        print(f"Pagination info: {pagination}")
+        
         if not pagination["has_more"]:
+            print(f"No more pages after page {page_count}")
             break
             
         cursor = pagination["next_cursor"]
+        print(f"Next cursor: {cursor}")
         assert cursor is not None, "next_cursor should be provided when has_more=True"
         
         # Safety check to prevent infinite loops
         assert page_count < 10, "Too many pages, possible infinite loop"
+    
+    print(f"Total pages: {page_count}")
+    print(f"Total subjects collected: {len(all_subjects)}")
     
     # Should have collected all subjects across pages
     assert len(all_subjects) == total_imported, f"Pagination failed - expected {total_imported} subjects, got {len(all_subjects)}"
@@ -747,6 +757,59 @@ def test_pagination_empty_cursor(physical_resources, test_project_id, upload_phe
     subjects_data = body["body"]  # Handle both old and new format
     assert len(subjects_data) == 2, "Should return results with empty cursor"
     assert "pagination" in body, "Should include pagination metadata"
+
+
+@pytest.mark.integration
+def test_term_labels_functionality(physical_resources, test_project_id, upload_phenopacket_s3, update_hpo):
+    """Test that term labels are returned in query responses."""
+    project_id = test_project_id
+    import_phenopacket(physical_resources, project_id)
+
+    # Query with include_phenotypes=True to get term labels
+    query = json.dumps({
+        "project_id": project_id,
+        "include_phenotypes": True
+    })
+    
+    lambda_client = get_client("lambda")
+    response = lambda_client.invoke(
+        FunctionName=physical_resources["GetSubjectsPhenotypesFunction"],
+        Payload=query.encode("utf-8"),
+    )
+    result = json.loads(response["Payload"].read())
+    body = decompress_lambda_response(result)
+    subjects = body["body"]
+    
+    # Verify subjects have term_links with labels
+    assert len(subjects) > 0, "Should return subjects"
+    
+    subjects_with_terms = [s for s in subjects if s.get("term_links", [])]
+    assert len(subjects_with_terms) > 0, "At least some subjects should have term_links"
+    
+    for subject in subjects_with_terms:
+        term_links = subject.get("term_links", [])
+        
+        for term_link in term_links:
+            # Check that term has both IRI and label
+            assert "term_iri" in term_link, "Term link should have term_iri"
+            assert "term_label" in term_link, "Term link should have term_label field"
+            
+            # Note: term_label might be None if labels aren't loaded yet
+            if term_link["term_label"] is not None:
+                assert len(term_link["term_label"]) > 0, "Term label should not be empty when present"
+                # Verify label format (should be human-readable, not just the IRI)
+                assert not term_link["term_label"].startswith("http://"), "Label should be human-readable, not IRI"
+            else:
+                print(f"⚠️  Term {term_link['term_iri']} has no label - labels may not be loaded")
+            
+    print(f"✅ Verified term label structure for {len(subjects_with_terms)} subjects with terms")
+    
+    # Clean up files
+    s3_client = get_client("s3")
+    s3_client.delete_object(
+        Bucket=physical_resources["PheBeeBucket"],
+        Key=IMPORT_OUTPUT_KEY,
+    )
 
 
 @pytest.mark.integration
