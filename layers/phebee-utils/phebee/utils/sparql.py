@@ -257,6 +257,34 @@ def get_term_labels(term_iris: list[str], hpo_version: str, mondo_version: str) 
             for b in result["results"]["bindings"]}
 
 
+def build_qualifier_filter(qualifiers):
+    """Build SPARQL filter for qualifier matching.
+    
+    Args:
+        qualifiers: List of qualifier IRIs
+        
+    Returns:
+        SPARQL filter string for qualifier matching
+    """
+    if not qualifiers:
+        return "FILTER NOT EXISTS { ?link phebee:hasQualifyingTerm ?q }"
+    
+    # Build required qualifier patterns
+    required_patterns = []
+    for qualifier in qualifiers:
+        required_patterns.append(f"?link phebee:hasQualifyingTerm <{qualifier}> .")
+    
+    # Build exclusion filter for other qualifiers
+    qualifier_list = " ".join(f"<{q}>" for q in qualifiers)
+    exclusion_filter = f"""FILTER NOT EXISTS {{
+        ?link phebee:hasQualifyingTerm ?other .
+        FILTER(?other NOT IN ({qualifier_list}))
+    }}"""
+    
+    # Combine required patterns and exclusion
+    return "\\n            ".join(required_patterns) + "\\n            " + exclusion_filter
+
+
 def get_subjects(
     project_iri: str,
     hpo_version: str,
@@ -313,28 +341,30 @@ def get_subjects(
             ?subjectIRI phebee:hasProjectSubjectId ?projectSubjectIRI .
             {project_subject_ids_clause}
             
-            # Explicit UNION for term link patterns (no expensive property path)
-            {{
-                # Direct subject term links
-                ?termlink rdf:type phebee:TermLink ;
-                          phebee:sourceNode ?subjectIRI ;
-                          phebee:hasTerm ?term .
+            # Use EXISTS to avoid cartesian product - only check if subject has matching term links
+            FILTER EXISTS {{
+                {{
+                    # Direct subject term links
+                    ?termlink rdf:type phebee:TermLink ;
+                              phebee:sourceNode ?subjectIRI ;
+                              phebee:hasTerm ?term .
+                }}
+                UNION
+                {{
+                    # Clinical note term links
+                    ?encounter phebee:hasSubject ?subjectIRI .
+                    ?clinicalNote phebee:hasEncounter ?encounter .
+                    ?termlink rdf:type phebee:TermLink ;
+                              phebee:sourceNode ?clinicalNote ;
+                              phebee:hasTerm ?term .
+                }}
+                
+                # Term hierarchy check
+                ?term rdfs:subClassOf* <{term_iri}> .
+                
+                # Qualifier filter within EXISTS
+                {qualifier_filter}
             }}
-            UNION
-            {{
-                # Clinical note term links
-                ?encounter phebee:hasSubject ?subjectIRI .
-                ?clinicalNote phebee:hasEncounter ?encounter .
-                ?termlink rdf:type phebee:TermLink ;
-                          phebee:sourceNode ?clinicalNote ;
-                          phebee:hasTerm ?term .
-            }}
-            
-            # Term hierarchy check
-            ?term rdfs:subClassOf* <{term_iri}> .
-            
-            # Optimized qualifier filter
-            {qualifier_filter}
             
             # Cursor-based filtering
             {cursor_clause}
@@ -393,13 +423,28 @@ def get_subjects(
     subject_iris = [binding["subjectIRI"]["value"] for binding in subject_bindings]
     subject_values = " ".join(f"<{iri}>" for iri in subject_iris)
     
-    # Optimized query without expensive SPARQL aggregation
+    # Build qualifier filter based on include_qualified parameter
+    if include_qualified:
+        # Include all term links regardless of qualifiers
+        qualifier_filter = ""
+    else:
+        # Only include term links without negated, hypothetical, or family qualifiers (match Phase 1)
+        qualifier_filter = """
+        MINUS {
+            ?termlink phebee:hasQualifyingTerm ?excludedQualifier .
+            VALUES ?excludedQualifier {
+                <http://ods.nationwidechildrens.org/phebee/qualifier/negated>
+                <http://ods.nationwidechildrens.org/phebee/qualifier/hypothetical>
+                <http://ods.nationwidechildrens.org/phebee/qualifier/family>
+            }
+        }"""
+
+    # Optimized query without expensive evidence selection and OPTIONAL qualifier join
     termlinks_query = f"""
     PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-    PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
 
-    SELECT ?subjectIRI ?termlink ?term ?qualifier ?evidence
+    SELECT DISTINCT ?subjectIRI ?termlink ?term
     FROM <http://ods.nationwidechildrens.org/phebee/subjects>
     WHERE {{
         VALUES ?subjectIRI {{ {subject_values} }}
@@ -420,15 +465,8 @@ def get_subjects(
                       phebee:hasTerm ?term .
         }}
         
-        # Optional qualifiers
-        OPTIONAL {{
-            ?termlink phebee:hasQualifyingTerm ?qualifier .
-        }}
-        
-        # Optional evidence for counting
-        OPTIONAL {{
-            ?termlink phebee:hasEvidence ?evidence .
-        }}
+        # Qualifier filtering
+        {qualifier_filter}
     }}
     """
 
@@ -447,38 +485,22 @@ def get_subjects(
             "term_links": {}
         }
     
-    # Process term links from Phase 2 results (do aggregation in Python)
+    # Process term links from Phase 2 results (no qualifier processing needed)
     for binding in termlinks_result["results"]["bindings"]:
         subject_iri = binding["subjectIRI"]["value"]
         termlink_iri = binding["termlink"]["value"]
         term_iri_val = binding["term"]["value"]
-        qualifier = binding.get("qualifier", {}).get("value")
-        evidence = binding.get("evidence", {}).get("value")
         
         if subject_iri in subjects_map:
-            # Initialize term link if not exists
-            if termlink_iri not in subjects_map[subject_iri]["term_links"]:
-                subjects_map[subject_iri]["term_links"][termlink_iri] = {
-                    "term_iri": term_iri_val,
-                    "qualifiers": set(),
-                    "evidence_count": 0,
-                    "evidence_iris": set()
-                }
-            
-            # Add qualifier if present
-            if qualifier:
-                subjects_map[subject_iri]["term_links"][termlink_iri]["qualifiers"].add(qualifier)
-            
-            # Count unique evidence
-            if evidence:
-                subjects_map[subject_iri]["term_links"][termlink_iri]["evidence_iris"].add(evidence)
+            subjects_map[subject_iri]["term_links"][termlink_iri] = {
+                "term_iri": term_iri_val,
+                "qualifiers": []  # Empty list since we're not fetching qualifiers for performance
+            }
     
-    # Calculate evidence counts and collect unique terms for labels
+    # Collect unique terms for labels
     unique_terms = set()
     for subject in subjects_map.values():
-        for termlink_iri, term_link in subject["term_links"].items():
-            term_link["evidence_count"] = len(term_link["evidence_iris"])
-            del term_link["evidence_iris"]  # Remove temporary set
+        for term_link in subject["term_links"].values():
             unique_terms.add(term_link["term_iri"])
     
     # Get term labels efficiently
@@ -498,11 +520,8 @@ def get_subjects(
                 term_groups[group_key] = {
                     "term_iri": term_iri,
                     "term_label": term_labels.get(term_iri),
-                    "qualifiers": term_link["qualifiers"].copy(),
-                    "evidence_count": 0
+                    "qualifiers": term_link["qualifiers"].copy()
                 }
-            # Sum evidence counts for same term+qualifier combination
-            term_groups[group_key]["evidence_count"] += term_link["evidence_count"]
         
         # Convert to final format
         term_links = []
@@ -510,8 +529,7 @@ def get_subjects(
             term_links.append({
                 "term_iri": term_group["term_iri"],
                 "term_label": term_group["term_label"],
-                "qualifiers": sorted(list(term_group["qualifiers"])),
-                "evidence_count": term_group["evidence_count"]
+                "qualifiers": sorted(list(term_group["qualifiers"]))
             })
         
         subject["term_links"] = sorted(term_links, key=lambda x: x["term_iri"])
@@ -1885,26 +1903,7 @@ def get_subject_term_info(
     """
     qualifiers = qualifiers or []
     
-    # Build qualifier filter - optimized approach
-    def build_qualifier_filter(qualifiers):
-        if not qualifiers:
-            return "FILTER NOT EXISTS { ?link phebee:hasQualifyingTerm ?q }"
-        
-        # Build required qualifier patterns
-        required_patterns = []
-        for qualifier in qualifiers:
-            required_patterns.append(f"?link phebee:hasQualifyingTerm <{qualifier}> .")
-        
-        # Build exclusion filter for other qualifiers
-        qualifier_list = " ".join(f"<{q}>" for q in qualifiers)
-        exclusion_filter = f"""FILTER NOT EXISTS {{
-            ?link phebee:hasQualifyingTerm ?other .
-            FILTER(?other NOT IN ({qualifier_list}))
-        }}"""
-        
-        # Combine required patterns and exclusion
-        return "\n            ".join(required_patterns) + "\n            " + exclusion_filter
-    
+    # Build qualifier filter - use extracted function
     qualifier_filter = build_qualifier_filter(qualifiers)
     
     sparql_links = f"""
