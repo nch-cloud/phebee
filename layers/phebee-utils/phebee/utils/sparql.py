@@ -309,62 +309,60 @@ def get_subjects(
 
     # Phase 1: Get paginated subject IRIs with optional term filtering
     if term_iri:
-        # Optimized query when term filtering is needed
-        term_graphs = f"FROM <http://ods.nationwidechildrens.org/phebee/{term_source}~{term_source_version}>"
-        
-        # Build optimized qualifier exclusion filter
-        qualifier_filter = ""
-        if not include_qualified:
+        # Build qualifier filter based on include_qualified parameter
+        if include_qualified:
+            # Include all term links regardless of qualifiers
+            qualifier_filter = ""
+        else:
+            # Only include term links without negated, hypothetical, or family qualifiers
             qualifier_filter = """
-        # Exclude term links with negated, hypothetical, or family qualifiers
-        MINUS {
-            ?termlink phebee:hasQualifyingTerm ?excludedQualifier .
-            VALUES ?excludedQualifier {
-                <http://ods.nationwidechildrens.org/phebee/qualifier/negated>
-                <http://ods.nationwidechildrens.org/phebee/qualifier/hypothetical>
-                <http://ods.nationwidechildrens.org/phebee/qualifier/family>
-            }
-        }"""
+            FILTER NOT EXISTS {
+                ?termlink phebee:hasQualifyingTerm ?excludedQualifier .
+                VALUES ?excludedQualifier {
+                    <http://ods.nationwidechildrens.org/phebee/qualifier/negated>
+                    <http://ods.nationwidechildrens.org/phebee/qualifier/hypothetical>
+                    <http://ods.nationwidechildrens.org/phebee/qualifier/family>
+                }
+            }"""
         
+        # Optimized query with FROM clause and direct UNION patterns
         subjects_query = f"""
         PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
         PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
         PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
 
         SELECT DISTINCT ?subjectIRI ?projectSubjectIRI
-        {term_graphs}
         FROM <{project_iri}>
         FROM <http://ods.nationwidechildrens.org/phebee/subjects>
+        FROM <http://ods.nationwidechildrens.org/phebee/{term_source}~{term_source_version}>
         WHERE {{
             # Start with project constraint (most selective)
             ?projectSubjectIRI phebee:hasProject <{project_iri}> .
             ?subjectIRI phebee:hasProjectSubjectId ?projectSubjectIRI .
             {project_subject_ids_clause}
             
-            # Use EXISTS to avoid cartesian product - only check if subject has matching term links
-            FILTER EXISTS {{
-                {{
-                    # Direct subject term links
-                    ?termlink rdf:type phebee:TermLink ;
-                              phebee:sourceNode ?subjectIRI ;
-                              phebee:hasTerm ?term .
-                }}
-                UNION
-                {{
-                    # Clinical note term links
-                    ?encounter phebee:hasSubject ?subjectIRI .
-                    ?clinicalNote phebee:hasEncounter ?encounter .
-                    ?termlink rdf:type phebee:TermLink ;
-                              phebee:sourceNode ?clinicalNote ;
-                              phebee:hasTerm ?term .
-                }}
-                
-                # Term hierarchy check
-                ?term rdfs:subClassOf* <{term_iri}> .
-                
-                # Qualifier filter within EXISTS
-                {qualifier_filter}
+            # Direct UNION patterns for term links
+            {{
+                # Direct subject term links
+                ?termlink rdf:type phebee:TermLink ;
+                          phebee:sourceNode ?subjectIRI ;
+                          phebee:hasTerm ?term .
             }}
+            UNION
+            {{
+                # Clinical note term links
+                ?encounter phebee:hasSubject ?subjectIRI .
+                ?clinicalNote phebee:hasEncounter ?encounter .
+                ?termlink rdf:type phebee:TermLink ;
+                          phebee:sourceNode ?clinicalNote ;
+                          phebee:hasTerm ?term .
+            }}
+            
+            # Term hierarchy check
+            ?term rdfs:subClassOf* <{term_iri}> .
+            
+            # Qualifier filtering
+            {qualifier_filter}
             
             # Cursor-based filtering
             {cursor_clause}
@@ -428,9 +426,9 @@ def get_subjects(
         # Include all term links regardless of qualifiers
         qualifier_filter = ""
     else:
-        # Only include term links without negated, hypothetical, or family qualifiers (match Phase 1)
+        # Only include term links without negated, hypothetical, or family qualifiers
         qualifier_filter = """
-        MINUS {
+        FILTER NOT EXISTS {
             ?termlink phebee:hasQualifyingTerm ?excludedQualifier .
             VALUES ?excludedQualifier {
                 <http://ods.nationwidechildrens.org/phebee/qualifier/negated>
