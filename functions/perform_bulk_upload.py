@@ -31,6 +31,11 @@ from phebee.utils.sparql import (
 )
 from phebee.utils.aws import extract_body
 from phebee.utils.dynamodb import resolve_subjects  # <-- NEW
+from phebee.utils.iceberg import (
+    extract_evidence_records, 
+    derive_neptune_ttl_from_evidence,
+    write_evidence_to_iceberg
+)
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -38,6 +43,8 @@ logger.setLevel(logging.INFO)
 s3 = boto3.client("s3")
 
 BUCKET_NAME = os.environ["PheBeeBucketName"]
+ICEBERG_DATABASE = os.environ.get("ICEBERG_DATABASE")
+ICEBERG_EVIDENCE_TABLE = os.environ.get("ICEBERG_EVIDENCE_TABLE")
 
 PHEBEE_NS = Namespace("http://ods.nationwidechildrens.org/phebee#")
 OBO = Namespace("http://purl.obolibrary.org/obo/")
@@ -449,8 +456,41 @@ def lambda_handler(event, context):
         run_prov_graph_iri = f"{PHEBEE}/provenance/run/{run_id}"
         started_at = datetime.utcnow().isoformat(timespec="seconds") + "Z"
 
-        # Generate domain RDF and manifest of created entities
-        turtle, created, pairs_seen = generate_rdf(validated, subject_map)
+        # NEW SEQUENTIAL APPROACH:
+        # 1. Extract evidence records and write to Iceberg first
+        logger.info("Extracting evidence records for Iceberg")
+        evidence_records = extract_evidence_records(
+            entries=validated,
+            subject_map=subject_map,
+            run_id=run_id,
+            batch_id=str(batch_no)
+        )
+        
+        logger.info(f"Writing {len(evidence_records)} evidence records to Iceberg")
+        if ICEBERG_DATABASE and ICEBERG_EVIDENCE_TABLE:
+            write_evidence_to_iceberg(
+                evidence_records=evidence_records,
+                database=ICEBERG_DATABASE,
+                table=ICEBERG_EVIDENCE_TABLE
+            )
+        else:
+            logger.warning("Iceberg database/table not configured, skipping evidence write")
+        
+        # 2. Derive simplified TTL from evidence records
+        logger.info("Deriving simplified Neptune TTL from evidence records")
+        turtle, created_termlinks = derive_neptune_ttl_from_evidence(evidence_records)
+        
+        # Track pairs seen for project linking
+        pairs_seen = {(e.project_id, e.project_subject_id) for e in validated}
+        
+        # Create manifest for provenance (simplified)
+        created = {
+            "termlinks": [(tl_iri, None) for tl_iri in created_termlinks],
+            "notes": [],
+            "annotations": [],
+            "encounters": [],
+            "subjects": []
+        }
 
         # Upload compressed domain TTL
         ttl_key = f"phebee/runs/{run_id}/data/batch-{batch_no:05d}.ttl.gz"

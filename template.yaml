@@ -59,6 +59,22 @@ Parameters:
     AllowedValues: ["true", "false"]
     Description: Whether to enable scheduled ontology updates
 
+  IcebergDatabase:
+    Type: String
+    Default: "phebee"
+    Description: "Glue database name for Iceberg tables"
+  
+  IcebergEvidenceTable:
+    Type: String
+    Default: "evidence"
+    Description: "Iceberg table name for evidence storage"
+  
+  CreateEvidenceTableFlag:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: "Whether to create the Glue database and Iceberg table for evidence storage"
+
   HPOScheduleExpression:
     Type: String
     Default: "cron(0 9 * * ? *)"  # 4 AM EST = 9 UTC
@@ -80,6 +96,8 @@ Conditions:
   ShouldEnableS3Logging: !Not [!Equals [!Ref S3AccessLogBucketName, ""]]
 
   EnableScheduledOntologyUpdate: !Equals [!Ref RunOntologyUpdatesOnSchedule, "true"]
+
+  ShouldCreateEvidenceTable: !Equals [!Ref CreateEvidenceTableFlag, "true"]
 
 Resources:
   PheBeeUtilsLayer:
@@ -336,6 +354,55 @@ Resources:
               - events:PutEvents
             Resource:
               - !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/${PheBeeBus}
+
+  PheBeeIcebergPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - glue:CreateDatabase
+              - glue:GetDatabase
+              - glue:CreateTable
+              - glue:GetTable
+              - glue:UpdateTable
+              - glue:DeleteTable
+              - glue:GetPartitions
+              - athena:StartQueryExecution
+              - athena:GetQueryExecution
+              - athena:GetQueryResults
+              - athena:StopQueryExecution
+              - athena:GetWorkGroup
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:DeleteObject
+              - s3:ListBucket
+              - s3:GetBucketLocation
+            Resource:
+              - !Sub "${PheBeeBucket.Arn}/iceberg/*"
+              - !Sub "${PheBeeBucket.Arn}/athena-results/*"
+              - !GetAtt PheBeeBucket.Arn
+
+  CreateEvidenceTableRole:
+    Type: AWS::IAM::Role
+    Condition: ShouldCreateEvidenceTable
+    Properties:
+      RoleName: !Sub "${AppName}-CreateEvidenceTableRole"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - !Ref PheBeeIcebergPolicy
 
   NeptuneLoaderRole:
     Type: AWS::IAM::Role
@@ -1204,6 +1271,8 @@ Resources:
           PheBeeBucketName: !Ref PheBeeBucket
           LoaderRoleArn: !GetAtt NeptuneLoaderRole.Arn
           PheBeeDynamoTable: !Ref DynamoDBTable
+          ICEBERG_DATABASE: !If [ShouldCreateEvidenceTable, !GetAtt CreateEvidenceTableResource.Database, !Ref IcebergDatabase]
+          ICEBERG_EVIDENCE_TABLE: !If [ShouldCreateEvidenceTable, !GetAtt CreateEvidenceTableResource.Table, !Ref IcebergEvidenceTable]
       VpcConfig:
         SecurityGroupIds:
           - !Ref PheBeeLambdaSecurityGroup
@@ -1214,6 +1283,7 @@ Resources:
         - !Ref PheBeeS3ReadPolicy
         - !Ref PheBeeDynamoDBWritePolicy
         - !Ref PheBeeDynamoDBReadPolicy
+        - !Ref PheBeeIcebergPolicy
 
   FinalizeBulkUploadFunction:
     Type: AWS::Serverless::Function
@@ -1290,6 +1360,18 @@ Resources:
           PheBeeBus: !Ref PheBeeBus
       Policies:
         - !Ref PheBeePutEventsPolicy
+
+  CreateEvidenceTableFunction:
+    Type: AWS::Serverless::Function
+    Condition: ShouldCreateEvidenceTable
+    Properties:
+      FunctionName: !Sub "${AppName}-CreateEvidenceTableFunction"
+      CodeUri: functions/
+      Handler: create_evidence_table.lambda_handler
+      Runtime: python3.11
+      Timeout: 120
+      MemorySize: 256
+      Role: !GetAtt CreateEvidenceTableRole.Arn
 
   #################
   # Step Functions
@@ -1470,6 +1552,30 @@ Resources:
       BillingMode: PAY_PER_REQUEST
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: true
+
+  #################
+  # Iceberg Tables
+  #################
+
+  IcebergGlueDatabase:
+    Type: AWS::Glue::Database
+    Condition: ShouldCreateEvidenceTable
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: !Ref IcebergDatabase
+
+  CreateEvidenceTableResource:
+    Type: Custom::IcebergTable
+    Condition: ShouldCreateEvidenceTable
+    DependsOn: IcebergGlueDatabase
+    Properties:
+      ServiceToken: !GetAtt CreateEvidenceTableFunction.Arn
+      Database: !Ref IcebergDatabase
+      Table: !Ref IcebergEvidenceTable
+      S3Location: !Sub "s3://${PheBeeBucket}/iceberg/evidence/${AppName}/"
+      QueryResultsS3: !Sub "s3://${PheBeeBucket}/athena-results/${AppName}/"
+      Version: "2.0"
 
   #################
   # S3 Storage
