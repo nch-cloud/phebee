@@ -20,8 +20,8 @@ def test_bulk_import_stepfunction(physical_resources):
     # Create test data
     run_id = f"test-run-{uuid.uuid4().hex[:8]}"
     
-    # Sample JSONL data
-    test_data = [
+    # Sample JSONL data - create multiple files
+    test_data_1 = [
         {
             "project_id": "test-project",
             "project_subject_id": "subject-001",
@@ -48,18 +48,103 @@ def test_bulk_import_stepfunction(physical_resources):
         }
     ]
     
+    test_data_2 = [
+        {
+            "project_id": "test-project",
+            "project_subject_id": "subject-001",
+            "term_iri": "http://purl.obolibrary.org/obo/HP_0001627",
+            "evidence": [
+                {
+                    "type": "clinical_note",
+                    "clinical_note_id": "note-999",
+                    "encounter_id": "encounter-789",
+                    "evidence_creator_id": "nlp-system-v1",
+                    "evidence_creator_type": "automated",
+                    "evidence_creator_name": "NLP Extractor",
+                    "note_timestamp": "2024-01-16T14:20:00Z",
+                    "note_type": "discharge_summary",
+                    "span_start": 199,
+                    "span_end": 211,
+                    "contexts": {
+                        "negated": 0,
+                        "family": 0,
+                        "hypothetical": 0
+                    }
+                }
+            ]
+        },
+        {
+            "project_id": "test-project",
+            "project_subject_id": "subject-001",
+            "term_iri": "http://purl.obolibrary.org/obo/HP_0001627",
+            "evidence": [
+                {
+                    "type": "clinical_note",
+                    "clinical_note_id": "note-999",
+                    "encounter_id": "encounter-789",
+                    "evidence_creator_id": "nlp-system-v1",
+                    "evidence_creator_type": "automated",
+                    "evidence_creator_name": "NLP Extractor",
+                    "note_timestamp": "2024-01-16T14:20:00Z",
+                    "note_type": "discharge_summary",
+                    "span_start": 250,
+                    "span_end": 260,
+                    "contexts": {
+                        "negated": 0,
+                        "family": 1,
+                        "hypothetical": 0
+                    }
+                }
+            ]
+        },
+        {
+            "project_id": "test-project",
+            "project_subject_id": "subject-002",
+            "term_iri": "http://purl.obolibrary.org/obo/HP_0002664",
+            "evidence": [
+                {
+                    "type": "clinical_note",
+                    "clinical_note_id": "note-456",
+                    "encounter_id": "encounter-789",
+                    "evidence_creator_id": "nlp-system-v1",
+                    "evidence_creator_type": "automated",
+                    "evidence_creator_name": "NLP Extractor",
+                    "note_timestamp": "2024-01-16T14:20:00Z",
+                    "note_type": "discharge_summary",
+                    "span_start": 120,
+                    "span_end": 135,
+                    "contexts": {
+                        "negated": 0,
+                        "family": 0,
+                        "hypothetical": 0
+                    }
+                }
+            ]
+        }
+    ]
+    
     # Convert to JSONL format
-    jsonl_content = "\n".join(json.dumps(record) for record in test_data)
+    jsonl_content_1 = "\n".join(json.dumps(record) for record in test_data_1)
+    jsonl_content_2 = "\n".join(json.dumps(record) for record in test_data_2)
     
-    # Upload test data to S3
+    # Upload test data to S3 - multiple files
     s3_client = boto3.client('s3')
-    input_key = f"test-data/{run_id}/input.jsonl"
-    input_path = f"s3://{s3_bucket}/{input_key}"
     
+    # Upload first file
+    input_key_1 = f"test-data/{run_id}/batch1.jsonl"
     s3_client.put_object(
         Bucket=s3_bucket,
-        Key=input_key,
-        Body=jsonl_content.encode('utf-8'),
+        Key=input_key_1,
+        Body=jsonl_content_1.encode('utf-8'),
+        ContentType='application/x-ndjson'
+    )
+    
+    # Upload second file
+    input_key_2 = f"test-data/{run_id}/batch2.jsonl"
+    s3_client.put_object(
+        Bucket=s3_bucket,
+        Key=input_key_2,
+        Body=jsonl_content_2.encode('utf-8'),
         ContentType='application/x-ndjson'
     )
     
@@ -79,10 +164,8 @@ def test_bulk_import_stepfunction(physical_resources):
             stateMachineArn=state_machine_arn,
             name=execution_name,
             input=json.dumps({
-                "project_id": "test-project",
                 "run_id": run_id,
-                "s3_path": input_path,
-                "output_s3_path": f"s3://{s3_bucket}/test-output/{run_id}/"
+                "input_path": f"s3://{s3_bucket}/test-data/{run_id}/"
             })
         )
         
@@ -180,7 +263,7 @@ def test_bulk_import_validation_failure(physical_resources):
         name=execution_name,
         input=json.dumps({
             "run_id": "test-validation-failure",
-            "input_path": "s3://nonexistent-bucket/nonexistent-file.jsonl"
+            "input_path": "s3://nonexistent-bucket/nonexistent-prefix/"
         })
     )
     

@@ -1,7 +1,6 @@
 import json
 import logging
 import boto3
-from phebee.utils.aws import extract_body
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -25,19 +24,26 @@ def lambda_handler(event, context):
         
         path_parts = input_path[5:].split('/', 1)
         bucket = path_parts[0]
-        key = path_parts[1] if len(path_parts) > 1 else ''
+        prefix = path_parts[1] if len(path_parts) > 1 else ''
         
-        # Check if file exists
+        # List JSONL files in the prefix
         try:
-            s3.head_object(Bucket=bucket, Key=key)
-        except s3.exceptions.NoSuchKey:
-            raise ValueError(f"Input file not found: {input_path}")
+            response = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
+            jsonl_files = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.jsonl')]
+            
+            if not jsonl_files:
+                raise ValueError(f"No JSONL files found in: {input_path}")
+            
+            # Calculate total size
+            total_size = sum(obj['Size'] for obj in response.get('Contents', []) if obj['Key'].endswith('.jsonl'))
+            
+            logger.info(f"Validated input directory: {input_path}, found {len(jsonl_files)} JSONL files, total size: {total_size} bytes")
+            
+        except Exception as e:
+            if "NoSuchBucket" in str(e):
+                raise ValueError(f"Bucket not found: {bucket}")
+            raise ValueError(f"Error accessing input path: {input_path} - {str(e)}")
         
-        # Get file size for validation
-        response = s3.head_object(Bucket=bucket, Key=key)
-        file_size = response['ContentLength']
-        
-        logger.info(f"Validated input file: {input_path}, size: {file_size} bytes")
         
         return {
             'statusCode': 200,
@@ -45,8 +51,9 @@ def lambda_handler(event, context):
                 'run_id': run_id,
                 'input_path': input_path,
                 'bucket': bucket,
-                'key': key,
-                'file_size': file_size,
+                'prefix': prefix,
+                'jsonl_files': len(jsonl_files),
+                'total_size': total_size,
                 'validated': True
             }
         }

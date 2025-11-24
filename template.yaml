@@ -1237,6 +1237,27 @@ Resources:
           - !Ref SubnetId1
           - !Ref SubnetId2
 
+  ResolveSubjectMappingsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AppName}-ResolveSubjectMappingsFunction
+      CodeUri: functions
+      Handler: resolve_subject_mappings.lambda_handler
+      MemorySize: 512
+      Timeout: 300
+      Environment:
+        Variables:
+          DYNAMODB_TABLE_NAME: !Ref DynamoDBTable
+      Layers:
+        - !Ref PheBeeUtilsLayer
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Ref PheBeeBucket
+        - S3WritePolicy:
+            BucketName: !Ref PheBeeBucket
+        - DynamoDBCrudPolicy:
+            TableName: !Ref DynamoDBTable
+
   ValidateBulkImportFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -1413,9 +1434,11 @@ Resources:
     Type: AWS::Serverless::StateMachine
     Properties:
       Name: !Sub ${AppName}-BulkImportStateMachine
+      Role: !GetAtt BulkImportStateMachineRole.Arn
       DefinitionUri: statemachine/bulk_evidence_import.asl.json
       DefinitionSubstitutions:
         ValidateBulkImportFunction: !GetAtt ValidateBulkImportFunction.Arn
+        ResolveSubjectMappingsFunction: !GetAtt ResolveSubjectMappingsFunction.Arn
         EMRServerlessApplicationId: !Ref EMRServerlessApplication
         EMRExecutionRoleArn: !GetAtt EMRExecutionRole.Arn
         PheBeeBucketName: !Ref PheBeeBucket
@@ -1426,31 +1449,67 @@ Resources:
         CheckNeptuneBulkLoadStatusFunction: !GetAtt CheckNeptuneBulkLoadStatusFunction.Arn
         NotifyBulkImportCompleteFunction: !GetAtt NotifyBulkImportCompleteFunction.Arn
         NotifyBulkImportFailureFunction: !GetAtt NotifyBulkImportFailureFunction.Arn
+        DynamoDBTableName: !Ref DynamoDBTable
+
+  BulkImportStateMachineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AppName}-BulkImportStateMachineRole"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
       Policies:
-        - LambdaInvokePolicy:
-            FunctionName: !Ref ValidateBulkImportFunction
-        - LambdaInvokePolicy:
-            FunctionName: !Ref StartNeptuneBulkLoadFunction
-        - LambdaInvokePolicy:
-            FunctionName: !Ref CheckNeptuneBulkLoadStatusFunction
-        - LambdaInvokePolicy:
-            FunctionName: !Ref NotifyBulkImportCompleteFunction
-        - LambdaInvokePolicy:
-            FunctionName: !Ref NotifyBulkImportFailureFunction
-        - Statement:
-            - Effect: Allow
-              Action:
-                - emr-serverless:StartJobRun
-                - emr-serverless:GetJobRun
-                - emr-serverless:CancelJobRun
-              Resource: 
-                - !Sub "arn:aws:emr-serverless:${AWS::Region}:${AWS::AccountId}:/applications/${EMRServerlessApplication}"
-                - !Sub "arn:aws:emr-serverless:${AWS::Region}:${AWS::AccountId}:/applications/${EMRServerlessApplication}/jobruns/*"
-        - Statement:
-            - Effect: Allow
-              Action:
-                - iam:PassRole
-              Resource: !GetAtt EMRExecutionRole.Arn
+        - PolicyName: LambdaInvoke
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !GetAtt ValidateBulkImportFunction.Arn
+                  - !GetAtt ResolveSubjectMappingsFunction.Arn
+                  - !GetAtt StartNeptuneBulkLoadFunction.Arn
+                  - !GetAtt CheckNeptuneBulkLoadStatusFunction.Arn
+                  - !GetAtt NotifyBulkImportCompleteFunction.Arn
+                  - !GetAtt NotifyBulkImportFailureFunction.Arn
+        - PolicyName: EMRServerlessAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - emr-serverless:StartJobRun
+                  - emr-serverless:GetJobRun
+                  - emr-serverless:CancelJobRun
+                Resource: 
+                  - !Sub "arn:aws:emr-serverless:${AWS::Region}:${AWS::AccountId}:/applications/${EMRServerlessApplication}"
+                  - !Sub "arn:aws:emr-serverless:${AWS::Region}:${AWS::AccountId}:/applications/${EMRServerlessApplication}/jobruns/*"
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: !GetAtt EMRExecutionRole.Arn
+        - PolicyName: EventBridgeAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - events:PutRule
+                  - events:DeleteRule
+                  - events:DescribeRule
+                  - events:EnableRule
+                  - events:DisableRule
+                  - events:ListTargetsByRule
+                  - events:PutTargets
+                  - events:RemoveTargets
+                Resource: 
+                  - !Sub "arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/${AppName}-*"
+                  - !Sub "arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/StepFunctionsGetEventsForEMRServerlessJobRule"
 
   FinalizeBulkUploadFunction:
     Type: AWS::Serverless::Function
