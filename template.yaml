@@ -1237,42 +1237,32 @@ Resources:
           - !Ref SubnetId1
           - !Ref SubnetId2
 
-  PrepareBulkUploadFunction:
+  ValidateBulkImportFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AppName}-PrepareBulkUploadFunction
+      FunctionName: !Sub ${AppName}-ValidateBulkImportFunction
       CodeUri: functions
-      Handler: prepare_bulk_upload.lambda_handler
-      MemorySize: 512
+      Handler: validate_bulk_import.lambda_handler
+      MemorySize: 256
+      Timeout: 30
       Layers:
         - !Ref PheBeeUtilsLayer
-      Environment:
-        Variables:
-          PheBeeBucketName: !Ref PheBeeBucket
       Policies:
-        - !Ref PheBeeS3WritePolicy
-        - !Ref PheBeeDynamoDBWritePolicy
-        - !Ref PheBeeDynamoDBReadPolicy
+        - !Ref PheBeeS3ReadPolicy
 
-  PerformBulkUploadFunction:
+  StartNeptuneBulkLoadFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AppName}-PerformBulkUploadFunction
+      FunctionName: !Sub ${AppName}-StartNeptuneBulkLoadFunction
       CodeUri: functions
-      Handler: perform_bulk_upload.lambda_handler
-      MemorySize: 10240
-      Timeout: 900
+      Handler: start_neptune_bulk_load.lambda_handler
+      MemorySize: 256
+      Timeout: 60
       Layers:
         - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
-          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
-          Region: !Sub ${AWS::Region}
-          PheBeeBucketName: !Ref PheBeeBucket
-          LoaderRoleArn: !GetAtt NeptuneLoaderRole.Arn
-          PheBeeDynamoTable: !Ref DynamoDBTable
-          ICEBERG_DATABASE: !If [ShouldCreateEvidenceTable, !GetAtt CreateEvidenceTableResource.Database, !Ref IcebergDatabase]
-          ICEBERG_EVIDENCE_TABLE: !If [ShouldCreateEvidenceTable, !GetAtt CreateEvidenceTableResource.Table, !Ref IcebergEvidenceTable]
+          NEPTUNE_CLUSTER_ENDPOINT: !GetAtt PheBeeNeptuneCluster.Endpoint
       VpcConfig:
         SecurityGroupIds:
           - !Ref PheBeeLambdaSecurityGroup
@@ -1280,10 +1270,187 @@ Resources:
           - !Ref SubnetId1
           - !Ref SubnetId2
       Policies:
-        - !Ref PheBeeS3ReadPolicy
-        - !Ref PheBeeDynamoDBWritePolicy
-        - !Ref PheBeeDynamoDBReadPolicy
-        - !Ref PheBeeIcebergPolicy
+        - Statement:
+            - Effect: Allow
+              Action:
+                - sts:GetCallerIdentity
+              Resource: "*"
+
+  CheckNeptuneBulkLoadStatusFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AppName}-CheckNeptuneBulkLoadStatusFunction
+      CodeUri: functions
+      Handler: check_neptune_bulk_load_status.lambda_handler
+      MemorySize: 256
+      Timeout: 30
+      Layers:
+        - !Ref PheBeeUtilsLayer
+      Environment:
+        Variables:
+          NEPTUNE_CLUSTER_ENDPOINT: !GetAtt PheBeeNeptuneCluster.Endpoint
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+
+  NotifyBulkImportCompleteFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AppName}-NotifyBulkImportCompleteFunction
+      CodeUri: functions
+      Handler: notify_bulk_import_complete.lambda_handler
+      MemorySize: 256
+      Timeout: 30
+      Layers:
+        - !Ref PheBeeUtilsLayer
+
+  NotifyBulkImportFailureFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AppName}-NotifyBulkImportFailureFunction
+      CodeUri: functions
+      Handler: notify_bulk_import_failure.lambda_handler
+      MemorySize: 256
+      Timeout: 30
+      Layers:
+        - !Ref PheBeeUtilsLayer
+
+  # EMR Serverless Application
+  EMRServerlessApplication:
+    Type: AWS::EMRServerless::Application
+    Properties:
+      Name: !Sub ${AppName}-BulkEvidenceProcessor
+      Type: Spark
+      ReleaseLabel: emr-7.0.0      
+      AutoStartConfiguration:
+        Enabled: true
+      AutoStopConfiguration:
+        Enabled: true
+        IdleTimeoutMinutes: 15
+
+  # EMR Execution Role
+  EMRExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AppName}-EMRExecutionRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: emr-serverless.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt PheBeeBucket.Arn
+                  - !Sub "${PheBeeBucket.Arn}/*"
+        - PolicyName: CloudWatchLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: 
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/emr-serverless/*"
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/emr-containers/*"
+        - PolicyName: GlueAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - glue:GetDatabase
+                  - glue:GetTable
+                  - glue:GetPartitions
+                  - glue:CreateTable
+                  - glue:UpdateTable
+                  - glue:BatchCreatePartition
+                  - glue:BatchUpdatePartition
+                Resource: "*"
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:BatchGetItem
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                Resource: !GetAtt DynamoDBTable.Arn
+        - PolicyName: LakeFormationAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lakeformation:GetDataAccess
+                  - lakeformation:GetWorkUnits
+                  - lakeformation:StartQueryPlanning
+                  - lakeformation:GetWorkUnitResults
+                  - lakeformation:GetQueryState
+                  - lakeformation:GetQueryStatistics
+                Resource: "*"
+
+  # Step Function for Bulk Import
+  BulkImportStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: !Sub ${AppName}-BulkImportStateMachine
+      DefinitionUri: statemachine/bulk_evidence_import.asl.json
+      DefinitionSubstitutions:
+        ValidateBulkImportFunction: !GetAtt ValidateBulkImportFunction.Arn
+        EMRServerlessApplicationId: !Ref EMRServerlessApplication
+        EMRExecutionRoleArn: !GetAtt EMRExecutionRole.Arn
+        PheBeeBucketName: !Ref PheBeeBucket
+        IcebergDatabase: !Ref IcebergDatabase
+        IcebergEvidenceTable: !Ref IcebergEvidenceTable
+        NeptuneClusterEndpoint: !GetAtt PheBeeNeptuneCluster.Endpoint
+        StartNeptuneBulkLoadFunction: !GetAtt StartNeptuneBulkLoadFunction.Arn
+        CheckNeptuneBulkLoadStatusFunction: !GetAtt CheckNeptuneBulkLoadStatusFunction.Arn
+        NotifyBulkImportCompleteFunction: !GetAtt NotifyBulkImportCompleteFunction.Arn
+        NotifyBulkImportFailureFunction: !GetAtt NotifyBulkImportFailureFunction.Arn
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ValidateBulkImportFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref StartNeptuneBulkLoadFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref CheckNeptuneBulkLoadStatusFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref NotifyBulkImportCompleteFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref NotifyBulkImportFailureFunction
+        - Statement:
+            - Effect: Allow
+              Action:
+                - emr-serverless:StartJobRun
+                - emr-serverless:GetJobRun
+                - emr-serverless:CancelJobRun
+              Resource: 
+                - !Sub "arn:aws:emr-serverless:${AWS::Region}:${AWS::AccountId}:/applications/${EMRServerlessApplication}"
+                - !Sub "arn:aws:emr-serverless:${AWS::Region}:${AWS::AccountId}:/applications/${EMRServerlessApplication}/jobruns/*"
+        - Statement:
+            - Effect: Allow
+              Action:
+                - iam:PassRole
+              Resource: !GetAtt EMRExecutionRole.Arn
 
   FinalizeBulkUploadFunction:
     Type: AWS::Serverless::Function
@@ -1733,21 +1900,6 @@ Outputs:
   ResetDatabaseFunctionArn:
     Value: !Ref ResetDatabaseFunction
 
-  PrepareBulkUploadFunctionArn:
-    Value: !GetAtt PrepareBulkUploadFunction.Arn
-    Export:
-      Name: !Sub "${AppName}-PrepareBulkUploadFunctionArn"
-
-  PerformBulkUploadFunctionArn:
-    Value: !GetAtt PerformBulkUploadFunction.Arn
-    Export:
-      Name: !Sub "${AppName}-PerformBulkUploadFunctionArn"
-
-  FinalizeBulkUploadFunctionArn:
-    Value: !GetAtt FinalizeBulkUploadFunction.Arn
-    Export:
-      Name: !Sub "${AppName}-FinalizeBulkUploadFunctionArn"
-
   CheckBulkLoadStatusFunctionArn:
     Value: !GetAtt CheckBulkLoadStatusFunction.Arn
     Export:
@@ -1762,6 +1914,31 @@ Outputs:
     Value: !Ref BulkLoadMonitorSFN
     Export:
       Name: !Sub "${AppName}-BulkLoadMonitorSFNArn"
+
+  BulkImportStateMachineArn:
+    Value: !Ref BulkImportStateMachine
+    Export:
+      Name: !Sub "${AppName}-BulkImportStateMachineArn"
+
+  EMRServerlessApplicationId:
+    Value: !Ref EMRServerlessApplication
+    Export:
+      Name: !Sub "${AppName}-EMRServerlessApplicationId"
+
+  ValidateBulkImportFunctionArn:
+    Value: !GetAtt ValidateBulkImportFunction.Arn
+    Export:
+      Name: !Sub "${AppName}-ValidateBulkImportFunctionArn"
+
+  StartNeptuneBulkLoadFunctionArn:
+    Value: !GetAtt StartNeptuneBulkLoadFunction.Arn
+    Export:
+      Name: !Sub "${AppName}-StartNeptuneBulkLoadFunctionArn"
+
+  CheckNeptuneBulkLoadStatusFunctionArn:
+    Value: !GetAtt CheckNeptuneBulkLoadStatusFunction.Arn
+    Export:
+      Name: !Sub "${AppName}-CheckNeptuneBulkLoadStatusFunctionArn"
 
   GetLoadStatusFunctionArn:
     Value: !GetAtt GetLoadStatusFunction.Arn
