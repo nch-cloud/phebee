@@ -1284,6 +1284,9 @@ Resources:
       Environment:
         Variables:
           NEPTUNE_CLUSTER_ENDPOINT: !GetAtt PheBeeNeptuneCluster.Endpoint
+          NeptuneEndpoint: !Sub "https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}"
+          Region: !Ref AWS::Region
+          NEPTUNE_LOAD_ROLE_ARN: !Sub "arn:aws:iam::${AWS::AccountId}:role/phebee-neptune-loader-role-${AppName}"
       VpcConfig:
         SecurityGroupIds:
           - !Ref PheBeeLambdaSecurityGroup
@@ -1291,11 +1294,8 @@ Resources:
           - !Ref SubnetId1
           - !Ref SubnetId2
       Policies:
-        - Statement:
-            - Effect: Allow
-              Action:
-                - sts:GetCallerIdentity
-              Resource: "*"
+        - !Ref PheBeeNeptuneLoadPolicy
+        - !Ref PheBeeS3ReadPolicy
 
   CheckNeptuneBulkLoadStatusFunction:
     Type: AWS::Serverless::Function
@@ -1310,12 +1310,57 @@ Resources:
       Environment:
         Variables:
           NEPTUNE_CLUSTER_ENDPOINT: !GetAtt PheBeeNeptuneCluster.Endpoint
+          NeptuneEndpoint: !Sub "https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}"
+          Region: !Ref AWS::Region
       VpcConfig:
         SecurityGroupIds:
           - !Ref PheBeeLambdaSecurityGroup
         SubnetIds:
           - !Ref SubnetId1
           - !Ref SubnetId2
+      Policies:
+        - !Ref PheBeeNeptuneLoadPolicy
+
+  GenerateTTLFromIcebergFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AppName}-GenerateTTLFromIcebergFunction
+      CodeUri: functions
+      Handler: generate_ttl_from_iceberg.lambda_handler
+      MemorySize: 512
+      Timeout: 900
+      Layers:
+        - !Ref PheBeeUtilsLayer
+      Policies:
+        - !Ref PheBeeS3ReadPolicy
+        - !Ref PheBeeS3WritePolicy
+        - Statement:
+            - Effect: Allow
+              Action:
+                - athena:StartQueryExecution
+                - athena:GetQueryExecution
+                - athena:GetQueryResults
+                - athena:StopQueryExecution
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - glue:GetTable
+                - glue:GetDatabase
+                - glue:GetPartitions
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - s3:GetBucketLocation
+                - s3:GetObject
+                - s3:ListBucket
+                - s3:ListBucketMultipartUploads
+                - s3:ListMultipartUploadParts
+                - s3:AbortMultipartUpload
+                - s3:PutObject
+                - s3:DeleteObject
+              Resource: 
+                - !Sub "arn:aws:s3:::${PheBeeBucket}/*"
+                - !Sub "arn:aws:s3:::${PheBeeBucket}"
 
   NotifyBulkImportCompleteFunction:
     Type: AWS::Serverless::Function
@@ -1447,6 +1492,7 @@ Resources:
         NeptuneClusterEndpoint: !GetAtt PheBeeNeptuneCluster.Endpoint
         StartNeptuneBulkLoadFunction: !GetAtt StartNeptuneBulkLoadFunction.Arn
         CheckNeptuneBulkLoadStatusFunction: !GetAtt CheckNeptuneBulkLoadStatusFunction.Arn
+        GenerateTTLFromIcebergFunction: !GetAtt GenerateTTLFromIcebergFunction.Arn
         NotifyBulkImportCompleteFunction: !GetAtt NotifyBulkImportCompleteFunction.Arn
         NotifyBulkImportFailureFunction: !GetAtt NotifyBulkImportFailureFunction.Arn
         DynamoDBTableName: !Ref DynamoDBTable
@@ -1475,6 +1521,7 @@ Resources:
                   - !GetAtt ResolveSubjectMappingsFunction.Arn
                   - !GetAtt StartNeptuneBulkLoadFunction.Arn
                   - !GetAtt CheckNeptuneBulkLoadStatusFunction.Arn
+                  - !GetAtt GenerateTTLFromIcebergFunction.Arn
                   - !GetAtt NotifyBulkImportCompleteFunction.Arn
                   - !GetAtt NotifyBulkImportFailureFunction.Arn
         - PolicyName: EMRServerlessAccess

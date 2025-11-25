@@ -1,13 +1,12 @@
 import json
 import logging
-import os
-import requests
+from phebee.utils.neptune import get_load_status
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 def lambda_handler(event, context):
-    """Check Neptune bulk load status"""
+    """Check Neptune bulk load status using existing Neptune utilities"""
     logger.info(event)
     
     try:
@@ -16,30 +15,12 @@ def lambda_handler(event, context):
         if not load_id:
             raise ValueError("load_id is required")
         
-        # Get Neptune cluster endpoint from environment
-        neptune_cluster = os.environ.get('NEPTUNE_CLUSTER_ENDPOINT')
-        if not neptune_cluster:
-            raise ValueError("NEPTUNE_CLUSTER_ENDPOINT environment variable not set")
-        
-        # Neptune bulk load status API endpoint
-        neptune_endpoint = f"https://{neptune_cluster}:8182"
-        status_url = f"{neptune_endpoint}/loader/{load_id}"
-        
-        # Check load status
         logger.info(f"Checking Neptune bulk load status for ID: {load_id}")
         
-        response = requests.get(
-            status_url,
-            headers={'Content-Type': 'application/json'},
-            timeout=30
-        )
+        # Use existing Neptune utility to get load status
+        status_result = get_load_status(load_id)
         
-        if response.status_code != 200:
-            raise Exception(f"Failed to check load status: {response.status_code} - {response.text}")
-        
-        status_result = response.json()
         payload = status_result.get('payload', {})
-        
         overall_status = payload.get('overallStatus', {})
         status = overall_status.get('status', 'UNKNOWN')
         

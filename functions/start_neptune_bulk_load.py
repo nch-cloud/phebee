@@ -1,60 +1,56 @@
 import json
 import logging
-import boto3
-import requests
-from urllib.parse import quote
+import os
+from phebee.utils.neptune import start_load
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 def lambda_handler(event, context):
-    """Start Neptune bulk load operation"""
+    """Start Neptune bulk load operation using existing Neptune utilities"""
     logger.info(event)
     
     try:
         run_id = event.get('run_id')
-        emr_job_id = event.get('ttl_files')  # This is actually the EMR job ID
-        neptune_cluster = event.get('neptune_cluster')
+        ttl_files = event.get('ttl_files', [])
         
-        if not all([run_id, neptune_cluster]):
-            raise ValueError("run_id and neptune_cluster are required")
+        if not run_id:
+            raise ValueError("run_id is required")
         
-        # Construct TTL file path based on run_id
-        bucket_name = boto3.Session().region_name  # Get from environment or config
-        ttl_source = f"s3://{bucket_name}/phebee/runs/{run_id}/neptune/"
+        if not ttl_files:
+            raise ValueError("ttl_files list is required")
         
-        # Neptune bulk load API endpoint
-        neptune_endpoint = f"https://{neptune_cluster}:8182"
-        load_url = f"{neptune_endpoint}/loader"
+        # Extract the S3 prefix from the first TTL file path
+        # Convert s3://bucket/path/file.ttl to s3://bucket/path/
+        first_file = ttl_files[0] if isinstance(ttl_files, list) else ttl_files
+        if first_file.endswith('.ttl'):
+            # Remove the filename to get the directory prefix
+            ttl_source = '/'.join(first_file.split('/')[:-1]) + '/'
+        else:
+            ttl_source = first_file
         
-        # Prepare bulk load request
-        load_request = {
-            "source": ttl_source,
+        # Get environment variables (set by CloudFormation)
+        region = os.environ.get('AWS_REGION')
+        
+        # Prepare bulk load parameters for Neptune utilities
+        load_params = {
+            "source": ttl_source,  # S3 prefix that contains TTL files
             "format": "turtle",
-            "iamRoleArn": f"arn:aws:iam::{boto3.client('sts').get_caller_identity()['Account']}:role/NeptuneLoadFromS3Role",
-            "region": boto3.Session().region_name,
+            "iamRoleArn": os.environ.get('NEPTUNE_LOAD_ROLE_ARN', ''),
+            "region": region,
             "failOnError": "FALSE",
             "parallelism": "MEDIUM",
             "updateSingleCardinalityProperties": "FALSE",
             "queueRequest": "TRUE"
         }
         
-        # Start bulk load
-        logger.info(f"Starting Neptune bulk load from {ttl_source}")
+        logger.info(f"Starting Neptune bulk load for run {run_id}")
+        logger.info(f"TTL source prefix: {ttl_source}")
         
-        response = requests.post(
-            load_url,
-            json=load_request,
-            headers={'Content-Type': 'application/json'},
-            timeout=30
-        )
+        # Use existing Neptune utility to start load
+        load_result = start_load(load_params)
         
-        if response.status_code != 200:
-            raise Exception(f"Neptune bulk load failed: {response.status_code} - {response.text}")
-        
-        load_result = response.json()
         load_id = load_result['payload']['loadId']
-        
         logger.info(f"Started Neptune bulk load with ID: {load_id}")
         
         return {

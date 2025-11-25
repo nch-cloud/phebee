@@ -451,28 +451,13 @@ def main():
                    .mode("append") \
                    .save(f"glue_catalog.{args.iceberg_database}.{args.iceberg_table}")
         
-        # Generate TTL data for Neptune (collect small sample for TTL generation)
-        logger.info("Generating TTL data for Neptune")
-        sample_records = flattened_df.limit(1000).collect()  # Limit for TTL generation
-        ttl_content = generate_simplified_ttl_from_rows(sample_records, subject_mapping)
-        
-        # Write TTL to S3
-        ttl_key = f"phebee/runs/{args.run_id}/neptune/data.ttl"
-        s3.put_object(
-            Bucket=args.output_bucket,
-            Key=ttl_key,
-            Body=ttl_content.encode('utf-8'),
-            ContentType='text/turtle'
-        )
-        
         logger.info(f"Successfully processed {evidence_count} evidence records")
-        logger.info(f"TTL data written to s3://{args.output_bucket}/{ttl_key}")
+        logger.info(f"Data written to Iceberg table: {args.iceberg_database}.{args.iceberg_table}")
         
         # Output results for Step Function
         result = {
             'run_id': args.run_id,
             'evidence_count': evidence_count,
-            'ttl_file': f"s3://{args.output_bucket}/{ttl_key}",
             'iceberg_table': f"{args.iceberg_database}.{args.iceberg_table}"
         }
         

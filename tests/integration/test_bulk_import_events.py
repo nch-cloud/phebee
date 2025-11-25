@@ -5,7 +5,6 @@ import pytest
 import boto3
 import time
 from phebee.utils.aws import get_client
-from test_bulk_upload import bulk_upload_run
 
 
 def invoke_lambda(name, payload):
@@ -17,6 +16,57 @@ def invoke_lambda(name, payload):
         InvocationType="RequestResponse",
     )
     return json.loads(response["Payload"].read().decode("utf-8"))
+
+
+def create_test_data():
+    """Create test data for bulk import"""
+    return [
+        {
+            "project_id": "test-project",
+            "project_subject_id": f"subject-{uuid.uuid4().hex[:8]}",
+            "term_iri": "http://purl.obolibrary.org/obo/HP_0001627",
+            "evidence": [
+                {
+                    "type": "clinical_note",
+                    "clinical_note_id": f"note-{uuid.uuid4().hex[:8]}",
+                    "encounter_id": f"encounter-{uuid.uuid4().hex[:8]}",
+                    "evidence_creator_id": "nlp-system-v1",
+                    "evidence_creator_type": "automated",
+                    "evidence_creator_name": "NLP Extractor",
+                    "note_timestamp": "2024-01-15T10:30:00Z",
+                    "note_type": "progress_note",
+                    "span_start": 45,
+                    "span_end": 58,
+                    "contexts": {
+                        "negated": 0,
+                        "family": 0,
+                        "hypothetical": 0
+                    }
+                }
+            ]
+        }
+    ]
+
+
+def bulk_upload_run(test_data, physical_resources):
+    """Simple bulk upload function for testing events"""
+    run_id = f"test-run-{uuid.uuid4().hex[:8]}"
+    
+    # Upload test data to S3
+    s3_bucket = physical_resources.get("PheBeeBucket")
+    s3_client = boto3.client('s3')
+    
+    jsonl_content = "\n".join(json.dumps(record) for record in test_data)
+    input_key = f"test-data/{run_id}/input.jsonl"
+    
+    s3_client.put_object(
+        Bucket=s3_bucket,
+        Key=input_key,
+        Body=jsonl_content.encode('utf-8'),
+        Content_Type='application/x-ndjson'
+    )
+    
+    return run_id, f"domain-{run_id}", f"prov-{run_id}"
 
 
 @pytest.mark.integration
@@ -67,16 +117,11 @@ def test_bulk_import_success_event(physical_resources, test_project_id):
     )
     
     try:
-        # Simple test payload
-        test_payload = [{
-            "project_id": test_project_id,
-            "project_subject_id": f"subj-{uuid.uuid4()}",
-            "term_iri": "http://purl.obolibrary.org/obo/HP_0001249",
-            "evidence_code": "IEA"
-        }]
+        # Create test data
+        test_data = create_test_data()
         
         # Run bulk upload (this will trigger the Step Function)
-        run_id, domain_load_id, prov_load_id = bulk_upload_run([test_payload], physical_resources)
+        run_id, domain_load_id, prov_load_id = bulk_upload_run(test_data, physical_resources)
         
         # Wait for Step Function to complete and fire event
         time.sleep(75)

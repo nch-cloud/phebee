@@ -72,6 +72,27 @@
         }
       },
       "ResultPath": "$.emr_result",
+      "Next": "GenerateTTLFromIceberg",
+      "Catch": [{
+        "ErrorEquals": ["States.ALL"],
+        "Next": "NotifyFailure",
+        "ResultPath": "$.error"
+      }]
+    },
+    
+    "GenerateTTLFromIceberg": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${GenerateTTLFromIcebergFunction}",
+        "Payload": {
+          "run_id.$": "$.run_id",
+          "database": "${IcebergDatabase}",
+          "table": "${IcebergEvidenceTable}",
+          "bucket": "${PheBeeBucketName}"
+        }
+      },
+      "ResultPath": "$.ttl_result",
       "Next": "StartNeptuneBulkLoad",
       "Catch": [{
         "ErrorEquals": ["States.ALL"],
@@ -87,17 +108,26 @@
         "FunctionName": "${StartNeptuneBulkLoadFunction}",
         "Payload": {
           "run_id.$": "$.run_id",
-          "ttl_files.$": "$.emr_result.JobRun.JobRunId",
-          "neptune_cluster": "${NeptuneClusterEndpoint}"
+          "ttl_files.$": "States.Array($.ttl_result.Payload.body.ttl_prefix)"
         }
       },
       "ResultPath": "$.bulk_load",
-      "Next": "MonitorNeptuneBulkLoad",
+      "Next": "CheckBulkLoadSuccess",
       "Catch": [{
         "ErrorEquals": ["States.ALL"],
         "Next": "NotifyFailure",
         "ResultPath": "$.error"
       }]
+    },
+    
+    "CheckBulkLoadSuccess": {
+      "Type": "Choice",
+      "Choices": [{
+        "Variable": "$.bulk_load.Payload.statusCode",
+        "NumericEquals": 200,
+        "Next": "MonitorNeptuneBulkLoad"
+      }],
+      "Default": "NotifyFailure"
     },
     
     "MonitorNeptuneBulkLoad": {
@@ -106,7 +136,7 @@
       "Parameters": {
         "FunctionName": "${CheckNeptuneBulkLoadStatusFunction}",
         "Payload": {
-          "load_id.$": "$.bulk_load.Payload.load_id"
+          "load_id.$": "$.bulk_load.Payload.body.load_id"
         }
       },
       "ResultPath": "$.load_status",
@@ -121,11 +151,11 @@
     "IsBulkLoadComplete": {
       "Type": "Choice",
       "Choices": [{
-        "Variable": "$.load_status.Payload.status",
+        "Variable": "$.load_status.Payload.body.status",
         "StringEquals": "LOAD_COMPLETED",
         "Next": "NotifySuccess"
       }, {
-        "Variable": "$.load_status.Payload.status",
+        "Variable": "$.load_status.Payload.body.status",
         "StringEquals": "LOAD_FAILED", 
         "Next": "NotifyFailure"
       }],
@@ -146,8 +176,8 @@
         "Payload": {
           "run_id.$": "$.run_id",
           "status": "SUCCESS",
-          "emr_job_id.$": "$.emr_result.JobRun.JobRunId",
-          "load_id.$": "$.bulk_load.Payload.load_id"
+          "emr_job_id.$": "$.emr_result.JobRunId",
+          "load_id.$": "$.bulk_load.Payload.body.load_id"
         }
       },
       "End": true
@@ -164,7 +194,13 @@
           "error.$": "$.error"
         }
       },
-      "End": true
+      "Next": "FailExecution"
+    },
+    
+    "FailExecution": {
+      "Type": "Fail",
+      "Cause": "Bulk import failed",
+      "Error": "BulkImportError"
     }
   }
 }
