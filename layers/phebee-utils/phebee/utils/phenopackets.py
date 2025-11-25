@@ -40,7 +40,7 @@ def subjects_to_phenopackets(subject_data: list[dict], project_iri: str, hpo_ver
                     ev["date"] = evidence["created"]
                 if "creator" in evidence:
                     ev["reference"] = {
-                        "id": evidence.get("creator", {}).get("creator_iri"),
+                        "id": evidence.get("creator", {}).get("creator_id") or evidence.get("creator", {}).get("name"),
                         "label": evidence.get("creator", {}).get("title") or evidence.get("creator", {}).get("type")
                     }
                 if ev:

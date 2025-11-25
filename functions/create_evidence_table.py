@@ -73,8 +73,8 @@ def create_table(database: str, table: str, s3_location: str, query_results_s3: 
             creator_name: string
         >,
         text_annotation struct<
-            start_pos: int,
-            end_pos: int,
+            span_start: int,
+            span_end: int,
             text_span: string,
             confidence_score: double
         >,

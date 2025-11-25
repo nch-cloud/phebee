@@ -10,6 +10,8 @@ import uuid
 
 from phebee.utils.aws import parse_s3_path, get_client
 from phebee.utils.dynamodb import get_current_term_source_version
+from phebee.utils.iceberg import get_evidence_for_phenopackets
+from phebee.utils.sparql import get_subject
 
 logger = Logger()
 tracer = Tracer()
@@ -23,7 +25,11 @@ def lambda_handler(event, context):
 
     logger.info("Event: ", event)
 
-    # Handle S3 input files
+    # Check if this is a subject-based export (new Iceberg approach)
+    if "subject_ids" in event:
+        return handle_subject_based_export(event, context)
+
+    # Handle S3 input files (legacy approach)
     if "s3_path" in event:
 
         bucket, key = parse_s3_path(event["s3_path"])
@@ -83,6 +89,95 @@ def lambda_handler(event, context):
         "headers": {
             "Content-Type": "application/json"
         }
+    }
+
+
+def handle_subject_based_export(event, context):
+    """
+    Handle phenopacket export for specific subjects using Iceberg evidence data.
+    
+    Expected event format:
+    {
+        "subject_ids": ["subject-uuid-1", "subject-uuid-2"],
+        "encounter_id": "optional-encounter-filter",
+        "note_id": "optional-note-filter", 
+        "output_s3_path": "optional-s3-path",
+        "extended": false
+    }
+    """
+    subject_ids = event.get("subject_ids", [])
+    encounter_id = event.get("encounter_id")
+    note_id = event.get("note_id")
+    extended = event.get("extended", False)
+    
+    if not subject_ids:
+        return {
+            "statusCode": 400,
+            "body": json.dumps({"error": "subject_ids is required"}),
+            "headers": {"Content-Type": "application/json"}
+        }
+    
+    # Generate output path if not provided
+    if "output_s3_path" in event:
+        output_s3_path = event["output_s3_path"]
+    else:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        unique_id = str(uuid.uuid4())[:8]
+        filename = f"export_{timestamp}_{unique_id}"
+        bucket = os.environ["PheBeeBucketName"]
+        output_s3_path = f"s3://{bucket}/export_phenopacket/{filename}.zip"
+    
+    # Get term source versions
+    hpo_version = get_current_term_source_version("hpo")
+    mondo_version = get_current_term_source_version("mondo")
+    
+    phenopacket_list = []
+    
+    for subject_id in subject_ids:
+        try:
+            # Get evidence data from Iceberg
+            evidence_data = get_evidence_for_phenopackets(
+                subject_id=subject_id,
+                encounter_id=encounter_id,
+                note_id=note_id
+            )
+            
+            if not evidence_data:
+                logger.warning(f"No evidence data found for subject {subject_id}")
+                continue
+            
+            # Convert to phenopacket
+            phenopacket = convert_to_phenopacket(
+                evidence_data, 
+                hpo_version=hpo_version, 
+                mondo_version=mondo_version,
+                extended=extended
+            )
+            phenopacket_list.append(phenopacket)
+            
+        except Exception as e:
+            logger.error(f"Error processing subject {subject_id}: {e}")
+            continue
+    
+    if not phenopacket_list:
+        return {
+            "statusCode": 404,
+            "body": json.dumps({"error": "No phenopackets could be generated"}),
+            "headers": {"Content-Type": "application/json"}
+        }
+    
+    # Write phenopackets to S3
+    s3_path = write_phenopackets(phenopacket_list, output_s3_path)
+    
+    return {
+        "statusCode": 200,
+        "body": json.dumps({
+            "n_packets": len(phenopacket_list),
+            "s3_path": s3_path,
+            "subjects_processed": len(phenopacket_list),
+            "subjects_requested": len(subject_ids)
+        }),
+        "headers": {"Content-Type": "application/json"}
     }
 
 def convert_to_phenopacket(

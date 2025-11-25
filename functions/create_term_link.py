@@ -12,29 +12,31 @@ def lambda_handler(event, context):
         logger.info(event)
         body = extract_body(event)
 
-        source_node_iri = body.get("source_node_iri")
+        subject_id = body.get("subject_id")
         term_iri = body.get("term_iri")
-        creator_iri = body.get("creator_iri")
-        evidence_iris = body.get("evidence_iris")
+        creator_id = body.get("creator_id")
         qualifiers = body.get("qualifiers", [])  # Add support for qualifiers
 
-        if not source_node_iri or not term_iri or not creator_iri or "evidence_iris" not in body:
+        if not subject_id or not term_iri or not creator_id:
             return {
                 "statusCode": 400,
                 "body": json.dumps({
-                    "message": "Missing required field(s): source_node_iri, term_iri, creator_iri, and evidence_iris are all required."
+                    "message": "Missing required field(s): subject_id, term_iri, and creator_id are all required."
                 })
             }
 
-        logger.info("Creating link from source %s to term: %s", source_node_iri, term_iri)
+        logger.info("Creating link from subject %s to term: %s", subject_id, term_iri)
         if qualifiers:
             logger.info("With qualifiers: %s", qualifiers)
+
+        # Convert subject_id to source_node_iri for SPARQL function
+        source_node_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"
+        creator_iri = f"http://ods.nationwidechildrens.org/phebee/creators/{creator_id}"
 
         result = create_term_link(
             source_node_iri=source_node_iri,
             term_iri=term_iri,
             creator_iri=creator_iri,
-            evidence_iris=evidence_iris,
             qualifiers=qualifiers  # Pass qualifiers to the function
         )
         

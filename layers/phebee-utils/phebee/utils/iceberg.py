@@ -18,7 +18,7 @@ OBO = Namespace("http://purl.obolibrary.org/obo/")
 def generate_evidence_id(
     subject_id: str,
     term_iri: str,
-    creator_id: str,
+    creator_name: str,
     clinical_note_id: str = None,
     span_start: int = None,
     span_end: int = None,
@@ -28,7 +28,7 @@ def generate_evidence_id(
     content_parts = [
         subject_id,
         term_iri,
-        creator_id,
+        creator_name,
         clinical_note_id or "",
         str(span_start) if span_start is not None else "",
         str(span_end) if span_end is not None else "",
@@ -78,7 +78,7 @@ def extract_evidence_records(
             evidence_id = generate_evidence_id(
                 subject_id=subject_id,
                 term_iri=entry.term_iri,
-                creator_id=evidence.evidence_creator_id,
+                creator_name=evidence.evidence_creator_name,
                 clinical_note_id=evidence.clinical_note_id if evidence.type == "clinical_note" else None,
                 span_start=evidence.span_start,
                 span_end=evidence.span_end,
@@ -102,7 +102,7 @@ def extract_evidence_records(
                 "batch_id": batch_id,
                 "evidence_type": f"{evidence.evidence_creator_type}_clinical_note" if evidence.type == "clinical_note" else "manual_annotation",
                 "assertion_type": f"{evidence.evidence_creator_type}_assertion",
-                "created_timestamp": datetime.utcnow().isoformat(),
+                "created_timestamp": datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'),
                 "created_date": datetime.utcnow().date().isoformat(),
                 "source_level": source_level,
                 "subject_id": subject_id,
@@ -117,10 +117,8 @@ def extract_evidence_records(
                     "author_specialty": evidence.author_specialty
                 } if evidence.type == "clinical_note" else None,
                 "creator": {
-                    "creator_id": evidence.evidence_creator_id,
-                    "creator_type": evidence.evidence_creator_type,
-                    "creator_name": evidence.evidence_creator_name,
-                    "creator_version": evidence.evidence_creator_version
+                    "name": evidence.evidence_creator_name,
+                    "type": evidence.evidence_creator_type
                 },
                 "text_annotation": {
                     "span_start": evidence.span_start,
@@ -252,3 +250,596 @@ def write_evidence_to_iceberg(
     
     # TODO: Implement actual Iceberg write using Athena INSERT/MERGE
     # This is a placeholder for the initial implementation
+
+
+def query_iceberg_evidence(query: str) -> List[Dict[str, Any]]:
+    """
+    Execute a query against the Iceberg evidence table using Athena.
+    
+    Args:
+        query: SQL query to execute
+        
+    Returns:
+        List of result rows as dictionaries
+    """
+    import boto3
+    import time
+    
+    athena_client = boto3.client('athena')
+    
+    try:
+        # Start query execution
+        response = athena_client.start_query_execution(
+            QueryString=query,
+            QueryExecutionContext={'Database': 'phebee'},
+            ResultConfiguration={'OutputLocation': 's3://phebee-dev-phebeebucket-kuv51zfr1tpp/athena-results/'},
+            WorkGroup='primary'
+        )
+        
+        query_execution_id = response['QueryExecutionId']
+        
+        # Wait for query completion
+        while True:
+            result = athena_client.get_query_execution(QueryExecutionId=query_execution_id)
+            status = result['QueryExecution']['Status']['State']
+            
+            if status == 'SUCCEEDED':
+                break
+            elif status in ['FAILED', 'CANCELLED']:
+                error_msg = result['QueryExecution']['Status'].get('StateChangeReason', 'Unknown error')
+                raise Exception(f"Athena query failed: {error_msg}")
+            
+            time.sleep(2)
+        
+        # Get query results
+        results = athena_client.get_query_results(QueryExecutionId=query_execution_id)
+        
+        # Parse results into list of dictionaries
+        columns = [col['Name'] for col in results['ResultSet']['ResultSetMetadata']['ColumnInfo']]
+        rows = []
+        
+        for row in results['ResultSet']['Rows'][1:]:  # Skip header row
+            row_data = {}
+            for i, col in enumerate(columns):
+                value = row['Data'][i].get('VarCharValue', '')
+                row_data[col] = value
+            rows.append(row_data)
+        
+        return rows
+        
+    except Exception as e:
+        logger.error(f"Error querying Iceberg evidence table: {e}")
+        raise
+
+
+def get_evidence_for_phenopackets(
+    subject_id: str,
+    encounter_id: str | None = None,
+    note_id: str | None = None
+) -> List[Dict[str, Any]]:
+    """
+    Get evidence data from Iceberg formatted for phenopacket export.
+    
+    Args:
+        subject_id: The subject UUID
+        encounter_id: Optional encounter filter
+        note_id: Optional clinical note filter
+        
+    Returns:
+        List of evidence records formatted for phenopacket conversion
+    """
+    # Build filter conditions
+    filters = [f"subject_id = '{subject_id}'"]
+    
+    if encounter_id:
+        filters.append(f"encounter_id = '{encounter_id}'")
+    if note_id:
+        filters.append(f"clinical_note_id = '{note_id}'")
+    
+    where_clause = " AND ".join(filters)
+    
+    # Query for evidence with all needed phenopacket fields
+    query = f"""
+    SELECT 
+        subject_id,
+        term_iri,
+        evidence_type,
+        assertion_type,
+        created_timestamp,
+        creator.name as creator,
+        qualifiers,
+        note_context.note_type as source,
+        text_annotation.start_pos as span_start,
+        text_annotation.end_pos as span_end
+    FROM phebee.evidence
+    WHERE {where_clause}
+    ORDER BY term_iri, created_timestamp
+    """
+    
+    try:
+        results = query_iceberg_evidence(query)
+        
+        # Convert to phenopacket format
+        phenopacket_data = []
+        
+        for row in results:
+            # Parse qualifiers to determine if excluded
+            excluded = False
+            try:
+                import json
+                qualifiers_list = json.loads(row.get('qualifiers', '[]')) if row.get('qualifiers') else []
+                # Check for negated qualifier
+                for q in qualifiers_list:
+                    if q.get('qualifier_type') == 'negated' and q.get('qualifier_value') == '1':
+                        excluded = True
+                        break
+            except:
+                pass
+            
+            # Format for phenopacket conversion
+            record = {
+                "projectSubjectId": f"phebee:subject#{row['subject_id']}",
+                "term": row['term_iri'],
+                "termLabel": None,  # TODO: Add term label lookup
+                "excluded": "true" if excluded else "false",
+                "evidence_type": row.get('evidence_type'),
+                "assertion_method": row.get('assertion_type'),
+                "created": row.get('created_timestamp'),
+                "creator": row.get('creator'),
+                "source": row.get('source')
+            }
+            
+            phenopacket_data.append(record)
+        
+        return phenopacket_data
+        
+    except Exception as e:
+        logger.error(f"Error getting evidence for phenopackets: {e}")
+        return []
+
+
+def create_evidence_record(
+    subject_id: str,
+    term_iri: str,
+    creator_id: str,
+    creator_name: str = None,
+    creator_type: str = "human",
+    evidence_type: str = "manual_annotation",
+    run_id: str = None,
+    batch_id: str = None,
+    encounter_id: str = None,
+    clinical_note_id: str = None,
+    span_start: int = None,
+    span_end: int = None,
+    qualifiers: List[str] = None,
+    metadata: Dict[str, Any] = None,
+    note_timestamp: str = None,
+    provider_type: str = None,
+    author_specialty: str = None,
+    note_type: str = None
+) -> str:
+    """
+    Create a single evidence record in Iceberg.
+    
+    Returns:
+        str: The generated evidence_id
+    """
+    import uuid
+    import json
+    from datetime import datetime
+    
+    # Generate evidence ID
+    evidence_id = generate_evidence_id(
+        subject_id=subject_id,
+        term_iri=term_iri,
+        creator_name=creator_id,  # Use creator_id for uniqueness
+        clinical_note_id=clinical_note_id,
+        span_start=span_start,
+        span_end=span_end,
+        qualifiers=qualifiers or []
+    )
+    
+    # Generate termlink ID (simplified version)
+    termlink_content = f"{subject_id}|{term_iri}|{'|'.join(sorted(qualifiers or []))}"
+    termlink_id = hashlib.sha256(termlink_content.encode()).hexdigest()[:16]
+    
+    # Set assertion type and source level
+    assertion_type = "manual_assertion"
+    source_level = "clinical_note" if clinical_note_id else "subject"
+    
+    # Build evidence record
+    record = {
+        "evidence_id": evidence_id,
+        "run_id": run_id or f"manual-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}",
+        "batch_id": batch_id,
+        "evidence_type": evidence_type,
+        "assertion_type": "manual_assertion",
+        "created_timestamp": datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'),
+        "created_date": datetime.utcnow().date().isoformat(),
+        "source_level": "clinical_note" if clinical_note_id else "subject",
+        "subject_id": subject_id,
+        "encounter_id": encounter_id,
+        "clinical_note_id": clinical_note_id,
+        "termlink_id": termlink_id,
+        "term_iri": term_iri,
+        "note_context": {
+            "note_timestamp": note_timestamp,
+            "note_type": note_type,
+            "provider_type": provider_type,
+            "author_specialty": author_specialty
+        } if any([note_timestamp, note_type, provider_type, author_specialty]) else None,
+        "creator": {
+            "creator_id": creator_id,
+            "creator_name": creator_name or creator_id,  # Default name to ID if not provided
+            "creator_type": creator_type
+        },
+        "text_annotation": {
+            "span_start": span_start,
+            "span_end": span_end
+        } if span_start is not None or span_end is not None else None,
+        "qualifiers": [
+            {"qualifier_type": q, "qualifier_value": "1"} for q in (qualifiers or [])
+        ] if qualifiers else None,
+        "metadata": metadata or {}
+    }
+    
+    # Insert into Iceberg table using Athena
+    # Build structured values for complex types
+    note_context_value = "NULL"
+    if record.get('note_context'):
+        nc = record['note_context']
+        timestamp_part = f"TIMESTAMP '{nc['note_date']}'" if nc.get('note_date') else 'NULL'
+        note_context_value = f"ROW('{nc.get('note_id', '')}', '{nc.get('note_type', '')}', {timestamp_part}, '{nc.get('encounter_id', '')}')"
+    
+    creator_value = f"ROW('{record['creator']['creator_id']}', '{record['creator']['creator_type']}', '{record['creator'].get('creator_name', '')}')"
+    
+    text_annotation_value = "NULL"
+    if record.get('text_annotation'):
+        ta = record['text_annotation']
+        text_annotation_value = f"ROW({ta.get('span_start', 'NULL')}, {ta.get('span_end', 'NULL')}, '{ta.get('text_span', '')}', {ta.get('confidence_score', 'NULL')})"
+    
+    qualifiers_value = "NULL"
+    if record.get('qualifiers'):
+        qual_rows = [f"ROW('{q['qualifier_type']}', '{q['qualifier_value']}')" for q in record['qualifiers']]
+        qualifiers_value = f"ARRAY[{', '.join(qual_rows)}]"
+    
+    metadata_value = "MAP()"
+    if record.get('metadata') and record['metadata']:
+        keys = list(record['metadata'].keys())
+        values = list(record['metadata'].values())
+        if keys:
+            keys_quoted = [f"'{k}'" for k in keys]
+            values_quoted = [f"'{v}'" for v in values]
+            keys_array = f"ARRAY[{', '.join(keys_quoted)}]"
+            values_array = f"ARRAY[{', '.join(values_quoted)}]"
+            metadata_value = f"MAP({keys_array}, {values_array})"
+
+    insert_query = f"""
+    INSERT INTO phebee.evidence VALUES (
+        '{evidence_id}',
+        '{run_id or f"manual-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"}',
+        '{batch_id or ''}',
+        '{evidence_type}',
+        '{assertion_type}',
+        TIMESTAMP '{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}',
+        DATE '{datetime.utcnow().date().isoformat()}',
+        '{source_level}',
+        '{subject_id}',
+        {f"'{encounter_id}'" if encounter_id else 'NULL'},
+        {f"'{clinical_note_id}'" if clinical_note_id else 'NULL'},
+        '{termlink_id}',
+        '{term_iri}',
+        {note_context_value},
+        {creator_value},
+        {text_annotation_value},
+        {qualifiers_value},
+        {metadata_value}
+    )
+    """
+    
+    try:
+        # Execute INSERT using Athena
+        import boto3
+        import time
+        
+        athena_client = boto3.client('athena')
+        
+        response = athena_client.start_query_execution(
+            QueryString=insert_query,
+            QueryExecutionContext={'Database': 'phebee'},
+            ResultConfiguration={'OutputLocation': 's3://phebee-dev-phebeebucket-kuv51zfr1tpp/athena-results/'},
+            WorkGroup='primary'
+        )
+        
+        query_execution_id = response['QueryExecutionId']
+        
+        # Wait for query completion
+        while True:
+            result = athena_client.get_query_execution(QueryExecutionId=query_execution_id)
+            status = result['QueryExecution']['Status']['State']
+            
+            if status == 'SUCCEEDED':
+                break
+            elif status in ['FAILED', 'CANCELLED']:
+                error_msg = result['QueryExecution']['Status'].get('StateChangeReason', 'Unknown error')
+                raise Exception(f"Athena INSERT failed: {error_msg}")
+            
+            time.sleep(1)
+        
+        logger.info(f"Created evidence record: {evidence_id}")
+    except Exception as e:
+        logger.error(f"Failed to insert evidence record {evidence_id}: {e}")
+        raise
+    
+    return evidence_id
+
+
+def get_evidence_record(evidence_id: str) -> Dict[str, Any] | None:
+    """
+    Get a single evidence record by ID from Iceberg.
+    """
+    query = f"""
+    SELECT 
+        evidence_id,
+        run_id,
+        batch_id,
+        evidence_type,
+        subject_id,
+        term_iri,
+        creator.creator_id as creator_id,
+        creator.creator_name as creator_name,
+        creator.creator_type as creator_type,
+        text_annotation.span_start as span_start,
+        text_annotation.span_end as span_end,
+        qualifiers,
+        metadata,
+        created_timestamp
+    FROM phebee.evidence
+    WHERE evidence_id = '{evidence_id}'
+    LIMIT 1
+    """
+    
+    try:
+        results = query_iceberg_evidence(query)
+        if not results:
+            return None
+            
+        row = results[0]
+        
+        # Build the properly structured response
+        record = {
+            "evidence_id": row.get('evidence_id'),
+            "run_id": row.get('run_id'),
+            "batch_id": row.get('batch_id'),
+            "evidence_type": row.get('evidence_type'),
+            "subject_id": row.get('subject_id'),
+            "term_iri": row.get('term_iri'),
+            "creator": {
+                "creator_id": row.get('creator_id'),
+                "creator_name": row.get('creator_name'),
+                "creator_type": row.get('creator_type')
+            },
+            "created_timestamp": row.get('created_timestamp')
+        }
+        
+        # Add text annotation if present
+        if row.get('span_start') or row.get('span_end'):
+            record["text_annotation"] = {
+                "span_start": int(row['span_start']) if row.get('span_start') else None,
+                "span_end": int(row['span_end']) if row.get('span_end') else None
+            }
+        
+        # Add qualifiers if present
+        if row.get('qualifiers'):
+            # Parse qualifiers array - they come as string representation
+            qualifiers_str = row['qualifiers']
+            if qualifiers_str and qualifiers_str != '[]':
+                # Parse format like [{qualifier_type=negated, qualifier_value=1}]
+                import re
+                qualifiers = []
+                # Extract qualifier_type values from the struct format
+                matches = re.findall(r'qualifier_type=([^,}]+)', qualifiers_str)
+                for match in matches:
+                    qualifiers.append(match.strip())
+                record["qualifiers"] = qualifiers
+        
+        # Add metadata if present
+        if row.get('metadata'):
+            # Parse metadata map - they come as string representation
+            metadata_str = row['metadata']
+            if metadata_str and metadata_str != '{}':
+                try:
+                    import json
+                    # Try to parse as JSON first
+                    record["metadata"] = json.loads(metadata_str)
+                except:
+                    # If that fails, leave as string
+                    record["metadata"] = metadata_str
+        
+        return record
+        
+    except Exception as e:
+        logger.error(f"Error getting evidence record {evidence_id}: {e}")
+        return None
+
+
+def delete_evidence_record(evidence_id: str) -> bool:
+    """
+    Delete a single evidence record by ID from Iceberg.
+    
+    Returns:
+        bool: True if deleted, False if not found
+    """
+    # First check if record exists
+    existing = get_evidence_record(evidence_id)
+    if not existing:
+        return False
+    
+    # TODO: Implement actual DELETE query using Athena
+    # For now, this is a placeholder
+    logger.info(f"Would delete evidence record: {evidence_id}")
+    
+    return True
+
+
+def get_evidence_for_termlink(
+    subject_id: str,
+    term_iri: str,
+    qualifiers: List[str] = None
+) -> List[Dict[str, Any]]:
+    """
+    Get evidence data for a specific term link from Iceberg.
+    
+    Args:
+        subject_id: The subject UUID
+        term_iri: The term IRI
+        qualifiers: List of qualifier IRIs
+        
+    Returns:
+        List of evidence records
+    """
+    # Build qualifier filter
+    qualifier_filter = ""
+    if qualifiers:
+        # Convert qualifiers to JSON array format for matching
+        qualifier_conditions = []
+        for qualifier in qualifiers:
+            qualifier_conditions.append(f"JSON_EXTRACT_SCALAR(qualifiers, '$[*].qualifier_type') = '{qualifier}'")
+        if qualifier_conditions:
+            qualifier_filter = f"AND ({' OR '.join(qualifier_conditions)})"
+    
+    query = f"""
+    SELECT 
+        evidence_id,
+        evidence_type,
+        assertion_type,
+        created_timestamp,
+        creator.name as creator,
+        text_annotation.span_start,
+        text_annotation.span_end,
+        qualifiers
+    FROM phebee.evidence
+    WHERE subject_id = '{subject_id}' 
+      AND term_iri = '{term_iri}'
+      {qualifier_filter}
+    ORDER BY created_timestamp
+    """
+    
+    try:
+        results = query_iceberg_evidence(query)
+        
+        # Format evidence records
+        evidence = []
+        for row in results:
+            record = {
+                "evidence_id": row['evidence_id'],
+                "evidence_type": row.get('evidence_type'),
+                "assertion_type": row.get('assertion_type'),
+                "created": row.get('created_timestamp'),
+                "creator": row.get('creator')
+            }
+            
+            # Add span info if present
+            if row.get('span_start') or row.get('span_end'):
+                record["span_start"] = int(row['span_start']) if row.get('span_start') else None
+                record["span_end"] = int(row['span_end']) if row.get('span_end') else None
+            
+            evidence.append(record)
+        
+        return evidence
+        
+    except Exception as e:
+        logger.error(f"Error getting evidence for termlink: {e}")
+        return []
+
+
+def get_evidence_for_subject_term(
+    subject_id: str,
+    term_iri: str,
+    qualifiers: List[str] = None
+) -> List[Dict[str, Any]]:
+    """
+    Get all evidence data for a subject-term combination from Iceberg.
+    
+    Args:
+        subject_id: The subject UUID
+        term_iri: The term IRI
+        qualifiers: List of qualifier IRIs (optional filter)
+        
+    Returns:
+        List of evidence records
+    """
+    # Build qualifier filter if provided
+    qualifier_filter = ""
+    if qualifiers:
+        qualifier_conditions = []
+        for qualifier in qualifiers:
+            qualifier_conditions.append(f"JSON_EXTRACT_SCALAR(qualifiers, '$[*].qualifier_type') = '{qualifier}'")
+        if qualifier_conditions:
+            qualifier_filter = f"AND ({' OR '.join(qualifier_conditions)})"
+    
+    query = f"""
+    SELECT 
+        evidence_id,
+        evidence_type,
+        assertion_type,
+        created_timestamp,
+        creator.name as creator,
+        creator.type as creator_type,
+        text_annotation.span_start,
+        text_annotation.span_end,
+        clinical_note_id,
+        encounter_id,
+        qualifiers
+    FROM phebee.evidence
+    WHERE subject_id = '{subject_id}' 
+      AND term_iri = '{term_iri}'
+      {qualifier_filter}
+    ORDER BY created_timestamp
+    """
+    
+    try:
+        results = query_iceberg_evidence(query)
+        
+        # Format evidence records
+        evidence = []
+        for row in results:
+            record = {
+                "evidence_id": row['evidence_id'],
+                "evidence_type": row.get('evidence_type'),
+                "assertion_type": row.get('assertion_type'),
+                "created": row.get('created_timestamp'),
+                "creator": {
+                    "name": row.get('creator'),
+                    "type": row.get('creator_type')
+                },
+                "clinical_note_id": row.get('clinical_note_id'),
+                "encounter_id": row.get('encounter_id')
+            }
+            
+            # Add span info if present
+            if row.get('span_start') or row.get('span_end'):
+                record["text_annotation"] = {
+                    "span_start": int(row['span_start']) if row.get('span_start') else None,
+                    "span_end": int(row['span_end']) if row.get('span_end') else None
+                }
+            
+            # Parse qualifiers
+            if row.get('qualifiers'):
+                try:
+                    import json
+                    qualifiers_list = json.loads(row['qualifiers'])
+                    record["qualifiers"] = [
+                        q['qualifier_type'] for q in qualifiers_list 
+                        if q.get('qualifier_value') == '1'
+                    ]
+                except:
+                    record["qualifiers"] = []
+            
+            evidence.append(record)
+        
+        return evidence
+        
+    except Exception as e:
+        logger.error(f"Error getting evidence for subject-term: {e}")
+        return []

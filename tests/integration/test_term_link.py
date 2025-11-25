@@ -14,17 +14,17 @@ def test_term_link(physical_resources):
     get_fn = physical_resources["GetTermLinkFunction"]
     remove_fn = physical_resources["RemoveTermLinkFunction"]
 
-    # --- Setup unique IRIs for this test run ---
+    # --- Setup unique IDs for this test run ---
     test_id = str(uuid.uuid4())
-    source_node_iri = f"http://example.org/phebee/subject/test-subject-{test_id}"
+    subject_id = f"test-subject-{test_id}"
     term_iri = "http://purl.obolibrary.org/obo/HP_0000118"
-    creator_iri = f"http://ods.nationwidechildrens.org/phebee/creator/test-creator-{test_id}"
+    creator_id = f"test-creator-{test_id}"
     
     payload = {
-        "source_node_iri": source_node_iri,
+        "subject_id": subject_id,
         "term_iri": term_iri,
-        "creator_iri": creator_iri,
-        "evidence_iris": []
+        "creator_id": creator_id,
+        "qualifiers": []
     }
 
     # --- Create TermLink ---
@@ -36,6 +36,9 @@ def test_term_link(physical_resources):
     assert create_resp["StatusCode"] == 200
     create_body = json.loads(json.loads(create_resp["Payload"].read())["body"])
     termlink_iri = create_body["termlink_iri"]
+    
+    # Build expected source_node_iri from subject_id
+    source_node_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"
     assert termlink_iri.startswith(source_node_iri + "/term-link/")
     assert create_body["created"] is True  # Should be newly created
     
@@ -98,10 +101,9 @@ def test_term_link_with_qualifiers(physical_resources):
     ]
     
     payload = {
-        "source_node_iri": source_node_iri,
+        "subject_id": f"test-subject-{test_id}",
         "term_iri": term_iri,
-        "creator_iri": creator_iri,
-        "evidence_iris": [],
+        "creator_id": f"test-creator-{test_id}",
         "qualifiers": qualifiers
     }
 
@@ -154,10 +156,9 @@ def test_term_link_with_qualifiers(physical_resources):
     ]
     
     different_payload = {
-        "source_node_iri": source_node_iri,
+        "subject_id": f"test-subject-{test_id}",
         "term_iri": term_iri,
-        "creator_iri": creator_iri,
-        "evidence_iris": [],
+        "creator_id": f"test-creator-{test_id}",
         "qualifiers": different_qualifiers
     }
     

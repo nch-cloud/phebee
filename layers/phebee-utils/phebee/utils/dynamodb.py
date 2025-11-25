@@ -1,7 +1,96 @@
 import boto3
 import uuid
+import os
 from typing import Dict, List, Set, Tuple, Optional
 from botocore.exceptions import ClientError
+
+
+def _get_table_name():
+    return os.environ["DYNAMODB_TABLE_NAME"]
+
+
+def _get_client():
+    return boto3.client("dynamodb")
+
+
+# ---------------------------
+# Source version utilities
+# ---------------------------
+
+def get_source_records(source_name: str, dynamodb=None):
+    """
+    Returns all DynamoDB items for a given ontology/source name.
+    NOTE: Uses the low-level client to keep the { "S": ... } wire format,
+    since existing callers expect that structure.
+    """
+    client = dynamodb or _get_client()
+    query_args = {
+        "TableName": _get_table_name(),
+        "KeyConditionExpression": "PK = :pk_value",
+        "ExpressionAttributeValues": {":pk_value": {"S": f"SOURCE~{source_name}"}},
+    }
+    resp = client.query(**query_args)
+    return resp.get("Items", [])
+
+
+def get_current_term_source_version(source_name: str, dynamodb=None):
+    """
+    Returns the most recent installed 'Version' for a given source, based on InstallTimestamp.
+    Ignores records without InstallTimestamp.
+    """
+    source_records = get_source_records(source_name, dynamodb)
+
+    sorted_records = sorted(
+        (r for r in source_records if "InstallTimestamp" in r and "S" in r["InstallTimestamp"]),
+        key=lambda x: x["InstallTimestamp"]["S"],
+        reverse=True,
+    )
+
+    if not sorted_records:
+        return None
+
+    return sorted_records[0]["Version"]["S"]
+
+
+# ---------------------------
+# Subject resolution utilities  
+# ---------------------------
+
+def get_subject_iri_from_project_subject_id(project_id: str, project_subject_id: str, region: str = 'us-east-2') -> Optional[str]:
+    """Get subject IRI for a given project_id and project_subject_id"""
+    table_name = _get_table_name()
+    subject_id = get_subject_id(table_name, project_id, project_subject_id, region)
+    if subject_id:
+        # The subject_id in DynamoDB is actually the full subject IRI
+        return subject_id
+    return None
+
+def get_all_project_subject_ids(project_id: str, region: str = 'us-east-2') -> List[str]:
+    """Get all project_subject_ids for a given project_id"""
+    table_name = _get_table_name()
+    dynamodb = boto3.resource('dynamodb', region_name=region)
+    table = dynamodb.Table(table_name)
+    
+    try:
+        response = table.query(
+            KeyConditionExpression='PK = :pk AND begins_with(SK, :sk_prefix)',
+            ExpressionAttributeValues={
+                ':pk': f'PROJECT#{project_id}',
+                ':sk_prefix': 'SUBJECT#'
+            }
+        )
+        
+        project_subject_ids = []
+        for item in response.get('Items', []):
+            # Parse SK: "SUBJECT#{project_subject_id}"
+            sk_parts = item['SK'].split('#')
+            if len(sk_parts) >= 2:
+                project_subject_id = sk_parts[1]
+                project_subject_ids.append(project_subject_id)
+        
+        return project_subject_ids
+    except ClientError:
+        return []
 
 def get_subject_id(table_name: str, project_id: str, project_subject_id: str, region: str = 'us-east-2') -> Optional[str]:
     """Get subject_id for a given project_id and project_subject_id"""

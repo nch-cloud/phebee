@@ -26,52 +26,45 @@ def test_subjects_query_with_term_and_evidence(
     print(f"project_id: {project_id}")
     print(f"project_subject_id: {project_subject_id}")
 
-    # --- Create creator ---
-    creator_id = f"test-creator-{uuid.uuid4().hex[:6]}"
-    creator_payload = {
-        "creator_id": creator_id,
-        "creator_type": "automated",
-        "name": "Test NLP Bot",
-        "version": "1.0.0"
-    }
-    lambda_client.invoke(
-        FunctionName=physical_resources["CreateCreatorFunction"],
-        Payload=json.dumps({"body": json.dumps(creator_payload)}).encode("utf-8"),
-        InvocationType="RequestResponse"
-    )
-    creator_iri = f"http://ods.nationwidechildrens.org/phebee/creator/{creator_id}"
-
-    # --- Create evidence (TextAnnotation) ---
-    text_source_iri = "http://example.org/text-source/test"
-    annotation_payload = {
-        "text_source_iri": text_source_iri,
-        "span_start": 0,
-        "span_end": 10,
-        "creator_iri": creator_iri,
+    # --- Create evidence directly (no creator CRUD needed) ---
+    evidence_payload = {
+        "subject_id": project_subject_id,
         "term_iri": "http://purl.obolibrary.org/obo/HP_0001250",
-        "metadata": "{\"source\": \"test\"}"
+        "creator_id": "test-creator",
+        "evidence_type": "manual_annotation",
+        "span_start": 5,
+        "span_end": 25
     }
-    create_annotation_resp = lambda_client.invoke(
-        FunctionName=physical_resources["CreateTextAnnotationFunction"],
-        Payload=json.dumps({"body": json.dumps(annotation_payload)}).encode("utf-8"),
+    evidence_resp = lambda_client.invoke(
+        FunctionName=physical_resources["CreateEvidenceFunction"],
+        Payload=json.dumps({"body": json.dumps(evidence_payload)}).encode("utf-8"),
         InvocationType="RequestResponse"
     )
-    annotation_body = json.loads(json.loads(create_annotation_resp["Payload"].read())["body"])
-    annotation_iri = annotation_body["annotation_iri"]
+    assert evidence_resp["StatusCode"] == 200
+    evidence_body = json.loads(json.loads(evidence_resp["Payload"].read())["body"])
+    print(f"evidence_body: {evidence_body}")
+    evidence_id = evidence_body["evidence_id"]
 
     # --- Create TermLink ---
     term_iri = "http://purl.obolibrary.org/obo/HP_0001250"
     termlink_payload = {
-        "source_node_iri": subject_iri,
+        "subject_id": project_subject_id,
         "term_iri": term_iri,
-        "creator_iri": creator_iri,
-        "evidence_iris": [annotation_iri]
+        "creator_id": "test-creator"
     }
-    lambda_client.invoke(
+    termlink_resp = lambda_client.invoke(
         FunctionName=physical_resources["CreateTermLinkFunction"],
         Payload=json.dumps({"body": json.dumps(termlink_payload)}).encode("utf-8"),
         InvocationType="RequestResponse"
     )
+    print(f"termlink_resp StatusCode: {termlink_resp['StatusCode']}")
+    if termlink_resp["StatusCode"] == 200:
+        termlink_body = json.loads(json.loads(termlink_resp["Payload"].read())["body"])
+        print(f"termlink_body: {termlink_body}")
+
+    # Add delay to allow for data propagation
+    import time
+    time.sleep(5)
 
     # --- Run API query ---
     resp = requests.post(

@@ -185,18 +185,9 @@ Resources:
               - !GetAtt GetSubjectsPhenotypesFunction.Arn
               - !GetAtt RemoveSubjectFunction.Arn
               - !GetAtt RemoveProjectFunction.Arn
-              - !GetAtt CreateEncounterFunction.Arn
-              - !GetAtt GetEncounterFunction.Arn
-              - !GetAtt RemoveEncounterFunction.Arn
-              - !GetAtt CreateClinicalNoteFunction.Arn
-              - !GetAtt GetClinicalNoteFunction.Arn
-              - !GetAtt RemoveClinicalNoteFunction.Arn
-              - !GetAtt CreateCreatorFunction.Arn
-              - !GetAtt GetCreatorFunction.Arn
-              - !GetAtt RemoveCreatorFunction.Arn
-              - !GetAtt CreateTextAnnotationFunction.Arn
-              - !GetAtt GetTextAnnotationFunction.Arn
-              - !GetAtt RemoveTextAnnotationFunction.Arn
+              - !GetAtt CreateEvidenceFunction.Arn
+              - !GetAtt GetEvidenceFunction.Arn
+              - !GetAtt RemoveEvidenceFunction.Arn
               - !GetAtt CreateTermLinkFunction.Arn
               - !GetAtt GetTermLinkFunction.Arn
               - !GetAtt RemoveTermLinkFunction.Arn
@@ -329,6 +320,9 @@ Resources:
             Resource: !Sub
               - arn:${AWS::Partition}:neptune-db:${AWS::Region}:${AWS::AccountId}:${ClusterId}/*
               - ClusterId: !GetAtt PheBeeNeptuneCluster.ClusterResourceId
+
+
+
 
   PheBeeNeptuneResetPolicy:
     Type: AWS::IAM::ManagedPolicy
@@ -531,9 +525,9 @@ Resources:
           PheBeeBucketName: !Ref PheBeeBucket
           PheBeeDynamoTable: !Ref DynamoDBTable
       Policies:
-        - !Ref PheBeeS3ReadPolicy
         - !Ref PheBeeDynamoDBWritePolicy
         - !Ref PheBeeDynamoDBReadPolicy
+        - !Ref PheBeeS3WritePolicy
         - Statement:
           - Effect: Allow
             Action: states:StartExecution
@@ -629,7 +623,7 @@ Resources:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
           Region: !Sub ${AWS::Region}
-          PheBeeDynamoTable: !Ref DynamoDBTable
+          DYNAMODB_TABLE_NAME: !Ref DynamoDBTable
       VpcConfig:
         SecurityGroupIds:
           - !Ref PheBeeLambdaSecurityGroup
@@ -678,6 +672,7 @@ Resources:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
           Region: !Sub ${AWS::Region}
           PheBeeBus: !Ref PheBeeBus
+          DYNAMODB_TABLE_NAME: !Ref DynamoDBTable
       VpcConfig:
         SecurityGroupIds:
           - !Ref PheBeeLambdaSecurityGroup
@@ -688,6 +683,8 @@ Resources:
         - !Ref PheBeeNeptuneReadPolicy
         - !Ref PheBeeNeptuneWritePolicy
         - !Ref PheBeePutEventsPolicy
+        - DynamoDBCrudPolicy:
+            TableName: !Ref DynamoDBTable
 
   RemoveSubjectFunction:
     Type: AWS::Serverless::Function
@@ -771,8 +768,6 @@ Resources:
         Variables:
           PheBeeBucketName: !Ref PheBeeBucket
       Policies:
-        - !Ref PheBeeS3ReadPolicy
-        - !Ref PheBeeS3WritePolicy
 
   ProcessPhenopacketFunction:
     Type: AWS::Serverless::Function
@@ -801,8 +796,6 @@ Resources:
           PheBeeBucketName: !Ref PheBeeBucket
           PheBeeDynamoTable: !Ref DynamoDBTable
       Policies:
-        - !Ref PheBeeS3ReadPolicy
-        - !Ref PheBeeS3WritePolicy
         - !Ref PheBeeDynamoDBReadPolicy
 
   QueryProvenanceFunction:
@@ -842,7 +835,7 @@ Resources:
           Region: !Sub ${AWS::Region}
           PheBeeBus: !Ref PheBeeBus
           PheBeeBucketName: !Ref PheBeeBucket
-          PheBeeDynamoTable: !Ref DynamoDBTable
+          DYNAMODB_TABLE_NAME: !Ref DynamoDBTable
       VpcConfig:
         SecurityGroupIds:
           - !Ref PheBeeLambdaSecurityGroup
@@ -851,8 +844,6 @@ Resources:
           - !Ref SubnetId2
       Policies:
         - !Ref PheBeeNeptuneReadPolicy
-        - !Ref PheBeeS3ReadPolicy
-        - !Ref PheBeeS3WritePolicy
         - !Ref PheBeeDynamoDBReadPolicy
 
   ResetDatabaseFunction:
@@ -883,277 +874,70 @@ Resources:
         - !Ref PheBeeDynamoDBWritePolicy
         - !Ref PheBeeDynamoDBReadPolicy
 
-  CreateEncounterFunction:
+  CreateEvidenceFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AppName}-CreateEncounterFunction
+      FunctionName: !Sub ${AppName}-CreateEvidenceFunction
       CodeUri: functions
-      Handler: create_encounter.lambda_handler
+      Handler: create_evidence.lambda_handler
       MemorySize: 512
       Layers:
         - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
-          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          EVIDENCE_TABLE: !Sub ${AppName}_evidence
           Region: !Sub ${AWS::Region}
-      VpcConfig:
-        SecurityGroupIds:
-          - !Ref PheBeeLambdaSecurityGroup
-        SubnetIds:
-          - !Ref SubnetId1
-          - !Ref SubnetId2
       Policies:
-        - !Ref PheBeeNeptuneReadPolicy
-        - !Ref PheBeeNeptuneWritePolicy
+        - !Ref PheBeeIcebergPolicy
 
-  GetEncounterFunction:
+  GetEvidenceFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AppName}-GetEncounterFunction
+      FunctionName: !Sub ${AppName}-GetEvidenceFunction
       CodeUri: functions
-      Handler: get_encounter.lambda_handler
+      Handler: get_evidence.lambda_handler
       MemorySize: 512
       Layers:
         - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
-          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          EVIDENCE_TABLE: !Sub ${AppName}_evidence
           Region: !Sub ${AWS::Region}
-      VpcConfig:
-        SecurityGroupIds:
-          - !Ref PheBeeLambdaSecurityGroup
-        SubnetIds:
-          - !Ref SubnetId1
-          - !Ref SubnetId2
       Policies:
-        - !Ref PheBeeNeptuneReadPolicy
+        - !Ref PheBeeIcebergPolicy
 
-  RemoveEncounterFunction:
+  RemoveEvidenceFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AppName}-RemoveEncounterFunction
+      FunctionName: !Sub ${AppName}-RemoveEvidenceFunction
       CodeUri: functions
-      Handler: remove_encounter.lambda_handler
+      Handler: remove_evidence.lambda_handler
       MemorySize: 512
       Layers:
         - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
-          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          EVIDENCE_TABLE: !Sub ${AppName}_evidence
           Region: !Sub ${AWS::Region}
-      VpcConfig:
-        SecurityGroupIds:
-          - !Ref PheBeeLambdaSecurityGroup
-        SubnetIds:
-          - !Ref SubnetId1
-          - !Ref SubnetId2
       Policies:
-        - !Ref PheBeeNeptuneReadPolicy
-        - !Ref PheBeeNeptuneDeletePolicy
+        - !Ref PheBeeIcebergPolicy
 
-  CreateClinicalNoteFunction:
+  QueryEvidenceByRunFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AppName}-CreateClinicalNoteFunction
+      FunctionName: !Sub ${AppName}-QueryEvidenceByRunFunction
       CodeUri: functions
-      Handler: create_clinical_note.lambda_handler
+      Handler: query_evidence_by_run.lambda_handler
       MemorySize: 512
       Layers:
         - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
-          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
-          Region: !Sub ${AWS::Region}
-      VpcConfig:
-        SecurityGroupIds:
-          - !Ref PheBeeLambdaSecurityGroup
-        SubnetIds:
-          - !Ref SubnetId1
-          - !Ref SubnetId2
+          ICEBERG_DATABASE: !Ref IcebergDatabase
+          ICEBERG_EVIDENCE_TABLE: !Ref IcebergEvidenceTable
+          PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
       Policies:
-        - !Ref PheBeeNeptuneReadPolicy
-        - !Ref PheBeeNeptuneWritePolicy
-
-  GetClinicalNoteFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: !Sub ${AppName}-GetClinicalNoteFunction
-      CodeUri: functions
-      Handler: get_clinical_note.lambda_handler
-      MemorySize: 512
-      Layers:
-        - !Ref PheBeeUtilsLayer
-      Environment:
-        Variables:
-          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
-          Region: !Sub ${AWS::Region}
-      VpcConfig:
-        SecurityGroupIds:
-          - !Ref PheBeeLambdaSecurityGroup
-        SubnetIds:
-          - !Ref SubnetId1
-          - !Ref SubnetId2
-      Policies:
-        - !Ref PheBeeNeptuneReadPolicy
-
-  RemoveClinicalNoteFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: !Sub ${AppName}-RemoveClinicalNoteFunction
-      CodeUri: functions
-      Handler: remove_clinical_note.lambda_handler
-      MemorySize: 512
-      Layers:
-        - !Ref PheBeeUtilsLayer
-      Environment:
-        Variables:
-          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
-          Region: !Sub ${AWS::Region}
-      VpcConfig:
-        SecurityGroupIds:
-          - !Ref PheBeeLambdaSecurityGroup
-        SubnetIds:
-          - !Ref SubnetId1
-          - !Ref SubnetId2
-      Policies:
-        - !Ref PheBeeNeptuneReadPolicy
-        - !Ref PheBeeNeptuneDeletePolicy
-
-  CreateCreatorFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: !Sub ${AppName}-CreateCreatorFunction
-      CodeUri: functions
-      Handler: create_creator.lambda_handler
-      MemorySize: 512
-      Layers:
-        - !Ref PheBeeUtilsLayer
-      Environment:
-        Variables:
-          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
-          Region: !Sub ${AWS::Region}
-      VpcConfig:
-        SecurityGroupIds:
-          - !Ref PheBeeLambdaSecurityGroup
-        SubnetIds:
-          - !Ref SubnetId1
-          - !Ref SubnetId2
-      Policies:
-        - !Ref PheBeeNeptuneReadPolicy
-        - !Ref PheBeeNeptuneWritePolicy
-
-  GetCreatorFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: !Sub ${AppName}-GetCreatorFunction
-      CodeUri: functions
-      Handler: get_creator.lambda_handler
-      MemorySize: 512
-      Layers:
-        - !Ref PheBeeUtilsLayer
-      Environment:
-        Variables:
-          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
-          Region: !Sub ${AWS::Region}
-      VpcConfig:
-        SecurityGroupIds:
-          - !Ref PheBeeLambdaSecurityGroup
-        SubnetIds:
-          - !Ref SubnetId1
-          - !Ref SubnetId2
-      Policies:
-        - !Ref PheBeeNeptuneReadPolicy
-
-  RemoveCreatorFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: !Sub ${AppName}-RemoveCreatorFunction
-      CodeUri: functions
-      Handler: remove_creator.lambda_handler
-      MemorySize: 512
-      Layers:
-        - !Ref PheBeeUtilsLayer
-      Environment:
-        Variables:
-          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
-          Region: !Sub ${AWS::Region}
-      VpcConfig:
-        SecurityGroupIds:
-          - !Ref PheBeeLambdaSecurityGroup
-        SubnetIds:
-          - !Ref SubnetId1
-          - !Ref SubnetId2
-      Policies:
-        - !Ref PheBeeNeptuneReadPolicy
-        - !Ref PheBeeNeptuneDeletePolicy
-
-  CreateTextAnnotationFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: !Sub ${AppName}-CreateTextAnnotationFunction
-      CodeUri: functions
-      Handler: create_text_annotation.lambda_handler
-      MemorySize: 512
-      Layers:
-        - !Ref PheBeeUtilsLayer
-      Environment:
-        Variables:
-          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
-          Region: !Sub ${AWS::Region}
-      VpcConfig:
-        SecurityGroupIds:
-          - !Ref PheBeeLambdaSecurityGroup
-        SubnetIds:
-          - !Ref SubnetId1
-          - !Ref SubnetId2
-      Policies:
-        - !Ref PheBeeNeptuneReadPolicy
-        - !Ref PheBeeNeptuneWritePolicy
-
-  GetTextAnnotationFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: !Sub ${AppName}-GetTextAnnotationFunction
-      CodeUri: functions
-      Handler: get_text_annotation.lambda_handler
-      MemorySize: 512
-      Layers:
-        - !Ref PheBeeUtilsLayer
-      Environment:
-        Variables:
-          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
-          Region: !Sub ${AWS::Region}
-      VpcConfig:
-        SecurityGroupIds:
-          - !Ref PheBeeLambdaSecurityGroup
-        SubnetIds:
-          - !Ref SubnetId1
-          - !Ref SubnetId2
-      Policies:
-        - !Ref PheBeeNeptuneReadPolicy
-
-  RemoveTextAnnotationFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: !Sub ${AppName}-RemoveTextAnnotationFunction
-      CodeUri: functions
-      Handler: remove_text_annotation.lambda_handler
-      MemorySize: 512
-      Layers:
-        - !Ref PheBeeUtilsLayer
-      Environment:
-        Variables:
-          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
-          Region: !Sub ${AWS::Region}
-      VpcConfig:
-        SecurityGroupIds:
-          - !Ref PheBeeLambdaSecurityGroup
-        SubnetIds:
-          - !Ref SubnetId1
-          - !Ref SubnetId2
-      Policies:
-        - !Ref PheBeeNeptuneReadPolicy
-        - !Ref PheBeeNeptuneDeletePolicy
+        - !Ref PheBeeIcebergPolicy
 
   CreateTermLinkFunction:
     Type: AWS::Serverless::Function
@@ -1269,7 +1053,6 @@ Resources:
       Layers:
         - !Ref PheBeeUtilsLayer
       Policies:
-        - !Ref PheBeeS3ReadPolicy
 
   StartNeptuneBulkLoadFunction:
     Type: AWS::Serverless::Function
@@ -1295,7 +1078,6 @@ Resources:
           - !Ref SubnetId2
       Policies:
         - !Ref PheBeeNeptuneLoadPolicy
-        - !Ref PheBeeS3ReadPolicy
 
   CheckNeptuneBulkLoadStatusFunction:
     Type: AWS::Serverless::Function
@@ -1332,8 +1114,6 @@ Resources:
       Layers:
         - !Ref PheBeeUtilsLayer
       Policies:
-        - !Ref PheBeeS3ReadPolicy
-        - !Ref PheBeeS3WritePolicy
         - Statement:
             - Effect: Allow
               Action:
@@ -1584,7 +1364,6 @@ Resources:
           - !Ref SubnetId2
       Policies:
         - !Ref PheBeeNeptuneLoadPolicy     # start loader jobs
-        - !Ref PheBeeS3ReadPolicy          # list / verify data/prov prefixes
         - !Ref PheBeeDynamoDBReadPolicy    # read run/batch status
         - !Ref PheBeeDynamoDBWritePolicy   # mark run finalized / store loader IDs
         - Statement:
@@ -1787,7 +1566,6 @@ Resources:
       Type: STANDARD
       Policies:
         - !Ref PheBeeStepFunctionPolicy
-        - !Ref PheBeeS3ReadPolicy
         - Statement:
           - Effect: Allow
             Action:
@@ -2055,6 +1833,11 @@ Outputs:
     Value: !GetAtt QueryProvenanceFunction.Arn
     Export:
       Name: !Sub "${AppName}-QueryProvenanceFunctionArn"
+
+  QueryEvidenceByRunFunctionArn:
+    Value: !GetAtt QueryEvidenceByRunFunction.Arn
+    Export:
+      Name: !Sub "${AppName}-QueryEvidenceByRunFunctionArn"
 
   DynamoDBTableName:
     Description: Table name of the PheBee DynamoDB table

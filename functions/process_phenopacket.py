@@ -33,27 +33,21 @@ def lambda_handler(event, context):
 
 def create_term_links_payload(project_id, project_subject_id, phenopacket):
     namespace_to_iri_prefix = create_iri_map(phenopacket)
-    creator_iri = (
-        "http://ods.nationwidechildrens.org/phebee/creator/phenopacket-importer"
-    )
+    creator_id = "phenopacket-importer"
 
-    subject_iri = (
-        f"http://ods.nationwidechildrens.org/phebee/subjects/{project_subject_id}"
-    )
+    # Use subject_id instead of subject_iri
+    subject_id = f"{project_id}#{project_subject_id}"
 
     term_links = []
 
     for feature in phenopacket["phenotypicFeatures"]:
         term_iri = to_full_iri(namespace_to_iri_prefix, feature["type"]["id"])
 
-        # TODO: create an evidence node and link to it
-
         term_links.append(
             {
-                "source_node_iri": subject_iri,
+                "subject_id": subject_id,
                 "term_iri": term_iri,
-                "creator_iri": creator_iri,
-                "evidence_iris": [],
+                "creator_id": creator_id,
             }
         )
 

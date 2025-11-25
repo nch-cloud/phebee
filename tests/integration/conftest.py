@@ -358,9 +358,9 @@ def create_test_subject(physical_resources):
         ).encode("utf-8"),
         InvocationType="RequestResponse",
     )
-    project_body = json.loads(
-        json.loads(project_response["Payload"].read().decode("utf-8"))["body"]
-    )
+    raw_response = json.loads(project_response["Payload"].read().decode("utf-8"))
+    print(f"Raw project response: {raw_response}")
+    project_body = json.loads(raw_response["body"])
     print(project_body)
 
     def _make_subject():
@@ -411,45 +411,6 @@ def create_test_subject(physical_resources):
         ),
         InvocationType="RequestResponse",
     )
-
-
-@pytest.fixture
-def create_test_encounter_iri(create_test_subject, physical_resources):
-    lambda_client = get_client("lambda")
-    created_encounters = []
-
-    def _make_encounter():
-        subject_iri = create_test_subject()["iri"]
-        encounter_id = f"test-enc-{uuid.uuid4().hex[:6]}"
-        payload = {"subject_iri": subject_iri, "encounter_id": encounter_id}
-
-        print(f"payload: {payload}")
-
-        response = lambda_client.invoke(
-            FunctionName=physical_resources["CreateEncounterFunction"],
-            Payload=json.dumps({"body": json.dumps(payload)}).encode("utf-8"),
-            InvocationType="RequestResponse",
-        )
-
-        body = json.loads(json.loads(response["Payload"].read())["body"])
-
-        print(f"body: {body}")
-
-        encounter_iri = body["encounter_iri"]
-
-        created_encounters.append((subject_iri, encounter_id))
-        return encounter_iri
-
-    yield _make_encounter
-
-    # Cleanup
-    for subject_iri, encounter_id in created_encounters:
-        payload = {"subject_iri": subject_iri, "encounter_id": encounter_id}
-        lambda_client.invoke(
-            FunctionName=physical_resources["RemoveEncounterFunction"],
-            Payload=json.dumps({"body": json.dumps(payload)}).encode("utf-8"),
-            InvocationType="RequestResponse",
-        )
 
 
 # Fixture to create the test project
