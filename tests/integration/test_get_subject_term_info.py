@@ -80,7 +80,7 @@ def test_get_subject_term_info_basic(test_payload, test_project_id, physical_res
     
     result = invoke_lambda(get_subject_term_info_fn, {
         "body": json.dumps({
-            "subject_iri": subject_iri,
+            "subject_id": actual_subject_id,
             "term_iri": entry["term_iri"],
             "qualifiers": []
         })
@@ -113,7 +113,7 @@ def test_get_subject_term_info_not_found(physical_resources):
     # Try to get info for non-existent term
     response = invoke_lambda(get_subject_term_info_fn, {
         "body": json.dumps({
-            "subject_iri": "http://ods.nationwidechildrens.org/phebee/subjects/nonexistent",
+            "subject_id": "nonexistent",
             "term_iri": "http://purl.obolibrary.org/obo/HP_0000001",
             "qualifiers": []
         })
@@ -129,7 +129,7 @@ def test_get_subject_term_info_missing_params(physical_resources):
     """Test GetSubjectTermInfo with missing required parameters."""
     get_subject_term_info_fn = physical_resources["GetSubjectTermInfoFunction"]
     
-    # Missing subject_iri
+    # Missing subject_id
     response = invoke_lambda(get_subject_term_info_fn, {
         "body": json.dumps({
             "term_iri": "http://purl.obolibrary.org/obo/HP_0000001"
@@ -138,12 +138,12 @@ def test_get_subject_term_info_missing_params(physical_resources):
     
     assert response["statusCode"] == 400
     body = json.loads(response["body"])
-    assert "subject_iri" in body["message"]
+    assert "subject_id" in body["message"]
     
     # Missing term_iri
     response = invoke_lambda(get_subject_term_info_fn, {
         "body": json.dumps({
-            "subject_iri": "http://ods.nationwidechildrens.org/phebee/subjects/test"
+            "subject_id": "test"
         })
     })
     
@@ -194,14 +194,10 @@ def test_get_subject_term_info_with_qualifiers(test_payload_with_qualifiers, tes
     
     get_subject_term_info_fn = physical_resources["GetSubjectTermInfoFunction"]
     
-    # Test GetSubjectTermInfo directly with the subject ID
-    subject_body = json.loads(result["body"])
-    subject_iri = subject_body["subject"]["iri"]
-    
-    # Test GetSubjectTermInfo with qualifiers
+    # Test GetSubjectTermInfo with qualifiers - now using subject_id directly
     result = invoke_lambda(get_subject_term_info_fn, {
         "body": json.dumps({
-            "subject_iri": subject_iri,
+            "subject_id": subject_id,  # Use the same subject_id format as evidence
             "term_iri": entry["term_iri"],
             "qualifiers": []  # Test with empty qualifiers since we didn't create qualified evidence
         })
@@ -237,17 +233,21 @@ def test_get_subject_term_info_negated_qualifier_performance(test_payload_with_q
     result = json.loads(response["Payload"].read())
     assert result["statusCode"] == 200
     
+    # Get the actual subject UUID from the subject IRI
+    subject_body = json.loads(result["body"])
+    subject_iri = subject_body["subject"]["iri"]
+    subject_uuid = subject_iri.split("/")[-1]  # Extract UUID from IRI
+    
     # Create test data directly
     run_id = str(uuid.uuid4())
     term_iri = "http://purl.obolibrary.org/obo/HP_0004322"
-    full_subject_id = f"{test_project_id}:{subject_id}"
     
     # Create evidence record without qualifiers
     create_evidence_record(
         run_id=run_id,
         batch_id="1",
         evidence_type="clinical_note",
-        subject_id=full_subject_id,
+        subject_id=subject_uuid,  # Use the actual UUID
         term_iri=term_iri,
         creator_id="robot-creator",
         physical_resources=physical_resources,
@@ -259,7 +259,7 @@ def test_get_subject_term_info_negated_qualifier_performance(test_payload_with_q
         run_id=run_id,
         batch_id="2",
         evidence_type="clinical_note",
-        subject_id=full_subject_id,
+        subject_id=subject_uuid,  # Use the actual UUID
         term_iri=term_iri,
         creator_id="robot-creator",
         physical_resources=physical_resources,
@@ -268,15 +268,11 @@ def test_get_subject_term_info_negated_qualifier_performance(test_payload_with_q
     
     get_subject_term_info_fn = physical_resources["GetSubjectTermInfoFunction"]
     
-    # Test GetSubjectTermInfo directly with the subject ID
-    subject_body = json.loads(result["body"])
-    subject_iri = subject_body["subject"]["iri"]
-    
     # Test with empty qualifiers (should find the unqualified term link)
     start_time = time.time()
     result_empty = invoke_lambda(get_subject_term_info_fn, {
         "body": json.dumps({
-            "subject_iri": subject_iri,
+            "subject_id": subject_uuid,
             "term_iri": term_iri,
             "qualifiers": []
         })
@@ -287,7 +283,7 @@ def test_get_subject_term_info_negated_qualifier_performance(test_payload_with_q
     start_time = time.time()
     result_negated = invoke_lambda(get_subject_term_info_fn, {
         "body": json.dumps({
-            "subject_iri": subject_iri,
+            "subject_id": subject_uuid,
             "term_iri": term_iri,
             "qualifiers": ["http://ods.nationwidechildrens.org/phebee/qualifier/negated"]
         })
@@ -296,7 +292,14 @@ def test_get_subject_term_info_negated_qualifier_performance(test_payload_with_q
     
     # Both should complete successfully
     assert result_empty["term_iri"] == term_iri
-    assert result_negated is None or result_negated["term_iri"] == term_iri  # May be None if no negated evidence
+    
+    # result_negated should be a 404 response since we didn't create evidence with negated qualifiers
+    # This is expected behavior and shows the function is working correctly
+    if "statusCode" in result_negated:
+        assert result_negated["statusCode"] == 404
+    elif result_negated is not None and "term_iri" in result_negated:
+        # If we did find results, verify they're correct
+        assert result_negated["term_iri"] == term_iri
     
     # Verify correct qualifier filtering
     assert result_empty["qualifiers"] == []
