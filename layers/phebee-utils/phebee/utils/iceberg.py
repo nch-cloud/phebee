@@ -264,17 +264,28 @@ def query_iceberg_evidence(query: str) -> List[Dict[str, Any]]:
     """
     import boto3
     import time
+    import os
     
     athena_client = boto3.client('athena')
     
+    # Check if primary workgroup is managed
+    wg_cfg = athena_client.get_work_group(WorkGroup="primary")["WorkGroup"]["Configuration"]
+    managed_config = wg_cfg.get("ManagedQueryResultsConfiguration", {})
+    managed = managed_config.get("Enabled", False) if isinstance(managed_config, dict) else False
+
+    params = {
+        "QueryString": query,
+        "QueryExecutionContext": {"Database": "phebee"},
+        "WorkGroup": "primary"
+    }
+
+    if not managed:
+        bucket_name = os.environ.get('PHEBEE_BUCKET_NAME')
+        params["ResultConfiguration"] = {"OutputLocation": f"s3://{bucket_name}/athena-results/"}
+
     try:
         # Start query execution
-        response = athena_client.start_query_execution(
-            QueryString=query,
-            QueryExecutionContext={'Database': 'phebee'},
-            ResultConfiguration={'OutputLocation': 's3://phebee-dev-phebeebucket-kuv51zfr1tpp/athena-results/'},
-            WorkGroup='primary'
-        )
+        response = athena_client.start_query_execution(**params)
         
         query_execution_id = response['QueryExecutionId']
         
@@ -541,15 +552,26 @@ def create_evidence_record(
         # Execute INSERT using Athena
         import boto3
         import time
+        import os
         
         athena_client = boto3.client('athena')
         
-        response = athena_client.start_query_execution(
-            QueryString=insert_query,
-            QueryExecutionContext={'Database': 'phebee'},
-            ResultConfiguration={'OutputLocation': 's3://phebee-dev-phebeebucket-kuv51zfr1tpp/athena-results/'},
-            WorkGroup='primary'
-        )
+        # Check if primary workgroup is managed
+        wg_cfg = athena_client.get_work_group(WorkGroup="primary")["WorkGroup"]["Configuration"]
+        managed_config = wg_cfg.get("ManagedQueryResultsConfiguration", {})
+        managed = managed_config.get("Enabled", False) if isinstance(managed_config, dict) else False
+
+        params = {
+            "QueryString": insert_query,
+            "QueryExecutionContext": {"Database": "phebee"},
+            "WorkGroup": "primary"
+        }
+
+        if not managed:
+            bucket_name = os.environ.get('PHEBEE_BUCKET_NAME')
+            params["ResultConfiguration"] = {"OutputLocation": f"s3://{bucket_name}/athena-results/"}
+
+        response = athena_client.start_query_execution(**params)
         
         query_execution_id = response['QueryExecutionId']
         
@@ -714,7 +736,7 @@ def get_evidence_for_termlink(
         evidence_type,
         assertion_type,
         created_timestamp,
-        creator.name as creator,
+        creator.creator_id as creator,
         text_annotation.span_start,
         text_annotation.span_end,
         qualifiers
@@ -753,11 +775,52 @@ def get_evidence_for_termlink(
         return []
 
 
-def get_evidence_for_subject_term(
+def get_subject_term_info(
     subject_id: str,
     term_iri: str,
     qualifiers: List[str] = None
-) -> List[Dict[str, Any]]:
+) -> Dict[str, Any] | None:
+    """
+    Get detailed term link information for a specific term on a subject from Iceberg.
+    
+    Args:
+        subject_id: The subject ID (not IRI)
+        term_iri: The specific term IRI
+        qualifiers: List of qualifier IRIs (optional)
+    
+    Returns:
+        Dict with term details and term_links array, or None if not found
+    """
+    evidence_data = get_evidence_for_termlink(subject_id, term_iri, qualifiers)
+    
+    if not evidence_data:
+        return None
+    
+    # Generate term links from evidence
+    term_links = []
+    for evidence in evidence_data:
+        # Create deterministic term link IRI
+        source_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"
+        if evidence.get('encounter_id'):
+            source_iri += f"/encounters/{evidence['encounter_id']}"
+        if evidence.get('clinical_note_id'):
+            source_iri += f"/clinical-notes/{evidence['clinical_note_id']}"
+            
+        termlink_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}/term-link/{evidence['evidence_id']}"
+        
+        term_links.append({
+            "termlink_iri": termlink_iri,
+            "evidence_count": 1,
+            "source_iri": source_iri,
+            "source_type": evidence.get('evidence_type', 'clinical_note')
+        })
+    
+    return {
+        "term_iri": term_iri,
+        "qualifiers": sorted(qualifiers or []),
+        "evidence_count": len(evidence_data),
+        "term_links": term_links
+    }
     """
     Get all evidence data for a subject-term combination from Iceberg.
     

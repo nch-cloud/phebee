@@ -1,5 +1,5 @@
 import json
-from phebee.utils.sparql import get_subject_term_info
+from phebee.utils.iceberg import get_subject_term_info
 from phebee.utils.aws import extract_body
 
 def lambda_handler(event, context):
@@ -21,7 +21,10 @@ def lambda_handler(event, context):
                 "body": json.dumps({"message": "Missing required field: term_iri"})
             }
 
-        result = get_subject_term_info(subject_iri, term_iri, qualifiers)
+        # Extract subject_id from subject_iri
+        subject_id = subject_iri.split("/")[-1]
+        
+        result = get_subject_term_info(subject_id, term_iri, qualifiers)
 
         if not result:
             return {

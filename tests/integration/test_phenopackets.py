@@ -275,7 +275,7 @@ def test_term_labels_functionality(physical_resources, test_project_id, upload_p
     result = json.loads(response["Payload"].read())
     
     # Import decompress function
-    from tests.integration.test_query_subjects import decompress_lambda_response
+    from test_query_subjects import decompress_lambda_response
     body = decompress_lambda_response(result)
     subjects = body["body"]
 
@@ -314,7 +314,7 @@ def test_include_qualified_parameter(physical_resources, test_project_id, upload
     default_result = json.loads(default_response["Payload"].read())
     
     # Import decompress function
-    from tests.integration.test_query_subjects import decompress_lambda_response
+    from test_query_subjects import decompress_lambda_response
     default_body = decompress_lambda_response(default_result)
     default_subjects = default_body["body"]
 
