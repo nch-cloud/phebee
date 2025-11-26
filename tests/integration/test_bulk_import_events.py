@@ -63,7 +63,7 @@ def bulk_upload_run(test_data, physical_resources):
         Bucket=s3_bucket,
         Key=input_key,
         Body=jsonl_content.encode('utf-8'),
-        Content_Type='application/x-ndjson'
+        ContentType='application/x-ndjson'
     )
     
     return run_id, f"domain-{run_id}", f"prov-{run_id}"

@@ -142,8 +142,8 @@ def extract_evidence_records(data: List[dict], subject_map: Dict[Tuple[str, str]
                     'creator_name': evidence.get('evidence_creator_name')
                 },
                 'text_annotation': {
-                    'start_pos': evidence.get('span_start'),
-                    'end_pos': evidence.get('span_end'),
+                    'span_start': evidence.get('span_start'),
+                    'span_end': evidence.get('span_end'),
                     'text_span': None,
                     'confidence_score': None
                 },
@@ -185,8 +185,8 @@ def write_to_iceberg(spark, evidence_records: List[dict], database: str, table: 
             StructField("creator_name", StringType(), True)
         ]), True),
         StructField("text_annotation", StructType([
-            StructField("start_pos", IntegerType(), True),
-            StructField("end_pos", IntegerType(), True),
+            StructField("span_start", IntegerType(), True),
+            StructField("span_end", IntegerType(), True),
             StructField("text_span", StringType(), True),
             StructField("confidence_score", DoubleType(), True)
         ]), True),
@@ -414,8 +414,8 @@ def main():
             col("evidence_creator_name").alias("creator_name")
          )) \
          .withColumn("text_annotation", struct(
-            col("span_start").alias("start_pos"),
-            col("span_end").alias("end_pos"),
+            col("span_start"),
+            col("span_end"),
             lit("").alias("text_span"),
             lit(1.0).alias("confidence_score")
          )) \

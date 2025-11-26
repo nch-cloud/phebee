@@ -349,8 +349,8 @@ def get_evidence_for_phenopackets(
         creator.name as creator,
         qualifiers,
         note_context.note_type as source,
-        text_annotation.start_pos as span_start,
-        text_annotation.end_pos as span_end
+        text_annotation.span_start,
+        text_annotation.span_end
     FROM phebee.evidence
     WHERE {where_clause}
     ORDER BY term_iri, created_timestamp

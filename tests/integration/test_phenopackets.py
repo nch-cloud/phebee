@@ -1,8 +1,16 @@
 import json
 import pytest
 from botocore.exceptions import ClientError
-from tests.integration.conftest import get_client, start_step_function, wait_for_step_function_completion
-from tests.integration.utils import compare_json_data
+from phebee.utils.aws import get_client
+import sys
+import os
+# Add the tests/integration directory to the path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from step_function_utils import start_step_function, wait_for_step_function_completion
+
+def compare_json_data(data1, data2, schema=None):
+    """Simple JSON comparison function"""
+    return data1 == data2, "Data mismatch" if data1 != data2 else "Match"
 
 # Phenopacket-related constants
 ZIP_KEY = "tests/integration/data/phenopackets/sample_phenopackets.zip"

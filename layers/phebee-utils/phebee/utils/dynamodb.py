@@ -6,7 +6,7 @@ from botocore.exceptions import ClientError
 
 
 def _get_table_name():
-    return os.environ["DYNAMODB_TABLE_NAME"]
+    return os.environ["PheBeeDynamoTable"]
 
 
 def _get_client():

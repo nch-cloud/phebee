@@ -91,19 +91,20 @@ def test_term_link_with_qualifiers(physical_resources):
     get_fn = physical_resources["GetTermLinkFunction"]
     remove_fn = physical_resources["RemoveTermLinkFunction"]
 
-    # --- Setup dummy IRIs ---
-    source_node_iri = "http://example.org/phebee/subject/test-subject-qualifiers"
+    # --- Setup unique IDs for this test run ---
+    test_id = str(uuid.uuid4())
+    subject_id = f"test-subject-{test_id}"
     term_iri = "http://purl.obolibrary.org/obo/HP_0000118"
-    creator_iri = "http://ods.nationwidechildrens.org/phebee/creator/test-creator"
+    creator_id = f"test-creator-{test_id}"
     qualifiers = [
         "http://ods.nationwidechildrens.org/phebee/qualifier/negated",
         "http://ods.nationwidechildrens.org/phebee/qualifier/hypothetical"
     ]
     
     payload = {
-        "subject_id": f"test-subject-{test_id}",
+        "subject_id": subject_id,
         "term_iri": term_iri,
-        "creator_id": f"test-creator-{test_id}",
+        "creator_id": creator_id,
         "qualifiers": qualifiers
     }
 
@@ -116,9 +117,13 @@ def test_term_link_with_qualifiers(physical_resources):
     assert create_resp["StatusCode"] == 200
     create_body = json.loads(json.loads(create_resp["Payload"].read())["body"])
     termlink_iri = create_body["termlink_iri"]
-    assert termlink_iri.startswith(source_node_iri + "/term-link/")
+    
+    # Build expected source_node_iri from subject_id  
+    expected_subject_iri_prefix = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"
+    assert termlink_iri.startswith(expected_subject_iri_prefix + "/term-link/")
     
     # Verify the IRI is deterministic and includes qualifiers
+    source_node_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"
     expected_hash = generate_termlink_hash(source_node_iri, term_iri, qualifiers)
     expected_iri = f"{source_node_iri}/term-link/{expected_hash}"
     assert termlink_iri == expected_iri
@@ -156,9 +161,9 @@ def test_term_link_with_qualifiers(physical_resources):
     ]
     
     different_payload = {
-        "subject_id": f"test-subject-{test_id}",
+        "subject_id": subject_id,
         "term_iri": term_iri,
-        "creator_id": f"test-creator-{test_id}",
+        "creator_id": creator_id,
         "qualifiers": different_qualifiers
     }
     

@@ -21,7 +21,7 @@ def lambda_handler(event, context):
     
     s3 = boto3.client('s3')
     dynamodb = boto3.resource('dynamodb')
-    table = dynamodb.Table(os.environ['DYNAMODB_TABLE_NAME'])
+    table = dynamodb.Table(os.environ['PheBeeDynamoTable'])
     
     try:
         # List all JSONL files in the prefix
@@ -62,13 +62,13 @@ def lambda_handler(event, context):
             batch = existing_keys[i:i+100]
             response = dynamodb.batch_get_item(
                 RequestItems={
-                    os.environ['DYNAMODB_TABLE_NAME']: {
+                    os.environ['PheBeeDynamoTable']: {
                         'Keys': batch
                     }
                 }
             )
             
-            for item in response.get('Responses', {}).get(os.environ['DYNAMODB_TABLE_NAME'], []):
+            for item in response.get('Responses', {}).get(os.environ['PheBeeDynamoTable'], []):
                 project_id = item['PK'].replace('PROJECT#', '')
                 project_subject_id = item['SK'].replace('SUBJECT#', '')
                 subject_mapping[(project_id, project_subject_id)] = item['subject_id']

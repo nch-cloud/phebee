@@ -623,7 +623,7 @@ Resources:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
           Region: !Sub ${AWS::Region}
-          DYNAMODB_TABLE_NAME: !Ref DynamoDBTable
+          PheBeeDynamoTable: !Ref DynamoDBTable
       VpcConfig:
         SecurityGroupIds:
           - !Ref PheBeeLambdaSecurityGroup
@@ -672,7 +672,7 @@ Resources:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
           Region: !Sub ${AWS::Region}
           PheBeeBus: !Ref PheBeeBus
-          DYNAMODB_TABLE_NAME: !Ref DynamoDBTable
+          PheBeeDynamoTable: !Ref DynamoDBTable
       VpcConfig:
         SecurityGroupIds:
           - !Ref PheBeeLambdaSecurityGroup
@@ -835,7 +835,7 @@ Resources:
           Region: !Sub ${AWS::Region}
           PheBeeBus: !Ref PheBeeBus
           PheBeeBucketName: !Ref PheBeeBucket
-          DYNAMODB_TABLE_NAME: !Ref DynamoDBTable
+          PheBeeDynamoTable: !Ref DynamoDBTable
       VpcConfig:
         SecurityGroupIds:
           - !Ref PheBeeLambdaSecurityGroup
@@ -1031,7 +1031,7 @@ Resources:
       Timeout: 300
       Environment:
         Variables:
-          DYNAMODB_TABLE_NAME: !Ref DynamoDBTable
+          PheBeeDynamoTable: !Ref DynamoDBTable
       Layers:
         - !Ref PheBeeUtilsLayer
       Policies:
@@ -1053,6 +1053,7 @@ Resources:
       Layers:
         - !Ref PheBeeUtilsLayer
       Policies:
+        - !Ref PheBeeS3ReadPolicy
 
   StartNeptuneBulkLoadFunction:
     Type: AWS::Serverless::Function
