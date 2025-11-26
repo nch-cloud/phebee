@@ -313,24 +313,48 @@ def get_subjects(
             if subject_iri:
                 subject_iris.append(subject_iri)
     
-    # Build subject IRI filter clause for SPARQL
-    subject_iris_clause = ""
-    if subject_iris:
-        iri_list = " ".join(f"<{iri}>" for iri in subject_iris)
-        subject_iris_clause = f"VALUES ?subjectIRI {{ {iri_list} }}"
-
-    cursor_clause = ""
+    # Apply cursor filtering to subject IRIs before building VALUES clause
     if cursor:
-        cursor_clause = f'FILTER(str(?subjectIRI) > "{cursor}")'
+        subject_iris = [iri for iri in subject_iris if iri > cursor]
+    
+    # Sort subject IRIs for consistent ordering
+    subject_iris.sort()
+    
+    # If no subjects found, return empty result
+    if not subject_iris:
+        return {
+            "subjects": [],
+            "pagination": {
+                "limit": limit,
+                "has_more": False,
+                "next_cursor": None,
+                "cursor": cursor
+            }
+        }
 
-    # Phase 1: Get paginated subject IRIs with optional term filtering
-    if term_iri and subject_iris:
+    # Build subject IRI filter clause for SPARQL
+    iri_list = " ".join(f"<{iri}>" for iri in subject_iris)
+    subject_iris_clause = f"VALUES ?subjectIRI {{ {iri_list} }}"
+
+    # No need for cursor clause in SPARQL since we filtered in Python
+    cursor_clause = ""
+
+    # Build term filtering clause if term_iri is provided
+    term_filter_clause = ""
+    
+    if term_iri:
+        # Determine term source version
+        if term_source == "hpo":
+            actual_term_source_version = hpo_version or "latest"
+        elif term_source == "mondo":
+            actual_term_source_version = mondo_version or "latest"
+        else:
+            actual_term_source_version = term_source_version or "latest"
+            
         # Build qualifier filter based on include_qualified parameter
         if include_qualified:
-            # Include all term links regardless of qualifiers
             qualifier_filter = ""
         else:
-            # Only include term links without negated, hypothetical, or family qualifiers
             qualifier_filter = """
             FILTER NOT EXISTS {
                 ?termlink phebee:hasQualifyingTerm ?excludedQualifier .
@@ -341,94 +365,63 @@ def get_subjects(
                 }
             }"""
         
-        # Query to find subjects with the specified term from DynamoDB-resolved subjects
-        subjects_query = f"""
-        PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-        PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
-        PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
-
-        SELECT DISTINCT ?subjectIRI
-        FROM <http://ods.nationwidechildrens.org/phebee/subjects>
-        FROM <http://ods.nationwidechildrens.org/phebee/{term_source}~{term_source_version}>
-        WHERE {{
-            {subject_iris_clause}
+        # Build term hierarchy clause
+        term_hierarchy_clause = f"?term rdfs:subClassOf* <{term_iri}> ."
             
+        term_filter_clause = f"""
             # Find termlinks for these subjects with the specified term
             ?termlink rdf:type phebee:TermLink ;
                       phebee:sourceNode ?subjectIRI ;
                       phebee:hasTerm ?term .
             
             # Term hierarchy check
-            ?term rdfs:subClassOf* <{term_iri}> .
+            {term_hierarchy_clause}
             
             # Qualifier filtering
             {qualifier_filter}
-            
-            # Cursor-based filtering
-            {cursor_clause}
-        }}
-        ORDER BY ?subjectIRI
-        LIMIT {limit + 1}"""
-        
-        # Execute the query
-        subjects_result = execute_query(subjects_query)
-        logger.info("Subject query returned %d subjects", len(subjects_result["results"]["bindings"]))
-        
-        # Process subjects and determine pagination
-        subject_bindings = subjects_result["results"]["bindings"]
-        has_more = len(subject_bindings) > limit
-        if has_more:
-            subject_bindings = subject_bindings[:limit]  # Remove extra record
-            next_cursor = subject_bindings[-1]["subjectIRI"]["value"] if subject_bindings else None
-        else:
-            next_cursor = None
-        
-        # Extract subject IRIs from query results
-        found_subject_iris = [binding["subjectIRI"]["value"] for binding in subject_bindings]
-        
-        # Create subject_bindings with project info for consistency
-        subject_bindings_with_project = []
-        for iri in found_subject_iris:
-            # Find the corresponding project_subject_id
-            for psid in project_subject_ids:
-                if get_subject_iri_from_project_subject_id(project_id, psid) == iri:
-                    subject_bindings_with_project.append({
-                        "subjectIRI": {"value": iri},
-                        "projectSubjectIRI": {"value": f"http://ods.nationwidechildrens.org/phebee/projects/{project_id}/subjects/{psid}"}
-                    })
-                    break
-        subject_bindings = subject_bindings_with_project
-    else:
-        # When no term filtering or no subjects found, use DynamoDB-resolved subject IRIs directly
-        if not subject_iris:
-            return {
-                "subjects": [],
-                "pagination": {
-                    "limit": limit,
-                    "has_more": False,
-                    "next_cursor": None,
-                    "cursor": cursor
-                }
-            }
-        
-        # Use all resolved subject IRIs when no term filtering
-        found_subject_iris = subject_iris[:limit]  # Apply limit
-        has_more = len(subject_iris) > limit
-        next_cursor = found_subject_iris[-1] if has_more else None
-        
-        # Create subject_bindings for consistency
-        subject_bindings = []
-        for iri in found_subject_iris:
-            # Find the corresponding project_subject_id
-            for psid in project_subject_ids:
-                if get_subject_iri_from_project_subject_id(project_id, psid) == iri:
-                    subject_bindings.append({
-                        "subjectIRI": {"value": iri},
-                        "projectSubjectIRI": {"value": f"http://ods.nationwidechildrens.org/phebee/projects/{project_id}/subjects/{psid}"}
-                    })
-                    break
+        """
 
-    # If no subjects found, return empty result
+    # Build unified SPARQL query - always use SPARQL for consistent pagination
+    from_clauses = ["FROM <http://ods.nationwidechildrens.org/phebee/subjects>"]
+    if term_iri and term_source:
+        actual_term_source_version = term_source_version or (hpo_version if term_source == "hpo" else mondo_version) or "latest"
+        from_clauses.append(f'FROM <http://ods.nationwidechildrens.org/phebee/{term_source}~{actual_term_source_version}>')
+    
+    query = f"""
+    PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+    PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+
+    SELECT DISTINCT ?subjectIRI
+    {' '.join(from_clauses)}
+    WHERE {{
+        {subject_iris_clause}
+        
+        {term_filter_clause}
+        
+        # Cursor-based filtering (done in Python before VALUES clause)
+        {cursor_clause}
+    }}
+    ORDER BY ?subjectIRI
+    LIMIT {limit + 1}"""
+    
+    # Execute the query
+    result = execute_query(query)
+    logger.info("Subject query returned %d subjects", len(result["results"]["bindings"]))
+    
+    # Process results and determine pagination
+    subject_bindings = result["results"]["bindings"]
+    has_more = len(subject_bindings) > limit
+    if has_more:
+        subject_bindings = subject_bindings[:limit]  # Remove extra record
+        next_cursor = subject_bindings[-1]["subjectIRI"]["value"] if subject_bindings else None
+    else:
+        next_cursor = None
+    
+    # Extract subject IRIs from query results
+    found_subject_iris = [binding["subjectIRI"]["value"] for binding in subject_bindings]
+    
+    # If no subjects found after filtering, return empty result
     if not found_subject_iris:
         return {
             "subjects": [],
@@ -440,15 +433,13 @@ def get_subjects(
             }
         }
     
-    # Phase 2: Get term links for the found subjects
+    # Get term links for the found subjects (simplified - direct termlinks only)
     subject_values = " ".join(f"<{iri}>" for iri in found_subject_iris)
     
-    # Build qualifier filter based on include_qualified parameter
+    # Build qualifier filter
     if include_qualified:
-        # Include all term links regardless of qualifiers
         qualifier_filter = ""
     else:
-        # Only include term links without negated, hypothetical, or family qualifiers
         qualifier_filter = """
         FILTER NOT EXISTS {
             ?termlink phebee:hasQualifyingTerm ?excludedQualifier .
@@ -459,7 +450,7 @@ def get_subjects(
             }
         }"""
 
-    # Query for termlinks of the found subjects
+    # Query for termlinks - simplified to only direct subject termlinks
     termlinks_query = f"""
     PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
@@ -469,21 +460,10 @@ def get_subjects(
     WHERE {{
         VALUES ?subjectIRI {{ {subject_values} }}
         
-        {{
-            # Pattern 1: Direct subject → termlink
-            ?termlink rdf:type phebee:TermLink ;
-                      phebee:sourceNode ?subjectIRI ;
-                      phebee:hasTerm ?term .
-        }}
-        UNION
-        {{
-            # Pattern 2: Subject → encounter → clinical note → termlink
-            ?encounter phebee:hasSubject ?subjectIRI .
-            ?clinicalNote phebee:hasEncounter ?encounter .
-            ?termlink rdf:type phebee:TermLink ;
-                      phebee:sourceNode ?clinicalNote ;
-                      phebee:hasTerm ?term .
-        }}
+        # Direct subject → termlink only
+        ?termlink rdf:type phebee:TermLink ;
+                  phebee:sourceNode ?subjectIRI ;
+                  phebee:hasTerm ?term .
         
         # Qualifier filtering
         {qualifier_filter}
@@ -491,21 +471,23 @@ def get_subjects(
     """
 
     termlinks_result = execute_query(termlinks_query)
-    logger.info("Phase 2: Term links query returned %d bindings", len(termlinks_result["results"]["bindings"]))
+    logger.info("Term links query returned %d bindings", len(termlinks_result["results"]["bindings"]))
     
-    # Build subjects map from found subject IRIs and bindings
+    # Build subjects map
     subjects_map = {}
-    for binding in subject_bindings:
-        subject_iri = binding["subjectIRI"]["value"]
-        project_subject_iri = binding["projectSubjectIRI"]["value"]
-        subjects_map[subject_iri] = {
-            "subject_iri": subject_iri,
-            "project_subject_iri": project_subject_iri,
-            "project_subject_id": project_subject_iri.split("/")[-1],
-            "term_links": {}
-        }
+    for iri in found_subject_iris:
+        # Find the corresponding project_subject_id
+        for psid in project_subject_ids:
+            if get_subject_iri_from_project_subject_id(project_id, psid) == iri:
+                subjects_map[iri] = {
+                    "subject_iri": iri,
+                    "project_subject_iri": f"http://ods.nationwidechildrens.org/phebee/projects/{project_id}/subjects/{psid}",
+                    "project_subject_id": psid,
+                    "term_links": {}
+                }
+                break
     
-    # Process term links from Phase 2 results (no qualifier processing needed)
+    # Process term links
     for binding in termlinks_result["results"]["bindings"]:
         subject_iri = binding["subjectIRI"]["value"]
         termlink_iri = binding["termlink"]["value"]
@@ -514,48 +496,33 @@ def get_subjects(
         if subject_iri in subjects_map:
             subjects_map[subject_iri]["term_links"][termlink_iri] = {
                 "term_iri": term_iri_val,
-                "qualifiers": []  # Empty list since we're not fetching qualifiers for performance
+                "qualifiers": []
             }
     
-    # Collect unique terms for labels
+    # Get term labels
     unique_terms = set()
     for subject in subjects_map.values():
         for term_link in subject["term_links"].values():
             unique_terms.add(term_link["term_iri"])
     
-    # Get term labels efficiently
     term_labels = get_term_labels(list(unique_terms), hpo_version, mondo_version) if unique_terms else {}
     
-    # Convert to final format with labels
+    # Convert to final format
     subjects = []
     for subject in subjects_map.values():
-        # Group term_links by term_iri AND qualifier combination
-        term_groups = {}
-        for termlink_iri, term_link in subject["term_links"].items():
-            term_iri = term_link["term_iri"]
-            qualifiers_key = tuple(sorted(term_link["qualifiers"]))
-            group_key = (term_iri, qualifiers_key)
-            
-            if group_key not in term_groups:
-                term_groups[group_key] = {
-                    "term_iri": term_iri,
-                    "term_label": term_labels.get(term_iri),
-                    "qualifiers": term_link["qualifiers"].copy()
-                }
-        
-        # Convert to final format
+        # Convert term_links to final format
         term_links = []
-        for term_group in term_groups.values():
+        for term_link in subject["term_links"].values():
             term_links.append({
-                "term_iri": term_group["term_iri"],
-                "term_label": term_group["term_label"],
-                "qualifiers": sorted(list(term_group["qualifiers"]))
+                "term_iri": term_link["term_iri"],
+                "term_label": term_labels.get(term_link["term_iri"]),
+                "qualifiers": []
             })
         
         subject["term_links"] = sorted(term_links, key=lambda x: x["term_iri"])
         subjects.append(subject)
     
-    # Sort by subject IRI to maintain consistent ordering
+    # Sort by subject IRI for consistent ordering
     subjects = sorted(subjects, key=lambda x: x["subject_iri"])
     
     return {
