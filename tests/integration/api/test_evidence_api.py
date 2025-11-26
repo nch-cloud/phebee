@@ -69,6 +69,7 @@ def test_get_evidence(api_base_url, sigv4_auth):
     )
 
     evidence_id = create_resp.json()["evidence_id"]
+    print(f"Created evidence: {evidence_id}")
 
     # --- Get ---
     get_resp = requests.post(
@@ -81,6 +82,7 @@ def test_get_evidence(api_base_url, sigv4_auth):
     )
 
     body = get_resp.json()
+    print(body)
     assert body["evidence_id"] == evidence_id
     assert body["subject_id"] == subject_id
     assert body["term_iri"] == "http://purl.obolibrary.org/obo/HP_0001250"

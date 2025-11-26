@@ -879,6 +879,8 @@ Resources:
         - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
+          ICEBERG_DATABASE: !Ref IcebergDatabase
+          ICEBERG_EVIDENCE_TABLE: !Ref IcebergEvidenceTable
           PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
           EVIDENCE_TABLE: !Sub ${AppName}_evidence
           Region: !Sub ${AWS::Region}
@@ -896,6 +898,9 @@ Resources:
         - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
+          ICEBERG_DATABASE: !Ref IcebergDatabase
+          ICEBERG_EVIDENCE_TABLE: !Ref IcebergEvidenceTable
+          PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
           EVIDENCE_TABLE: !Sub ${AppName}_evidence
           Region: !Sub ${AWS::Region}
       Policies:
@@ -912,6 +917,9 @@ Resources:
         - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
+          ICEBERG_DATABASE: !Ref IcebergDatabase
+          ICEBERG_EVIDENCE_TABLE: !Ref IcebergEvidenceTable
+          PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
           EVIDENCE_TABLE: !Sub ${AppName}_evidence
           Region: !Sub ${AWS::Region}
       Policies:

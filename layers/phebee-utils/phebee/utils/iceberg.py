@@ -1,8 +1,14 @@
 """
 Iceberg evidence table utilities for PheBee.
 """
+import boto3
 import hashlib
+import json
 import logging
+import os
+import re
+import time
+import uuid
 from datetime import datetime
 from typing import List, Dict, Any, Tuple, Set
 from rdflib import Graph, URIRef, Literal as RdfLiteral, Namespace
@@ -236,7 +242,6 @@ def write_evidence_to_iceberg(
         database: Iceberg database name
         table: Iceberg table name
     """
-    import boto3
     
     if not evidence_records:
         logger.info("No evidence records to write")
@@ -262,9 +267,6 @@ def query_iceberg_evidence(query: str) -> List[Dict[str, Any]]:
     Returns:
         List of result rows as dictionaries
     """
-    import boto3
-    import time
-    import os
     
     athena_client = boto3.client('athena')
     
@@ -350,6 +352,9 @@ def get_evidence_for_phenopackets(
     where_clause = " AND ".join(filters)
     
     # Query for evidence with all needed phenopacket fields
+    database_name = os.environ.get('ICEBERG_DATABASE', 'phebee')
+    table_name = os.environ.get('ICEBERG_EVIDENCE_TABLE', 'evidence')
+    
     query = f"""
     SELECT 
         subject_id,
@@ -362,7 +367,7 @@ def get_evidence_for_phenopackets(
         note_context.note_type as source,
         text_annotation.span_start,
         text_annotation.span_end
-    FROM phebee.evidence
+    FROM {database_name}.{table_name}
     WHERE {where_clause}
     ORDER BY term_iri, created_timestamp
     """
@@ -377,7 +382,6 @@ def get_evidence_for_phenopackets(
             # Parse qualifiers to determine if excluded
             excluded = False
             try:
-                import json
                 qualifiers_list = json.loads(row.get('qualifiers', '[]')) if row.get('qualifiers') else []
                 # Check for negated qualifier
                 for q in qualifiers_list:
@@ -435,9 +439,9 @@ def create_evidence_record(
     Returns:
         str: The generated evidence_id
     """
-    import uuid
-    import json
-    from datetime import datetime
+    # Get environment variables before any local imports
+    database_name = os.environ.get('ICEBERG_DATABASE', 'phebee')
+    table_name = os.environ.get('ICEBERG_EVIDENCE_TABLE', 'evidence')
     
     # Generate evidence ID
     evidence_id = generate_evidence_id(
@@ -526,7 +530,7 @@ def create_evidence_record(
             metadata_value = f"MAP({keys_array}, {values_array})"
 
     insert_query = f"""
-    INSERT INTO phebee.evidence VALUES (
+    INSERT INTO {database_name}.{table_name} VALUES (
         '{evidence_id}',
         '{run_id or f"manual-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"}',
         '{batch_id or ''}',
@@ -550,9 +554,6 @@ def create_evidence_record(
     
     try:
         # Execute INSERT using Athena
-        import boto3
-        import time
-        import os
         
         athena_client = boto3.client('athena')
         
@@ -600,6 +601,9 @@ def get_evidence_record(evidence_id: str) -> Dict[str, Any] | None:
     """
     Get a single evidence record by ID from Iceberg.
     """
+    database_name = os.environ.get('ICEBERG_DATABASE', 'phebee')
+    table_name = os.environ.get('ICEBERG_EVIDENCE_TABLE', 'evidence')
+    
     query = f"""
     SELECT 
         evidence_id,
@@ -609,14 +613,13 @@ def get_evidence_record(evidence_id: str) -> Dict[str, Any] | None:
         subject_id,
         term_iri,
         creator.creator_id as creator_id,
-        creator.creator_name as creator_name,
         creator.creator_type as creator_type,
         text_annotation.span_start as span_start,
         text_annotation.span_end as span_end,
         qualifiers,
         metadata,
         created_timestamp
-    FROM phebee.evidence
+    FROM {database_name}.{table_name}
     WHERE evidence_id = '{evidence_id}'
     LIMIT 1
     """
@@ -638,7 +641,6 @@ def get_evidence_record(evidence_id: str) -> Dict[str, Any] | None:
             "term_iri": row.get('term_iri'),
             "creator": {
                 "creator_id": row.get('creator_id'),
-                "creator_name": row.get('creator_name'),
                 "creator_type": row.get('creator_type')
             },
             "created_timestamp": row.get('created_timestamp')
@@ -657,7 +659,6 @@ def get_evidence_record(evidence_id: str) -> Dict[str, Any] | None:
             qualifiers_str = row['qualifiers']
             if qualifiers_str and qualifiers_str != '[]':
                 # Parse format like [{qualifier_type=negated, qualifier_value=1}]
-                import re
                 qualifiers = []
                 # Extract qualifier_type values from the struct format
                 matches = re.findall(r'qualifier_type=([^,}]+)', qualifiers_str)
@@ -671,7 +672,6 @@ def get_evidence_record(evidence_id: str) -> Dict[str, Any] | None:
             metadata_str = row['metadata']
             if metadata_str and metadata_str != '{}':
                 try:
-                    import json
                     # Try to parse as JSON first
                     record["metadata"] = json.loads(metadata_str)
                 except:
@@ -697,11 +697,55 @@ def delete_evidence_record(evidence_id: str) -> bool:
     if not existing:
         return False
     
-    # TODO: Implement actual DELETE query using Athena
-    # For now, this is a placeholder
-    logger.info(f"Would delete evidence record: {evidence_id}")
+    # Execute DELETE query using Athena
+    database_name = os.environ.get('ICEBERG_DATABASE', 'phebee')
+    table_name = os.environ.get('ICEBERG_EVIDENCE_TABLE', 'evidence')
     
-    return True
+    delete_query = f"""
+    DELETE FROM {database_name}.{table_name}
+    WHERE evidence_id = '{evidence_id}'
+    """
+    
+    try:
+        
+        athena_client = boto3.client('athena')
+        
+        # Check if primary workgroup is managed
+        wg_cfg = athena_client.get_work_group(WorkGroup="primary")["WorkGroup"]["Configuration"]
+        managed_config = wg_cfg.get("ManagedQueryResultsConfiguration", {})
+        managed = managed_config.get("Enabled", False) if isinstance(managed_config, dict) else False
+
+        params = {
+            "QueryString": delete_query,
+            "QueryExecutionContext": {"Database": "phebee"},
+            "WorkGroup": "primary"
+        }
+
+        if not managed:
+            bucket_name = os.environ.get('PHEBEE_BUCKET_NAME')
+            params["ResultConfiguration"] = {"OutputLocation": f"s3://{bucket_name}/athena-results/"}
+
+        response = athena_client.start_query_execution(**params)
+        query_execution_id = response['QueryExecutionId']
+        
+        # Wait for query completion
+        while True:
+            result = athena_client.get_query_execution(QueryExecutionId=query_execution_id)
+            status = result['QueryExecution']['Status']['State']
+            
+            if status == 'SUCCEEDED':
+                logger.info(f"Successfully deleted evidence record: {evidence_id}")
+                return True
+            elif status in ['FAILED', 'CANCELLED']:
+                error_msg = result['QueryExecution']['Status'].get('StateChangeReason', 'Unknown error')
+                logger.error(f"Athena DELETE failed: {error_msg}")
+                return False
+            
+            time.sleep(1)
+            
+    except Exception as e:
+        logger.error(f"Failed to delete evidence record {evidence_id}: {e}")
+        return False
 
 
 def get_evidence_for_termlink(
@@ -730,6 +774,9 @@ def get_evidence_for_termlink(
         if qualifier_conditions:
             qualifier_filter = f"AND ({' OR '.join(qualifier_conditions)})"
     
+    database_name = os.environ.get('ICEBERG_DATABASE', 'phebee')
+    table_name = os.environ.get('ICEBERG_EVIDENCE_TABLE', 'evidence')
+    
     query = f"""
     SELECT 
         evidence_id,
@@ -740,7 +787,7 @@ def get_evidence_for_termlink(
         text_annotation.span_start,
         text_annotation.span_end,
         qualifiers
-    FROM phebee.evidence
+    FROM {database_name}.{table_name}
     WHERE subject_id = '{subject_id}' 
       AND term_iri = '{term_iri}'
       {qualifier_filter}
@@ -841,6 +888,9 @@ def get_subject_term_info(
         if qualifier_conditions:
             qualifier_filter = f"AND ({' OR '.join(qualifier_conditions)})"
     
+    database_name = os.environ.get('ICEBERG_DATABASE', 'phebee')
+    table_name = os.environ.get('ICEBERG_EVIDENCE_TABLE', 'evidence')
+    
     query = f"""
     SELECT 
         evidence_id,
@@ -854,7 +904,7 @@ def get_subject_term_info(
         clinical_note_id,
         encounter_id,
         qualifiers
-    FROM phebee.evidence
+    FROM {database_name}.{table_name}
     WHERE subject_id = '{subject_id}' 
       AND term_iri = '{term_iri}'
       {qualifier_filter}
@@ -890,7 +940,6 @@ def get_subject_term_info(
             # Parse qualifiers
             if row.get('qualifiers'):
                 try:
-                    import json
                     qualifiers_list = json.loads(row['qualifiers'])
                     record["qualifiers"] = [
                         q['qualifier_type'] for q in qualifiers_list 
