@@ -27,8 +27,11 @@ def test_subjects_query_with_term_and_evidence(
     print(f"project_subject_id: {project_subject_id}")
 
     # --- Create evidence directly (no creator CRUD needed) ---
+    # Extract subject UUID from subject IRI for evidence creation
+    subject_uuid = subject_iri.split("/")[-1]
+    
     evidence_payload = {
-        "subject_id": project_subject_id,
+        "subject_id": subject_uuid,  # Use subject UUID, not project_subject_id
         "term_iri": "http://purl.obolibrary.org/obo/HP_0001250",
         "creator_id": "test-creator",
         "evidence_type": "manual_annotation",
@@ -48,7 +51,7 @@ def test_subjects_query_with_term_and_evidence(
     # --- Create TermLink ---
     term_iri = "http://purl.obolibrary.org/obo/HP_0001250"
     termlink_payload = {
-        "subject_id": project_subject_id,
+        "subject_id": subject_uuid,  # Use subject UUID, not project_subject_id
         "term_iri": term_iri,
         "creator_id": "test-creator"
     }
