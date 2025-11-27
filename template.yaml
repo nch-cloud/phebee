@@ -762,6 +762,8 @@ Resources:
         Variables:
           PheBeeBucketName: !Ref PheBeeBucket
       Policies:
+        - !Ref PheBeeS3ReadPolicy
+        - !Ref PheBeeS3WritePolicy
 
   ProcessPhenopacketFunction:
     Type: AWS::Serverless::Function
@@ -775,6 +777,11 @@ Resources:
       Environment:
         Variables:
           PheBeeBucketName: !Ref PheBeeBucket
+      Policies:
+        - !Ref PheBeeS3ReadPolicy
+        - !Ref PheBeeS3WritePolicy
+        - !Ref PheBeeNeptuneWritePolicy
+        - !Ref PheBeeDynamoDBWritePolicy
 
   ExportPhenopacketsFunction:
     Type: AWS::Serverless::Function
@@ -1570,6 +1577,8 @@ Resources:
       Type: STANDARD
       Policies:
         - !Ref PheBeeStepFunctionPolicy
+        - !Ref PheBeeS3ReadPolicy
+        - !Ref PheBeeS3WritePolicy
         - Statement:
           - Effect: Allow
             Action:

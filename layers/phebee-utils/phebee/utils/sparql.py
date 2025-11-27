@@ -249,7 +249,6 @@ def get_term_labels(term_iris: list[str], hpo_version: str, mondo_version: str) 
     WHERE {{
         VALUES ?term {{ {term_values} }}
         ?term rdfs:label ?label .
-        FILTER(LANGMATCHES(LANG(?label),'en'))
     }}
     """
     

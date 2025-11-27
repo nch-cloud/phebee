@@ -24,8 +24,12 @@ def lambda_handler(event, context):
 
     fixed_term_links_payload = []
 
+    # Extract UUID from source_node_iri for subject_id
+    subject_id = source_node_iri.split("/")[-1]
+
     for link in term_links_payload:
         updated_link = dict(link)
+        updated_link["subject_id"] = subject_id  # Use the UUID from source_node_iri
         updated_link["source_node_iri"] = source_node_iri
         fixed_term_links_payload.append(updated_link)
 
