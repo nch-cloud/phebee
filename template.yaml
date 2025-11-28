@@ -846,6 +846,7 @@ Resources:
       Policies:
         - !Ref PheBeeNeptuneReadPolicy
         - !Ref PheBeeDynamoDBReadPolicy
+        - !Ref PheBeeS3WritePolicy
 
   ResetDatabaseFunction:
     Type: AWS::Serverless::Function
@@ -1163,6 +1164,11 @@ Resources:
       Timeout: 30
       Layers:
         - !Ref PheBeeUtilsLayer
+      Environment:
+        Variables:
+          PheBeeBus: !Ref PheBeeBus
+      Policies:
+        - !Ref PheBeePutEventsPolicy
 
   NotifyBulkImportFailureFunction:
     Type: AWS::Serverless::Function
@@ -1174,6 +1180,11 @@ Resources:
       Timeout: 30
       Layers:
         - !Ref PheBeeUtilsLayer
+      Environment:
+        Variables:
+          PheBeeBus: !Ref PheBeeBus
+      Policies:
+        - !Ref PheBeePutEventsPolicy
 
   # EMR Serverless Application
   EMRServerlessApplication:

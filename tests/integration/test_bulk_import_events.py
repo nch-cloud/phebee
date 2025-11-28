@@ -66,6 +66,21 @@ def bulk_upload_run(test_data, physical_resources):
         ContentType='application/x-ndjson'
     )
     
+    # Start Step Function execution
+    stepfunctions_client = boto3.client('stepfunctions')
+    state_machine_arn = physical_resources.get("BulkImportStateMachine")
+    
+    input_path = f"s3://{s3_bucket}/test-data/{run_id}/"
+    
+    stepfunctions_client.start_execution(
+        stateMachineArn=state_machine_arn,
+        name=run_id,
+        input=json.dumps({
+            "run_id": run_id,
+            "input_path": input_path
+        })
+    )
+    
     return run_id, f"domain-{run_id}", f"prov-{run_id}"
 
 
@@ -75,8 +90,7 @@ def test_bulk_import_success_event(physical_resources, test_project_id):
     
     sqs_client = boto3.client("sqs")
     events_client = boto3.client("events")
-    stack_name = os.environ.get("STACK_NAME", "phebee-dev-2")
-    event_bus_name = f"phebee-bus-{stack_name}"
+    event_bus_name = physical_resources["PheBeeBus"]
     
     # Create test SQS queue
     queue_name = f"phebee-test-events-{uuid.uuid4().hex[:8]}"
@@ -123,11 +137,16 @@ def test_bulk_import_success_event(physical_resources, test_project_id):
         # Run bulk upload (this will trigger the Step Function)
         run_id, domain_load_id, prov_load_id = bulk_upload_run(test_data, physical_resources)
         
-        # Wait for Step Function to complete and fire event
-        time.sleep(75)
-        
-        # Check SQS queue for event
-        messages = sqs_client.receive_message(QueueUrl=queue_url, MaxNumberOfMessages=10, WaitTimeSeconds=5)
+        # Poll for Step Function completion and event firing
+        messages = None
+        for attempt in range(5):  # Poll for up to 5 minutes
+            time.sleep(60)  # Wait 1 minute between polls
+            
+            # Check SQS queue for event
+            messages = sqs_client.receive_message(QueueUrl=queue_url, MaxNumberOfMessages=10, WaitTimeSeconds=5)
+            
+            if "Messages" in messages:
+                break
         
         assert "Messages" in messages, f"No events received in queue for run_id: {run_id}"
         

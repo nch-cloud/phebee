@@ -1,7 +1,7 @@
 import json
 import logging
-import boto3
 from datetime import datetime
+from phebee.utils.eventbridge import fire_event
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -15,6 +15,8 @@ def lambda_handler(event, context):
         status = event.get('status', 'SUCCESS')
         emr_job_id = event.get('emr_job_id')
         load_id = event.get('load_id')
+        domain_load_id = event.get('domain_load_id')
+        prov_load_id = event.get('prov_load_id')
         
         completion_time = datetime.utcnow().isoformat()
         
@@ -23,8 +25,16 @@ def lambda_handler(event, context):
         logger.info(f"EMR Job ID: {emr_job_id}")
         logger.info(f"Neptune Load ID: {load_id}")
         
-        # Could send SNS notification, update DynamoDB, etc.
-        # For now, just return success
+        # Fire bulk import success event
+        event_data = {
+            "run_id": run_id,
+            "timestamp": completion_time,
+            "domain_load_id": domain_load_id,
+            "prov_load_id": prov_load_id
+        }
+        
+        fire_event("bulk_import_success", event_data)
+        logger.info(f"Fired bulk_import_success event for run {run_id}")
         
         return {
             'statusCode': 200,
