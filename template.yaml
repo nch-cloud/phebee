@@ -1115,6 +1115,44 @@ Resources:
       Policies:
         - !Ref PheBeeNeptuneLoadPolicy
 
+  GenerateTTLManifestFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AppName}-GenerateTTLManifestFunction
+      CodeUri: functions
+      Handler: generate_ttl_manifest.lambda_handler
+      MemorySize: 512
+      Timeout: 900
+      Layers:
+        - !Ref PheBeeUtilsLayer
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - athena:StartQueryExecution
+                - athena:GetQueryExecution
+                - athena:GetQueryResults
+                - athena:StopQueryExecution
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - glue:GetTable
+                - glue:GetDatabase
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - s3:GetBucketLocation
+                - s3:GetObject
+                - s3:ListBucket
+                - s3:ListBucketMultipartUploads
+                - s3:ListMultipartUploadParts
+                - s3:AbortMultipartUpload
+                - s3:PutObject
+                - s3:DeleteObject
+              Resource: 
+                - !Sub "arn:aws:s3:::${PheBeeBucket}/*"
+                - !Sub "arn:aws:s3:::${PheBeeBucket}"
+
   GenerateTTLFromIcebergFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -1294,6 +1332,7 @@ Resources:
         NeptuneClusterEndpoint: !GetAtt PheBeeNeptuneCluster.Endpoint
         StartNeptuneBulkLoadFunction: !GetAtt StartNeptuneBulkLoadFunction.Arn
         CheckNeptuneBulkLoadStatusFunction: !GetAtt CheckNeptuneBulkLoadStatusFunction.Arn
+        GenerateTTLManifestFunction: !GetAtt GenerateTTLManifestFunction.Arn
         GenerateTTLFromIcebergFunction: !GetAtt GenerateTTLFromIcebergFunction.Arn
         NotifyBulkImportCompleteFunction: !GetAtt NotifyBulkImportCompleteFunction.Arn
         NotifyBulkImportFailureFunction: !GetAtt NotifyBulkImportFailureFunction.Arn
@@ -1323,6 +1362,7 @@ Resources:
                   - !GetAtt ResolveSubjectMappingsFunction.Arn
                   - !GetAtt StartNeptuneBulkLoadFunction.Arn
                   - !GetAtt CheckNeptuneBulkLoadStatusFunction.Arn
+                  - !GetAtt GenerateTTLManifestFunction.Arn
                   - !GetAtt GenerateTTLFromIcebergFunction.Arn
                   - !GetAtt NotifyBulkImportCompleteFunction.Arn
                   - !GetAtt NotifyBulkImportFailureFunction.Arn

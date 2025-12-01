@@ -1,5 +1,27 @@
 import os
 import pytest
+
+
+def pytest_addoption(parser):
+    """Add command line options for performance test configuration"""
+    parser.addoption("--run-performance", action="store_true", help="Run performance tests")
+
+
+def pytest_collection_modifyitems(config, items):
+    """Modify test collection to handle performance tests"""
+    if config.getoption("--run-performance"):
+        # Remove skip marker from performance tests when --run-performance is used
+        for item in items:
+            if "test_large_scale_performance" in item.name:
+                # Remove the skip marker
+                skip_markers = [mark for mark in item.iter_markers(name="skip")]
+                for mark in skip_markers:
+                    item.remove_marker(mark)
+    else:
+        # Add skip marker to performance tests when not running performance tests
+        for item in items:
+            if "performance" in [mark.name for mark in item.iter_markers()]:
+                item.add_marker(pytest.mark.skip(reason="Performance test - use --run-performance to enable"))
 import subprocess
 import boto3
 import uuid

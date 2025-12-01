@@ -52,7 +52,7 @@ def lambda_handler(event, context):
                 'input_path': input_path,
                 'bucket': bucket,
                 'prefix': prefix,
-                'jsonl_files': len(jsonl_files),
+                'jsonl_files': [f"s3://{bucket}/{file_key}" for file_key in jsonl_files],
                 'total_size': total_size,
                 'validated': True
             }

@@ -72,7 +72,7 @@
         }
       },
       "ResultPath": "$.emr_result",
-      "Next": "GenerateTTLFromIceberg",
+      "Next": "GenerateTTLManifest",
       "Catch": [{
         "ErrorEquals": ["States.ALL"],
         "Next": "NotifyFailure",
@@ -80,25 +80,60 @@
       }]
     },
     
-    "GenerateTTLFromIceberg": {
+    "GenerateTTLManifest": {
       "Type": "Task",
       "Resource": "arn:aws:states:::lambda:invoke",
       "Parameters": {
-        "FunctionName": "${GenerateTTLFromIcebergFunction}",
+        "FunctionName": "${GenerateTTLManifestFunction}",
         "Payload": {
           "run_id.$": "$.run_id",
           "database": "${IcebergDatabase}",
           "table": "${IcebergEvidenceTable}",
-          "bucket": "${PheBeeBucketName}"
+          "bucket": "${PheBeeBucketName}",
+          "page_size": 10000
         }
       },
+      "ResultPath": "$.ttl_manifest",
+      "Next": "GenerateTTLFromPages",
+      "Catch": [{
+        "ErrorEquals": ["States.ALL"],
+        "Next": "NotifyFailure",
+        "ResultPath": "$.error"
+      }]
+    },
+
+    "GenerateTTLFromPages": {
+      "Type": "Map",
+      "ItemsPath": "$.ttl_manifest.Payload.body.pages",
+      "MaxConcurrency": 50,
       "ResultPath": "$.ttl_result",
       "Next": "StartNeptuneBulkLoad",
       "Catch": [{
         "ErrorEquals": ["States.ALL"],
         "Next": "NotifyFailure",
         "ResultPath": "$.error"
-      }]
+      }],
+      "Iterator": {
+        "StartAt": "GenerateTTLForPage",
+        "States": {
+          "GenerateTTLForPage": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "${GenerateTTLFromIcebergFunction}",
+              "Payload": {
+                "run_id.$": "$.run_id",
+                "database": "${IcebergDatabase}",
+                "table": "${IcebergEvidenceTable}",
+                "bucket": "${PheBeeBucketName}",
+                "page_query.$": "$.query",
+                "page_number.$": "$.page_number"
+              }
+            },
+            "End": true
+          }
+        }
+      }
     },
     
     "StartNeptuneBulkLoad": {
@@ -108,7 +143,7 @@
         "FunctionName": "${StartNeptuneBulkLoadFunction}",
         "Payload": {
           "run_id.$": "$.run_id",
-          "ttl_files.$": "States.Array($.ttl_result.Payload.body.ttl_prefix)"
+          "ttl_files.$": "States.Array($.ttl_result[0].Payload.body.ttl_prefix)"
         }
       },
       "ResultPath": "$.bulk_load",
