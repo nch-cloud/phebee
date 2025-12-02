@@ -72,7 +72,7 @@
         }
       },
       "ResultPath": "$.emr_result",
-      "Next": "GenerateTTLManifest",
+      "Next": "GenerateNQManifest",
       "Catch": [{
         "ErrorEquals": ["States.ALL"],
         "Next": "NotifyFailure",
@@ -80,11 +80,11 @@
       }]
     },
     
-    "GenerateTTLManifest": {
+    "GenerateNQManifest": {
       "Type": "Task",
       "Resource": "arn:aws:states:::lambda:invoke",
       "Parameters": {
-        "FunctionName": "${GenerateTTLManifestFunction}",
+        "FunctionName": "${GenerateNQManifestFunction}",
         "Payload": {
           "run_id.$": "$.run_id",
           "database": "${IcebergDatabase}",
@@ -93,8 +93,8 @@
           "page_size": 10000
         }
       },
-      "ResultPath": "$.ttl_manifest",
-      "Next": "GenerateTTLFromPages",
+      "ResultPath": "$.nq_manifest",
+      "Next": "GenerateNQFromPages",
       "Catch": [{
         "ErrorEquals": ["States.ALL"],
         "Next": "NotifyFailure",
@@ -102,11 +102,11 @@
       }]
     },
 
-    "GenerateTTLFromPages": {
+    "GenerateNQFromPages": {
       "Type": "Map",
-      "ItemsPath": "$.ttl_manifest.Payload.body.pages",
+      "ItemsPath": "$.nq_manifest.Payload.body.pages",
       "MaxConcurrency": 50,
-      "ResultPath": "$.ttl_result",
+      "ResultPath": "$.nq_result",
       "Next": "StartNeptuneBulkLoad",
       "Catch": [{
         "ErrorEquals": ["States.ALL"],
@@ -114,13 +114,13 @@
         "ResultPath": "$.error"
       }],
       "Iterator": {
-        "StartAt": "GenerateTTLForPage",
+        "StartAt": "GenerateNQForPage",
         "States": {
-          "GenerateTTLForPage": {
+          "GenerateNQForPage": {
             "Type": "Task",
             "Resource": "arn:aws:states:::lambda:invoke",
             "Parameters": {
-              "FunctionName": "${GenerateTTLFromIcebergFunction}",
+              "FunctionName": "${GenerateNQFromIcebergFunction}",
               "Payload": {
                 "run_id.$": "$.run_id",
                 "database": "${IcebergDatabase}",
@@ -143,7 +143,7 @@
         "FunctionName": "${StartNeptuneBulkLoadFunction}",
         "Payload": {
           "run_id.$": "$.run_id",
-          "ttl_files.$": "States.Array($.ttl_result[0].Payload.body.ttl_prefix)"
+          "nq_files.$": "States.Array($.nq_result[0].Payload.body.nq_prefix)"
         }
       },
       "ResultPath": "$.bulk_load",

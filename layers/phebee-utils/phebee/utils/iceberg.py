@@ -114,7 +114,7 @@ def extract_evidence_records(
                 "subject_id": subject_id,
                 "encounter_id": encounter_id,
                 "clinical_note_id": clinical_note_id,
-                "termlink_id": None,  # Will be set after TTL derivation
+                "termlink_id": None,  # Will be set after N-Quads derivation
                 "term_iri": entry.term_iri,
                 "note_context": {
                     "note_timestamp": evidence.note_timestamp,
@@ -138,15 +138,15 @@ def extract_evidence_records(
     
     return evidence_records
 
-def derive_neptune_ttl_from_evidence(evidence_records: List[Dict[str, Any]]) -> Tuple[str, Set[str]]:
+def derive_neptune_nq_from_evidence(evidence_records: List[Dict[str, Any]]) -> Tuple[str, Set[str]]:
     """
-    Derive simplified Neptune TTL from evidence records.
+    Derive simplified Neptune N-Quads from evidence records.
     
     Args:
         evidence_records: List of evidence records from Iceberg
         
     Returns:
-        Tuple of (TTL string, set of created termlink IRIs)
+        Tuple of (N-Quads string, set of created termlink IRIs)
     """
     g = Graph()
     g.bind("phebee", PHEBEE_NS)
@@ -219,15 +219,15 @@ def derive_neptune_ttl_from_evidence(evidence_records: List[Dict[str, Any]]) -> 
         
         created_termlinks.add(termlink_iri)
     
-    # Serialize to TTL
-    ttl = g.serialize(format="turtle", prefixes={
+    # Serialize to N-Quads
+    nq = g.serialize(format="turtle", prefixes={
         "phebee": PHEBEE_NS, 
         "obo": OBO, 
         "dcterms": DCTERMS, 
         "xsd": XSD
     })
     
-    return ttl, created_termlinks
+    return nq, created_termlinks
 
 def write_evidence_to_iceberg(
     evidence_records: List[Dict[str, Any]],

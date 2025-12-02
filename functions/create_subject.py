@@ -101,6 +101,8 @@ def lambda_handler(event, context):
             subject_iri = known_subject["subject_iri"]
         else:
             subject_iri = create_subject(project_id, project_subject_id)
+            # Link new subject to project
+            link_subject_to_project(subject_iri, project_id, project_subject_id)
             # Create DynamoDB mapping for new subject
             create_dynamodb_mapping(project_id, project_subject_id, subject_iri)
             subject_data = {

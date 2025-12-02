@@ -1115,12 +1115,12 @@ Resources:
       Policies:
         - !Ref PheBeeNeptuneLoadPolicy
 
-  GenerateTTLManifestFunction:
+  GenerateNQManifestFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AppName}-GenerateTTLManifestFunction
+      FunctionName: !Sub ${AppName}-GenerateNQManifestFunction
       CodeUri: functions
-      Handler: generate_ttl_manifest.lambda_handler
+      Handler: generate_nq_manifest.lambda_handler
       MemorySize: 512
       Timeout: 900
       Layers:
@@ -1153,16 +1153,19 @@ Resources:
                 - !Sub "arn:aws:s3:::${PheBeeBucket}/*"
                 - !Sub "arn:aws:s3:::${PheBeeBucket}"
 
-  GenerateTTLFromIcebergFunction:
+  GenerateNQFromIcebergFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AppName}-GenerateTTLFromIcebergFunction
+      FunctionName: !Sub ${AppName}-GenerateNQFromIcebergFunction
       CodeUri: functions
-      Handler: generate_ttl_from_iceberg.lambda_handler
+      Handler: generate_nq_from_iceberg.lambda_handler
       MemorySize: 512
       Timeout: 900
       Layers:
         - !Ref PheBeeUtilsLayer
+      Environment:
+        Variables:
+          DYNAMODB_TABLE_NAME: !Ref DynamoDBTable
       Policies:
         - Statement:
             - Effect: Allow
@@ -1178,6 +1181,11 @@ Resources:
                 - glue:GetDatabase
                 - glue:GetPartitions
               Resource: "*"
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+                - dynamodb:GetItem
+              Resource: !GetAtt DynamoDBTable.Arn
             - Effect: Allow
               Action:
                 - s3:GetBucketLocation
@@ -1332,8 +1340,8 @@ Resources:
         NeptuneClusterEndpoint: !GetAtt PheBeeNeptuneCluster.Endpoint
         StartNeptuneBulkLoadFunction: !GetAtt StartNeptuneBulkLoadFunction.Arn
         CheckNeptuneBulkLoadStatusFunction: !GetAtt CheckNeptuneBulkLoadStatusFunction.Arn
-        GenerateTTLManifestFunction: !GetAtt GenerateTTLManifestFunction.Arn
-        GenerateTTLFromIcebergFunction: !GetAtt GenerateTTLFromIcebergFunction.Arn
+        GenerateNQManifestFunction: !GetAtt GenerateNQManifestFunction.Arn
+        GenerateNQFromIcebergFunction: !GetAtt GenerateNQFromIcebergFunction.Arn
         NotifyBulkImportCompleteFunction: !GetAtt NotifyBulkImportCompleteFunction.Arn
         NotifyBulkImportFailureFunction: !GetAtt NotifyBulkImportFailureFunction.Arn
         DynamoDBTableName: !Ref DynamoDBTable
@@ -1362,8 +1370,8 @@ Resources:
                   - !GetAtt ResolveSubjectMappingsFunction.Arn
                   - !GetAtt StartNeptuneBulkLoadFunction.Arn
                   - !GetAtt CheckNeptuneBulkLoadStatusFunction.Arn
-                  - !GetAtt GenerateTTLManifestFunction.Arn
-                  - !GetAtt GenerateTTLFromIcebergFunction.Arn
+                  - !GetAtt GenerateNQManifestFunction.Arn
+                  - !GetAtt GenerateNQFromIcebergFunction.Arn
                   - !GetAtt NotifyBulkImportCompleteFunction.Arn
                   - !GetAtt NotifyBulkImportFailureFunction.Arn
         - PolicyName: EMRServerlessAccess

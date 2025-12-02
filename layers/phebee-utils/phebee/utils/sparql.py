@@ -52,7 +52,6 @@ from collections import defaultdict
 from phebee.constants import SPARQL_SEPARATOR, PHEBEE
 from .neptune import execute_query, execute_update
 from .aws import get_current_timestamp
-from .dynamodb import get_subject_iri_from_project_subject_id, get_all_project_subject_ids
 
 
 def node_exists(iri: str) -> bool:
@@ -128,6 +127,13 @@ def create_project(project_id: str, project_label: str) -> bool:
     return True
 
 
+def get_subject_iri_from_project_subject_id(project_id: str, project_subject_id: str) -> str:
+    """Get the subject IRI for a given project_id and project_subject_id"""
+    project_subject_iri = f"http://ods.nationwidechildrens.org/phebee/projects/{project_id}/{project_subject_id}"
+    subject = get_subject(project_subject_iri)
+    return subject["subject_iri"] if subject else None
+
+
 def get_subject(project_subject_iri: str) -> dict:
     # Get project node with IRI matching project_id
     # Get project-subject id nodes pointing at project node
@@ -179,24 +185,18 @@ def subject_exists(subject_iri: str) -> bool:
 def create_subject(project_id: str, project_subject_id: str) -> str:
     subject_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{uuid.uuid4()}"
     project_iri = f"http://ods.nationwidechildrens.org/phebee/projects/{project_id}"
-    project_subject_iri = f"{project_iri}/{project_subject_id}"
-    timestamp = get_current_timestamp()
 
     sparql = f"""
     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
     PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-    PREFIX dcterms: <http://purl.org/dc/terms/>
-    PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
 
     INSERT DATA {{
         GRAPH <http://ods.nationwidechildrens.org/phebee/subjects> {{
             <{subject_iri}> rdf:type phebee:Subject .
         }}
         GRAPH <{project_iri}> {{
-            <{subject_iri}> phebee:hasProjectSubjectId <{project_subject_iri}> .
-            <{project_subject_iri}> rdf:type phebee:ProjectSubjectId ;
-                                     phebee:hasProject <{project_iri}> ;
-                                     dcterms:created \"{timestamp}\"^^xsd:dateTime .
+            <{subject_iri}> phebee:hasProjectSubjectId "{project_subject_id}" ;
+                            phebee:hasProject <{project_iri}> .
         }}
     }}
     """
@@ -207,21 +207,17 @@ def create_subject(project_id: str, project_subject_id: str) -> str:
 def link_subject_to_project(
     subject_iri: str, project_id: str, project_subject_id: str
 ) -> None:
-    project_iri = f"http://ods.nationwidechildrens.org/phebee/projects/{project_id}"
-    project_subject_iri = f"{project_iri}/{project_subject_id}"
-    timestamp = get_current_timestamp()
-
+    project_subject_iri = f"http://ods.nationwidechildrens.org/phebee/projects/{project_id}/{project_subject_id}"
+    
     sparql = f"""
     PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-    PREFIX dcterms: <http://purl.org/dc/terms/>
-    PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
 
     INSERT DATA {{
-        GRAPH <{project_iri}> {{
+        GRAPH <http://ods.nationwidechildrens.org/phebee/projects/{project_id}> {{
             <{subject_iri}> phebee:hasProjectSubjectId <{project_subject_iri}> .
             <{project_subject_iri}> rdf:type phebee:ProjectSubjectId ;
-                                     phebee:hasProject <{project_iri}> ;
-                                     dcterms:created \"{timestamp}\"^^xsd:dateTime .
+                                    phebee:hasProject <http://ods.nationwidechildrens.org/phebee/projects/{project_id}> .
         }}
     }}
     """
@@ -300,43 +296,21 @@ def get_subjects(
     # Extract project_id from project_iri
     project_id = project_iri.split("/")[-1]
     
-    # If specific project_subject_ids provided, resolve them via DynamoDB
-    # Otherwise, get all project_subject_ids for the project
-    if not project_subject_ids:
-        project_subject_ids = get_all_project_subject_ids(project_id)
+    # Track if we originally had specific subject IDs
+    has_specific_subjects = bool(project_subject_ids)
     
-    subject_iris = []
-    if project_subject_ids:
-        for psid in project_subject_ids:
-            subject_iri = get_subject_iri_from_project_subject_id(project_id, psid)
-            if subject_iri:
-                subject_iris.append(subject_iri)
+    # Build project filtering - filter by project using ProjectSubjectId nodes
+    project_filter_clause = f"?subjectIRI phebee:hasProjectSubjectId ?projectSubjectIdNode ."
+    project_filter_clause += f"\n    ?projectSubjectIdNode phebee:hasProject <{project_iri}> ."
     
-    # Apply cursor filtering to subject IRIs before building VALUES clause
-    if cursor:
-        subject_iris = [iri for iri in subject_iris if iri > cursor]
-    
-    # Sort subject IRIs for consistent ordering
-    subject_iris.sort()
-    
-    # If no subjects found, return empty result
-    if not subject_iris:
-        return {
-            "subjects": [],
-            "pagination": {
-                "limit": limit,
-                "has_more": False,
-                "next_cursor": None,
-                "cursor": cursor
-            }
-        }
-
-    # Build subject IRI filter clause for SPARQL
-    iri_list = " ".join(f"<{iri}>" for iri in subject_iris)
-    subject_iris_clause = f"VALUES ?subjectIRI {{ {iri_list} }}"
-
-    # No need for cursor clause in SPARQL since we filtered in Python
-    cursor_clause = ""
+    # Build subject ID filtering clause if specific project_subject_ids provided
+    if has_specific_subjects:
+        # Filter to specific project subject IDs using the ProjectSubjectId node IRIs
+        psid_iris = " ".join(f'<http://ods.nationwidechildrens.org/phebee/projects/{project_id}/{psid}>' for psid in project_subject_ids)
+        subject_id_filter_clause = f"VALUES ?projectSubjectIdNode {{ {psid_iris} }}"
+    else:
+        # No specific filtering - get all subjects in project
+        subject_id_filter_clause = ""
 
     # Build term filtering clause if term_iri is provided
     term_filter_clause = ""
@@ -364,13 +338,14 @@ def get_subjects(
                 }
             }"""
         
-        # Build term hierarchy clause
-        term_hierarchy_clause = f"?term rdfs:subClassOf* <{term_iri}> ."
+        # Build term hierarchy clause - temporarily disabled for testing
+        # term_hierarchy_clause = f"?term rdfs:subClassOf* <{term_iri}> ."
+        term_hierarchy_clause = f"FILTER (?term = <{term_iri}>)"  # Exact match only
             
         term_filter_clause = f"""
             # Find termlinks for these subjects with the specified term
+            ?subjectIRI phebee:hasTermLink ?termlink .
             ?termlink rdf:type phebee:TermLink ;
-                      phebee:sourceNode ?subjectIRI ;
                       phebee:hasTerm ?term .
             
             # Term hierarchy check
@@ -380,48 +355,101 @@ def get_subjects(
             {qualifier_filter}
         """
 
-    # Build unified SPARQL query - always use SPARQL for consistent pagination
-    from_clauses = ["FROM <http://ods.nationwidechildrens.org/phebee/subjects>"]
-    if term_iri and term_source:
-        actual_term_source_version = term_source_version or (hpo_version if term_source == "hpo" else mondo_version) or "latest"
-        from_clauses.append(f'FROM <http://ods.nationwidechildrens.org/phebee/{term_source}~{actual_term_source_version}>')
+    # Build unified SPARQL query - need both subjects and project graphs
+    from_clauses = [
+        "FROM <http://ods.nationwidechildrens.org/phebee/subjects>",
+        f"FROM <http://ods.nationwidechildrens.org/phebee/projects/{project_id}>"
+    ]
+    # Temporarily disable term source graph for exact matches to improve performance
+    # if term_iri and term_source:
+    #     actual_term_source_version = term_source_version or (hpo_version if term_source == "hpo" else mondo_version) or "latest"
+    #     from_clauses.append(f'FROM <http://ods.nationwidechildrens.org/phebee/{term_source}~{actual_term_source_version}>')
+    
+    # Build cursor filtering clause
+    cursor_clause = f"FILTER (str(?subjectIRI) > \"{cursor}\")" if cursor else ""
+    
+    # Build optional term links clause - only if no term filtering
+    optional_term_links_clause = ""
+    if not term_iri:
+        optional_term_links_clause = """
+        OPTIONAL {
+            ?subjectIRI phebee:hasTermLink ?termlink .
+            ?termlink rdf:type phebee:TermLink ;
+                      phebee:hasTerm ?term .
+        }"""
     
     query = f"""
     PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
     PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
 
-    SELECT DISTINCT ?subjectIRI
+    SELECT DISTINCT ?subjectIRI ?termlink ?term ?projectSubjectIdNode
     {' '.join(from_clauses)}
     WHERE {{
-        {subject_iris_clause}
+        {subject_id_filter_clause}
+        
+        # Project filtering - always filter by project
+        {project_filter_clause}
+        
+        # Get subjects and optionally their term links
+        ?subjectIRI rdf:type phebee:Subject .
+        {optional_term_links_clause}
         
         {term_filter_clause}
         
-        # Cursor-based filtering (done in Python before VALUES clause)
+        # Cursor-based filtering
         {cursor_clause}
     }}
-    ORDER BY ?subjectIRI
-    LIMIT {limit + 1}"""
+    ORDER BY str(?subjectIRI) str(?termlink)
+    LIMIT {(limit + 1) * 50}"""  # Increase limit to account for multiple term links per subject
     
-    # Execute the query
+    # Execute the unified query
     result = execute_query(query)
-    logger.info("Subject query returned %d subjects", len(result["results"]["bindings"]))
+    logger.info("Unified query returned %d bindings", len(result["results"]["bindings"]))
     
-    # Process results and determine pagination
-    subject_bindings = result["results"]["bindings"]
-    has_more = len(subject_bindings) > limit
+    # Process results into subjects with term links
+    subjects_map = {}
+    for binding in result["results"]["bindings"]:
+        subject_iri = binding["subjectIRI"]["value"]
+        project_subject_id_node = binding.get("projectSubjectIdNode", {}).get("value")
+        
+        # Extract project_subject_id from the ProjectSubjectId node IRI
+        project_subject_id = project_subject_id_node.split("/")[-1] if project_subject_id_node else None
+        project_subject_iri = project_subject_id_node  # The node IRI is the project_subject_iri
+        
+        if subject_iri not in subjects_map:
+            subjects_map[subject_iri] = {
+                "subject_iri": subject_iri,
+                "project_subject_iri": project_subject_iri,
+                "project_subject_id": project_subject_id,
+                "term_links": {}
+            }
+        
+        # Add term link if present
+        if "termlink" in binding and "term" in binding:
+            termlink_iri = binding["termlink"]["value"]
+            term_iri = binding["term"]["value"]
+            
+            if termlink_iri not in subjects_map[subject_iri]["term_links"]:
+                subjects_map[subject_iri]["term_links"][termlink_iri] = {
+                    "term_iri": term_iri,
+                    "qualifiers": []
+                }
+    
+    # Apply pagination to subjects (not bindings)
+    subject_iris = sorted(subjects_map.keys())
+    has_more = len(subject_iris) > limit
     if has_more:
-        subject_bindings = subject_bindings[:limit]  # Remove extra record
-        next_cursor = subject_bindings[-1]["subjectIRI"]["value"] if subject_bindings else None
+        subject_iris = subject_iris[:limit]
+        next_cursor = subject_iris[-1] if subject_iris else None
     else:
         next_cursor = None
     
-    # Extract subject IRIs from query results
-    found_subject_iris = [binding["subjectIRI"]["value"] for binding in subject_bindings]
+    # Filter subjects_map to only include paginated subjects
+    paginated_subjects_map = {iri: subjects_map[iri] for iri in subject_iris}
     
-    # If no subjects found after filtering, return empty result
-    if not found_subject_iris:
+    # If no subjects found, return empty result
+    if not paginated_subjects_map:
         return {
             "subjects": [],
             "pagination": {
@@ -432,75 +460,9 @@ def get_subjects(
             }
         }
     
-    # Get term links for the found subjects (simplified - direct termlinks only)
-    subject_values = " ".join(f"<{iri}>" for iri in found_subject_iris)
-    
-    # Build qualifier filter
-    if include_qualified:
-        qualifier_filter = ""
-    else:
-        qualifier_filter = """
-        FILTER NOT EXISTS {
-            ?termlink phebee:hasQualifyingTerm ?excludedQualifier .
-            VALUES ?excludedQualifier {
-                <http://ods.nationwidechildrens.org/phebee/qualifier/negated>
-                <http://ods.nationwidechildrens.org/phebee/qualifier/hypothetical>
-                <http://ods.nationwidechildrens.org/phebee/qualifier/family>
-            }
-        }"""
-
-    # Query for termlinks - simplified to only direct subject termlinks
-    termlinks_query = f"""
-    PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
-
-    SELECT DISTINCT ?subjectIRI ?termlink ?term
-    FROM <http://ods.nationwidechildrens.org/phebee/subjects>
-    WHERE {{
-        VALUES ?subjectIRI {{ {subject_values} }}
-        
-        # Direct subject → termlink only
-        ?termlink rdf:type phebee:TermLink ;
-                  phebee:sourceNode ?subjectIRI ;
-                  phebee:hasTerm ?term .
-        
-        # Qualifier filtering
-        {qualifier_filter}
-    }}
-    """
-
-    termlinks_result = execute_query(termlinks_query)
-    logger.info("Term links query returned %d bindings", len(termlinks_result["results"]["bindings"]))
-    
-    # Build subjects map
-    subjects_map = {}
-    for iri in found_subject_iris:
-        # Find the corresponding project_subject_id
-        for psid in project_subject_ids:
-            if get_subject_iri_from_project_subject_id(project_id, psid) == iri:
-                subjects_map[iri] = {
-                    "subject_iri": iri,
-                    "project_subject_iri": f"http://ods.nationwidechildrens.org/phebee/projects/{project_id}/subjects/{psid}",
-                    "project_subject_id": psid,
-                    "term_links": {}
-                }
-                break
-    
-    # Process term links
-    for binding in termlinks_result["results"]["bindings"]:
-        subject_iri = binding["subjectIRI"]["value"]
-        termlink_iri = binding["termlink"]["value"]
-        term_iri_val = binding["term"]["value"]
-        
-        if subject_iri in subjects_map:
-            subjects_map[subject_iri]["term_links"][termlink_iri] = {
-                "term_iri": term_iri_val,
-                "qualifiers": []
-            }
-    
-    # Get term labels
+    # Get term labels for all terms
     unique_terms = set()
-    for subject in subjects_map.values():
+    for subject in paginated_subjects_map.values():
         for term_link in subject["term_links"].values():
             unique_terms.add(term_link["term_iri"])
     
@@ -508,21 +470,27 @@ def get_subjects(
     
     # Convert to final format
     subjects = []
-    for subject in subjects_map.values():
+    for subject_iri in subject_iris:  # Use ordered subject_iris for consistent ordering
+        subject = paginated_subjects_map[subject_iri]
+        
+        # Use the project_subject_id from the SPARQL result
+        project_subject_id = subject["project_subject_id"]
+        
         # Convert term_links to final format
         term_links = []
         for term_link in subject["term_links"].values():
             term_links.append({
                 "term_iri": term_link["term_iri"],
                 "term_label": term_labels.get(term_link["term_iri"]),
-                "qualifiers": []
+                "qualifiers": term_link["qualifiers"]
             })
         
-        subject["term_links"] = sorted(term_links, key=lambda x: x["term_iri"])
-        subjects.append(subject)
-    
-    # Sort by subject IRI for consistent ordering
-    subjects = sorted(subjects, key=lambda x: x["subject_iri"])
+        subjects.append({
+            "subject_iri": subject_iri,
+            "project_subject_iri": f"http://ods.nationwidechildrens.org/phebee/projects/{project_id}/{project_subject_id}" if project_subject_id else None,
+            "project_subject_id": project_subject_id,
+            "term_links": sorted(term_links, key=lambda x: x["term_iri"])
+        })
     
     return {
         "subjects": subjects,

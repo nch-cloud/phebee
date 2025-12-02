@@ -61,8 +61,8 @@ def get_subject_iri_from_project_subject_id(project_id: str, project_subject_id:
     table_name = _get_table_name()
     subject_id = get_subject_id(table_name, project_id, project_subject_id, region)
     if subject_id:
-        # The subject_id in DynamoDB is actually the full subject IRI
-        return subject_id
+        # Construct the full PheBee subject IRI from the UUID
+        return f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"
     return None
 
 def get_all_project_subject_ids(project_id: str, region: str = 'us-east-2') -> List[str]:

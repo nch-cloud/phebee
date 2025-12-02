@@ -7,7 +7,7 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 def lambda_handler(event, context):
-    """Generate manifest of Athena result pages for parallel TTL processing"""
+    """Generate manifest of Athena result pages for parallel N-Quads processing"""
     logger.info(event)
     
     try:
@@ -88,7 +88,7 @@ def lambda_handler(event, context):
         }
         
     except Exception as e:
-        logger.error(f"Error generating TTL manifest: {str(e)}")
+        logger.error(f"Error generating N-Quads manifest: {str(e)}")
         return {
             'statusCode': 500,
             'body': {

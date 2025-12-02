@@ -12,40 +12,40 @@ def lambda_handler(event, context):
     
     try:
         run_id = event.get('run_id')
-        ttl_files = event.get('ttl_files', [])
+        nq_files = event.get('nq_files', [])
         
         if not run_id:
             raise ValueError("run_id is required")
         
-        if not ttl_files:
-            raise ValueError("ttl_files list is required")
+        if not nq_files:
+            raise ValueError("nq_files list is required")
         
-        # Extract the S3 prefix from the first TTL file path
-        # Convert s3://bucket/path/file.ttl to s3://bucket/path/
-        first_file = ttl_files[0] if isinstance(ttl_files, list) else ttl_files
-        if first_file.endswith('.ttl'):
+        # Extract the S3 prefix from the first N-Quads file path
+        # Convert s3://bucket/path/file.nq to s3://bucket/path/
+        first_file = nq_files[0] if isinstance(nq_files, list) else nq_files
+        if first_file.endswith('.nq'):
             # Remove the filename to get the directory prefix
-            ttl_source = '/'.join(first_file.split('/')[:-1]) + '/'
+            nq_source = '/'.join(first_file.split('/')[:-1]) + '/'
         else:
-            ttl_source = first_file
+            nq_source = first_file
         
         # Get environment variables (set by CloudFormation)
         region = os.environ.get('AWS_REGION')
         
         # Prepare bulk load parameters for Neptune utilities
         load_params = {
-            "source": ttl_source,  # S3 prefix that contains TTL files
-            "format": "turtle",
+            "source": nq_source,  # S3 prefix that contains N-Quads files
+            "format": "nquads",
             "iamRoleArn": os.environ.get('NEPTUNE_LOAD_ROLE_ARN', ''),
             "region": region,
             "failOnError": "FALSE",
-            "parallelism": "MEDIUM",
+            "parallelism": "HIGH",
             "updateSingleCardinalityProperties": "FALSE",
             "queueRequest": "TRUE"
         }
         
         logger.info(f"Starting Neptune bulk load for run {run_id}")
-        logger.info(f"TTL source prefix: {ttl_source}")
+        logger.info(f"N-Quads source prefix: {nq_source}")
         
         # Use existing Neptune utility to start load
         load_result = start_load(load_params)
@@ -58,7 +58,7 @@ def lambda_handler(event, context):
             'body': {
                 'load_id': load_id,
                 'run_id': run_id,
-                'source': ttl_source,
+                'source': nq_source,
                 'status': 'LOAD_IN_PROGRESS'
             }
         }

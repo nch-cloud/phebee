@@ -76,10 +76,10 @@ def test_project_query(physical_resources, test_project_id):
 
         # Expected projectSubjectIds
         expected_project_subject_iris = {
-            f"http://ods.nationwidechildrens.org/phebee/projects/{project_id}/subjects/subject_a",
-            f"http://ods.nationwidechildrens.org/phebee/projects/{project_id}/subjects/subject_b",
-            f"http://ods.nationwidechildrens.org/phebee/projects/{project_id}/subjects/subject_c",
-            f"http://ods.nationwidechildrens.org/phebee/projects/{project_id}/subjects/subject_d",
+            f"http://ods.nationwidechildrens.org/phebee/projects/{project_id}/subject_a",
+            f"http://ods.nationwidechildrens.org/phebee/projects/{project_id}/subject_b",
+            f"http://ods.nationwidechildrens.org/phebee/projects/{project_id}/subject_c",
+            f"http://ods.nationwidechildrens.org/phebee/projects/{project_id}/subject_d",
         }
 
         actual_project_subject_iris = set()
@@ -132,8 +132,8 @@ def test_subject_specific_query(physical_resources, test_project_id):
 
         # Expected projectSubjectIds
         expected_project_subject_iris = {
-            f"http://ods.nationwidechildrens.org/phebee/projects/{project_id}/subjects/subject_b",
-            f"http://ods.nationwidechildrens.org/phebee/projects/{project_id}/subjects/subject_c",
+            f"http://ods.nationwidechildrens.org/phebee/projects/{project_id}/subject_b",
+            f"http://ods.nationwidechildrens.org/phebee/projects/{project_id}/subject_c",
         }
 
         actual_project_subject_iris = set()
