@@ -186,8 +186,8 @@ def lambda_handler(event, context):
                 subject_data = subjects_data[subject_id]
                 if subject_data['project_info']:
                     subject_uri = f"<http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}>"
-                    project_subject_id_iri = f"<{project_uri_base}/{project_subject_id}>"
                     project_subject_id = subject_data['project_info']['project_subject_id']
+                    project_subject_id_iri = f"<{project_uri_base}/{project_subject_id}>"
                     
                     nq_lines.append(f"{subject_uri} <http://ods.nationwidechildrens.org/phebee#hasProjectSubjectId> {project_subject_id_iri} {project_graph} .")
                     nq_lines.append(f"{project_subject_id_iri} <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://ods.nationwidechildrens.org/phebee#ProjectSubjectId> {project_graph} .")
