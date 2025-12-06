@@ -2,9 +2,7 @@ import os
 import pytest
 
 
-def pytest_addoption(parser):
-    """Add command line options for performance test configuration"""
-    parser.addoption("--run-performance", action="store_true", help="Run performance tests")
+
 
 
 def pytest_collection_modifyitems(config, items):
@@ -323,7 +321,7 @@ def update_eco(request, cloudformation_stack, physical_resources):
 @pytest.fixture
 def test_project_id(cloudformation_stack):
     lambda_client = get_client("lambda")
-    project_id = f"test-project-{uuid.uuid4().hex[:8]}"
+    project_id = f"test_project_{uuid.uuid4().hex[:8]}"
     payload = {"project_id": project_id, "project_label": "Lambda-Initiated Project"}
 
     print(f"Test project id: {project_id}")
@@ -350,16 +348,16 @@ def test_project_id(cloudformation_stack):
 
     yield body.get("project_id")
 
-    # Teardown
-    delete_response = lambda_client.invoke(
-        FunctionName=f"{cloudformation_stack}-RemoveProjectFunction",
-        InvocationType="RequestResponse",
-        Payload=json.dumps({"body": json.dumps({"project_id": project_id})}),
-    )
+    # Teardown - TEMPORARILY DISABLED FOR DEBUGGING
+    # delete_response = lambda_client.invoke(
+    #     FunctionName=f"{cloudformation_stack}-RemoveProjectFunction",
+    #     InvocationType="RequestResponse",
+    #     Payload=json.dumps({"body": json.dumps({"project_id": project_id})}),
+    # )
 
-    result = json.loads(delete_response["Payload"].read().decode("utf-8"))
-    if delete_response["StatusCode"] != 200:
-        print(f"WARNING: Teardown failed: {result}")
+    # result = json.loads(delete_response["Payload"].read().decode("utf-8"))
+    # if delete_response["StatusCode"] != 200:
+    #     print(f"WARNING: Teardown failed: {result}")
 
 
 @pytest.fixture
@@ -572,3 +570,15 @@ def pytest_collection_modifyitems(session, config, items):
     config.pluginmanager.get_plugin("terminalreporter").write_line(
         "\n Reordered tests so that tests marked with 'run_first' run at the start and tests marked with 'run_last' run at the end of the session."
     )
+
+
+@pytest.fixture(scope="session")
+def num_subjects(request):
+    """Number of subjects for performance tests"""
+    return request.config.getoption("--num-subjects")
+
+
+@pytest.fixture(scope="session") 
+def num_terms(request):
+    """Number of terms/notes per subject for performance tests"""
+    return request.config.getoption("--num-terms")

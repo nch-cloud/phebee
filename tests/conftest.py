@@ -38,3 +38,7 @@ def pytest_addoption(parser):
         default="integration-test",
         help="Config environment name for the new stack. Default: integration-test.",
     )
+    
+    parser.addoption("--run-performance", action="store_true", help="Run performance tests")
+    parser.addoption("--num-subjects", type=int, default=50, help="Number of subjects for performance tests")
+    parser.addoption("--num-terms", type=int, default=1000, help="Number of terms/notes per subject for performance tests")

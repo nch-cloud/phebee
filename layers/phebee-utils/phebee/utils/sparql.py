@@ -384,18 +384,20 @@ def get_subjects(
     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
 
     SELECT DISTINCT ?subjectIRI ?termlink ?term ?projectSubjectIdNode
-    {' '.join(from_clauses)}
     WHERE {{
         {subject_id_filter_clause}
         
-        # Project filtering - always filter by project
-        {project_filter_clause}
+        # Get subjects from subjects graph
+        GRAPH <http://ods.nationwidechildrens.org/phebee/subjects> {{
+            ?subjectIRI rdf:type phebee:Subject .
+            {optional_term_links_clause}
+            {term_filter_clause}
+        }}
         
-        # Get subjects and optionally their term links
-        ?subjectIRI rdf:type phebee:Subject .
-        {optional_term_links_clause}
-        
-        {term_filter_clause}
+        # Get project relationships from project graph
+        GRAPH <http://ods.nationwidechildrens.org/phebee/projects/{project_id}> {{
+            {project_filter_clause}
+        }}
         
         # Cursor-based filtering
         {cursor_clause}

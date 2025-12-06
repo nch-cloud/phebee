@@ -624,6 +624,7 @@ Resources:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
           Region: !Sub ${AWS::Region}
           PheBeeDynamoTable: !Ref DynamoDBTable
+          PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
       VpcConfig:
         SecurityGroupIds:
           - !Ref PheBeeLambdaSecurityGroup
@@ -633,6 +634,7 @@ Resources:
       Policies:
         - !Ref PheBeeNeptuneReadPolicy
         - !Ref PheBeeDynamoDBReadPolicy
+        - !Ref PheBeeIcebergPolicy
 
   GetSubjectTermInfoFunction:
     Type: AWS::Serverless::Function
@@ -1090,6 +1092,7 @@ Resources:
           - !Ref SubnetId2
       Policies:
         - !Ref PheBeeNeptuneLoadPolicy
+        - !Ref PheBeeS3ReadPolicy
 
   CheckNeptuneBulkLoadStatusFunction:
     Type: AWS::Serverless::Function

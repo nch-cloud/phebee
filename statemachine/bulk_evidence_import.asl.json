@@ -72,7 +72,7 @@
         }
       },
       "ResultPath": "$.emr_result",
-      "Next": "GenerateNQManifest",
+      "Next": "GenerateTTLManifest",
       "Catch": [{
         "ErrorEquals": ["States.ALL"],
         "Next": "NotifyFailure",
@@ -80,7 +80,7 @@
       }]
     },
     
-    "GenerateNQManifest": {
+    "GenerateTTLManifest": {
       "Type": "Task",
       "Resource": "arn:aws:states:::lambda:invoke",
       "Parameters": {
@@ -93,8 +93,8 @@
           "page_size": 10000
         }
       },
-      "ResultPath": "$.nq_manifest",
-      "Next": "GenerateNQFromPages",
+      "ResultPath": "$.ttl_manifest",
+      "Next": "GenerateTTLFromPages",
       "Catch": [{
         "ErrorEquals": ["States.ALL"],
         "Next": "NotifyFailure",
@@ -102,32 +102,31 @@
       }]
     },
 
-    "GenerateNQFromPages": {
+    "GenerateTTLFromPages": {
       "Type": "Map",
-      "ItemsPath": "$.nq_manifest.Payload.body.pages",
+      "ItemsPath": "$.ttl_manifest.Payload.body.page_numbers",
       "MaxConcurrency": 50,
-      "ResultPath": "$.nq_result",
-      "Next": "StartNeptuneBulkLoad",
+      "ResultPath": "$.ttl_result",
+      "Next": "StartProjectLoad",
       "Catch": [{
         "ErrorEquals": ["States.ALL"],
         "Next": "NotifyFailure",
         "ResultPath": "$.error"
       }],
       "Iterator": {
-        "StartAt": "GenerateNQForPage",
+        "StartAt": "GenerateTTLForPage",
         "States": {
-          "GenerateNQForPage": {
+          "GenerateTTLForPage": {
             "Type": "Task",
             "Resource": "arn:aws:states:::lambda:invoke",
             "Parameters": {
               "FunctionName": "${GenerateNQFromIcebergFunction}",
               "Payload": {
-                "run_id.$": "$.run_id",
+                "page_number.$": "$",
+                "run_id.$": "$$.Execution.Input.run_id",
                 "database": "${IcebergDatabase}",
                 "table": "${IcebergEvidenceTable}",
-                "bucket": "${PheBeeBucketName}",
-                "page_query.$": "$.query",
-                "page_number.$": "$.page_number"
+                "bucket": "${PheBeeBucketName}"
               }
             },
             "End": true
@@ -136,18 +135,19 @@
       }
     },
     
-    "StartNeptuneBulkLoad": {
+    "StartProjectLoad": {
       "Type": "Task",
       "Resource": "arn:aws:states:::lambda:invoke",
       "Parameters": {
         "FunctionName": "${StartNeptuneBulkLoadFunction}",
         "Payload": {
           "run_id.$": "$.run_id",
-          "nq_files.$": "States.Array($.nq_result[0].Payload.body.nq_prefix)"
+          "ttl_prefix.$": "$.ttl_result[0].Payload.body.ttl_prefix",
+          "load_type": "projects"
         }
       },
-      "ResultPath": "$.bulk_load",
-      "Next": "CheckBulkLoadSuccess",
+      "ResultPath": "$.project_load",
+      "Next": "MonitorProjectLoad",
       "Catch": [{
         "ErrorEquals": ["States.ALL"],
         "Next": "NotifyFailure",
@@ -155,52 +155,90 @@
       }]
     },
     
-    "CheckBulkLoadSuccess": {
-      "Type": "Choice",
-      "Choices": [{
-        "Variable": "$.bulk_load.Payload.statusCode",
-        "NumericEquals": 200,
-        "Next": "MonitorNeptuneBulkLoad"
-      }],
-      "Default": "NotifyFailure"
-    },
-    
-    "MonitorNeptuneBulkLoad": {
+    "MonitorProjectLoad": {
       "Type": "Task",
       "Resource": "arn:aws:states:::lambda:invoke",
       "Parameters": {
         "FunctionName": "${CheckNeptuneBulkLoadStatusFunction}",
         "Payload": {
-          "load_id.$": "$.bulk_load.Payload.body.load_id"
+          "load_id.$": "$.project_load.Payload.body.loads[0].load_id"
         }
       },
-      "ResultPath": "$.load_status",
-      "Next": "IsBulkLoadComplete",
-      "Retry": [{
+      "ResultPath": "$.project_status",
+      "Next": "CheckProjectLoadComplete"
+    },
+    
+    "CheckProjectLoadComplete": {
+      "Type": "Choice",
+      "Choices": [{
+        "Variable": "$.project_status.Payload.body.status",
+        "StringEquals": "LOAD_COMPLETED",
+        "Next": "StartSubjectsLoad"
+      }, {
+        "Variable": "$.project_status.Payload.body.status",
+        "StringEquals": "LOAD_FAILED",
+        "Next": "NotifyFailure"
+      }],
+      "Default": "WaitForProjectLoad"
+    },
+    
+    "WaitForProjectLoad": {
+      "Type": "Wait",
+      "Seconds": 30,
+      "Next": "MonitorProjectLoad"
+    },
+    
+    "StartSubjectsLoad": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${StartNeptuneBulkLoadFunction}",
+        "Payload": {
+          "run_id.$": "$.run_id",
+          "ttl_prefix.$": "$.ttl_result[0].Payload.body.ttl_prefix",
+          "load_type": "subjects"
+        }
+      },
+      "ResultPath": "$.subjects_load",
+      "Next": "MonitorSubjectsLoad",
+      "Catch": [{
         "ErrorEquals": ["States.ALL"],
-        "IntervalSeconds": 10,
-        "MaxAttempts": 3
+        "Next": "NotifyFailure",
+        "ResultPath": "$.error"
       }]
     },
     
-    "IsBulkLoadComplete": {
+    "MonitorSubjectsLoad": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${CheckNeptuneBulkLoadStatusFunction}",
+        "Payload": {
+          "load_id.$": "$.subjects_load.Payload.body.loads[0].load_id"
+        }
+      },
+      "ResultPath": "$.subjects_status",
+      "Next": "CheckSubjectsLoadComplete"
+    },
+    
+    "CheckSubjectsLoadComplete": {
       "Type": "Choice",
       "Choices": [{
-        "Variable": "$.load_status.Payload.body.status",
+        "Variable": "$.subjects_status.Payload.body.status",
         "StringEquals": "LOAD_COMPLETED",
         "Next": "NotifySuccess"
       }, {
-        "Variable": "$.load_status.Payload.body.status",
-        "StringEquals": "LOAD_FAILED", 
+        "Variable": "$.subjects_status.Payload.body.status",
+        "StringEquals": "LOAD_FAILED",
         "Next": "NotifyFailure"
       }],
-      "Default": "WaitForBulkLoad"
+      "Default": "WaitForSubjectsLoad"
     },
     
-    "WaitForBulkLoad": {
+    "WaitForSubjectsLoad": {
       "Type": "Wait",
       "Seconds": 30,
-      "Next": "MonitorNeptuneBulkLoad"
+      "Next": "MonitorSubjectsLoad"
     },
     
     "NotifySuccess": {
@@ -212,7 +250,10 @@
           "run_id.$": "$.run_id",
           "status": "SUCCESS",
           "emr_job_id.$": "$.emr_result.JobRunId",
-          "load_id.$": "$.bulk_load.Payload.body.load_id"
+          "load_ids": [
+            "$.project_load.Payload.body.loads[0].load_id",
+            "$.subjects_load.Payload.body.loads[0].load_id"
+          ]
         }
       },
       "End": true

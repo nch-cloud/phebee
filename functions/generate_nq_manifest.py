@@ -2,6 +2,7 @@ import json
 import logging
 import boto3
 import time
+import math
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -55,26 +56,56 @@ def lambda_handler(event, context):
         
         logger.info(f"Total records for run_id {run_id}: {total_count}")
         
-        # For now, process all records in one page (can optimize pagination later)
-        total_pages = 1
+        # Calculate proper pagination
+        total_pages = math.ceil(total_count / page_size)
         
-        # Generate single page manifest
+        # Generate page manifests
         pages = []
-        page_query = f"""
+        for page_num in range(total_pages):
+            # Athena doesn't support OFFSET, so we'll use row_number() for pagination
+            page_query = f"""
+        WITH numbered_rows AS (
+            SELECT subject_id, term_iri, termlink_id, qualifiers,
+                   ROW_NUMBER() OVER (ORDER BY subject_id, term_iri) as row_num
+            FROM {database}.{table}
+            WHERE run_id = '{run_id}'
+        )
         SELECT subject_id, term_iri, termlink_id, qualifiers
-        FROM {database}.{table}
-        WHERE run_id = '{run_id}'
+        FROM numbered_rows
+        WHERE row_num > {page_num * page_size} AND row_num <= {(page_num + 1) * page_size}
         ORDER BY subject_id, term_iri
         """
+            
+            pages.append({
+                'page_number': page_num,
+                'query': page_query,
+                'run_id': run_id,
+                'offset': page_num * page_size,
+                'limit': page_size
+            })
         
-        pages.append({
-            'page_number': 0,
-            'query': page_query,
+        # Write manifest to S3
+        s3 = boto3.client('s3')
+        manifest = {
             'run_id': run_id,
-            'total_records': total_count
-        })
+            'total_records': total_count,
+            'total_pages': total_pages,
+            'page_size': page_size,
+            'pages': pages
+        }
         
-        logger.info(f"Generated {len(pages)} pages for parallel processing")
+        manifest_key = f"{run_id}/manifest.json"
+        s3.put_object(
+            Bucket=bucket,
+            Key=manifest_key,
+            Body=json.dumps(manifest),
+            ContentType='application/json'
+        )
+        
+        logger.info(f"Generated {total_pages} pages for parallel processing, manifest written to s3://{bucket}/{manifest_key}")
+        
+        # Generate page numbers array for Step Function Map
+        page_numbers = list(range(total_pages))
         
         return {
             'statusCode': 200,
@@ -83,7 +114,8 @@ def lambda_handler(event, context):
                 'total_records': total_count,
                 'total_pages': total_pages,
                 'page_size': page_size,
-                'pages': pages
+                'manifest_location': f"s3://{bucket}/{manifest_key}",
+                'page_numbers': page_numbers
             }
         }
         
