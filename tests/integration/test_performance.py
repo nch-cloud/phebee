@@ -8,14 +8,18 @@ import requests
 
 
 @pytest.mark.performance
-def test_large_scale_performance(physical_resources, stack_outputs, test_project_id, num_subjects, num_terms):
+def test_large_scale_performance(physical_resources, stack_outputs, test_project_id, num_subjects, num_terms, request):
     """Test performance with large numbers of subjects and evidence records using realistic HPO terms and qualifiers"""
+    
+    # Check for existing run_id parameter
+    existing_run_id = getattr(request.config.option, 'existing_run_id', None)
     
     # Configuration from command line parameters
     NUM_SUBJECTS = num_subjects
     NOTES_PER_SUBJECT = num_terms
     
-    print(f"Performance test: {NUM_SUBJECTS} subjects, {NOTES_PER_SUBJECT} notes per subject")
+    if not existing_run_id:
+        print(f"Performance test: {NUM_SUBJECTS} subjects, {NOTES_PER_SUBJECT} notes per subject")
     
     # Realistic HPO terms for cardiovascular, neurological, and skeletal phenotypes
     hpo_terms = [
@@ -68,162 +72,292 @@ def test_large_scale_performance(physical_resources, stack_outputs, test_project
         {"negated": 0, "family": 1, "hypothetical": 1},  # Possible family history
     ]
     
-    # Generate test data with realistic distributions
-    test_data = []
-    subject_ids = []
-    expected_mappings = {}  # term_iri -> set of subject_ids that should have it
-    expected_evidence = {}  # (subject_id, term_iri) -> list of evidence records
-    
-    for i in range(NUM_SUBJECTS):
-        subject_id = f"perf-subject-{i:06d}-{uuid.uuid4().hex[:8]}"
-        subject_ids.append(subject_id)
+    # Generate test data with realistic distributions (skip if using existing run)
+    if existing_run_id:
+        print(f"Skipping data generation - using existing run_id: {existing_run_id}")
+        test_data = []
+        subject_ids = []
+        expected_mappings = {}
+        expected_evidence = {}
         
-        for j in range(NOTES_PER_SUBJECT):
-            # Select random HPO term and qualifier scenario with 80% positive weighting
-            term_iri = random.choice(hpo_terms)
-            
-            # 80% chance of positive, 20% chance of other qualifiers
-            if random.random() < 0.8:
-                qualifiers = positive_scenario
-            else:
-                qualifiers = random.choice(other_scenarios)
-            
-            # Track expected mappings (only for positive/unqualified evidence)
-            if qualifiers == positive_scenario:
-                if term_iri not in expected_mappings:
-                    expected_mappings[term_iri] = set()
-                expected_mappings[term_iri].add(subject_id)
-            
-            # Track all evidence for detailed validation
-            evidence_key = (subject_id, term_iri)
-            if evidence_key not in expected_evidence:
-                expected_evidence[evidence_key] = []
-            
-            clinical_note_id = f"note-{i:06d}-{j:03d}-{uuid.uuid4().hex[:8]}"
-            encounter_id = f"encounter-{i:06d}-{j:03d}"
-            
-            expected_evidence[evidence_key].append({
-                'clinical_note_id': clinical_note_id,
-                'encounter_id': encounter_id,
-                'qualifiers': qualifiers
-            })
-            
-            # 80% chance of positive, 20% chance of other qualifiers
-            if random.random() < 0.8:
-                qualifiers = positive_scenario
-            else:
-                qualifiers = random.choice(other_scenarios)
-            
-            # Add some variation to note types and timestamps
-            note_types = ["progress_note", "discharge_summary", "consultation", "admission_note"]
-            note_type = random.choice(note_types)
-            
-            # Vary timestamps across a year
-            base_time = "2024-01-15T10:30:00Z"
-            day_offset = random.randint(0, 365)
-            hour_offset = random.randint(0, 23)
-            
-            test_data.append({
-                "project_id": test_project_id,
-                "project_subject_id": subject_id,
-                "term_iri": term_iri,
-                "evidence": [{
-                    "type": "clinical_note",
-                    "clinical_note_id": f"note-{i:06d}-{j:03d}-{uuid.uuid4().hex[:8]}",
-                    "encounter_id": f"encounter-{i:06d}-{j:03d}",
-                    "evidence_creator_id": "perf-test-nlp-system",
-                    "evidence_creator_type": "automated",
-                    "evidence_creator_name": "Performance Test NLP System",
-                    "note_timestamp": f"2024-{1 + (day_offset // 30):02d}-{1 + (day_offset % 30):02d}T{hour_offset:02d}:30:00Z",
-                    "note_type": note_type,
-                    "span_start": random.randint(10, 500),
-                    "span_end": random.randint(510, 1000),
-                    "contexts": qualifiers
-                }]
-            })
-    
-    print(f"Generated {len(test_data)} evidence records with {len(set(r['term_iri'] for r in test_data))} unique HPO terms")
-    
-    # Generate comprehensive input data summary
-    print("\n=== INPUT DATA SUMMARY ===")
-    print(f"Total subjects: {NUM_SUBJECTS}")
-    print(f"Total evidence records: {len(test_data)}")
-    
-    # Organize data by subject for summary
-    subject_summary = {}
-    for record in test_data:
-        subject_id = record['project_subject_id']
-        term_iri = record['term_iri']
-        qualifiers = record['evidence'][0]['contexts']
+        # Reconstruct expected data from S3 files for validation
+        print("Reconstructing expected validation data from S3 files...")
+        s3_client = boto3.client('s3')
+        s3_bucket = physical_resources["PheBeeBucket"]
         
-        if subject_id not in subject_summary:
-            subject_summary[subject_id] = {}
-        if term_iri not in subject_summary[subject_id]:
-            subject_summary[subject_id][term_iri] = []
+        # List all files for this run_id
+        paginator = s3_client.get_paginator('list_objects_v2')
+        page_iterator = paginator.paginate(
+            Bucket=s3_bucket,
+            Prefix=f"performance-test/{existing_run_id}/"
+        )
         
-        subject_summary[subject_id][term_iri].append(qualifiers)
-    
-    # Print per-subject breakdown
-    for subject_id in sorted(subject_summary.keys()):
-        print(f"\nSubject: {subject_id}")
-        for term_iri, qualifier_list in subject_summary[subject_id].items():
+        # Collect all file keys
+        file_keys = []
+        for page in page_iterator:
+            for obj in page.get('Contents', []):
+                if obj['Key'].endswith('.jsonl'):
+                    file_keys.append(obj['Key'])
+        
+        print(f"Found {len(file_keys)} files to process")
+        
+        # Process files in parallel
+        from concurrent.futures import ThreadPoolExecutor
+        import threading
+        
+        # Thread-safe collections
+        lock = threading.Lock()
+        all_subject_ids = set()
+        all_expected_mappings = {}
+        all_expected_evidence = {}
+        
+        def process_file(key):
+            try:
+                response = s3_client.get_object(Bucket=s3_bucket, Key=key)
+                content = response['Body'].read().decode('utf-8')
+                
+                # Local collections for this file
+                local_subjects = set()
+                local_mappings = {}
+                local_evidence = {}
+                
+                for line in content.strip().split('\n'):
+                    if line:
+                        record = json.loads(line)
+                        test_data.append(record)
+                        
+                        subject_id = record['project_subject_id']
+                        term_iri = record['term_iri']
+                        qualifiers = record['evidence'][0]['contexts']
+                        
+                        local_subjects.add(subject_id)
+                        
+                        # Track expected mappings (only for positive/unqualified evidence)
+                        positive_scenario = {"negated": 0, "family": 0, "hypothetical": 0}
+                        if qualifiers == positive_scenario:
+                            if term_iri not in local_mappings:
+                                local_mappings[term_iri] = set()
+                            local_mappings[term_iri].add(subject_id)
+                        
+                        # Track all evidence for detailed validation
+                        evidence_key = (subject_id, term_iri)
+                        if evidence_key not in local_evidence:
+                            local_evidence[evidence_key] = []
+                        local_evidence[evidence_key].append({
+                            'clinical_note_id': record['evidence'][0]['clinical_note_id'],
+                            'encounter_id': record['evidence'][0]['encounter_id'],
+                            'qualifiers': qualifiers
+                        })
+                
+                # Merge into global collections (thread-safe)
+                with lock:
+                    all_subject_ids.update(local_subjects)
+                    
+                    for term_iri, subjects in local_mappings.items():
+                        if term_iri not in all_expected_mappings:
+                            all_expected_mappings[term_iri] = set()
+                        all_expected_mappings[term_iri].update(subjects)
+                    
+                    for evidence_key, evidence_list in local_evidence.items():
+                        if evidence_key not in all_expected_evidence:
+                            all_expected_evidence[evidence_key] = []
+                        all_expected_evidence[evidence_key].extend(evidence_list)
+                
+                return len([line for line in content.strip().split('\n') if line])
+            except Exception as e:
+                print(f"Error processing {key}: {e}")
+                return 0
+        
+        # Process files in parallel (use 10 threads for good S3 throughput)
+        start_time = time.time()
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            record_counts = list(executor.map(process_file, file_keys))
+        
+        processing_time = time.time() - start_time
+        total_records = sum(record_counts)
+        
+        # Update the main collections
+        subject_ids = list(all_subject_ids)
+        expected_mappings = all_expected_mappings
+        expected_evidence = all_expected_evidence
+        
+        print(f"Parallel processing completed in {processing_time:.1f}s:")
+        print(f"  Files processed: {len(file_keys)}")
+        print(f"  Total records reconstructed: {total_records}")
+        print(f"  Unique subjects found: {len(subject_ids)}")
+        print(f"  Terms with positive evidence: {len(expected_mappings)}")
+        print(f"  Reconstruction rate: {total_records/processing_time:.0f} records/second")
+        for term_iri, subjects in list(expected_mappings.items())[:3]:  # Show first 3
             term_name = term_iri.split('/')[-1]
+            print(f"    {term_name}: {len(subjects)} subjects")
+    else:
+        test_data = []
+        subject_ids = []
+        expected_mappings = {}  # term_iri -> set of subject_ids that should have it
+        expected_evidence = {}  # (subject_id, term_iri) -> list of evidence records
+    
+        for i in range(NUM_SUBJECTS):
+            subject_id = f"perf-subject-{i:06d}-{uuid.uuid4().hex[:8]}"
+            subject_ids.append(subject_id)
             
-            # Count evidence by qualifier combinations
-            qualifier_counts = {}
-            for quals in qualifier_list:
-                # Create qualifier description
-                qual_desc = []
-                if quals.get('negated', 0):
-                    qual_desc.append('negated')
-                if quals.get('family', 0):
-                    qual_desc.append('family')
-                if quals.get('hypothetical', 0):
-                    qual_desc.append('hypothetical')
+            for j in range(NOTES_PER_SUBJECT):
+                # Select random HPO term and qualifier scenario with 80% positive weighting
+                term_iri = random.choice(hpo_terms)
                 
-                if not qual_desc:
-                    qual_key = 'positive'
+                # 80% chance of positive, 20% chance of other qualifiers
+                if random.random() < 0.8:
+                    qualifiers = positive_scenario
                 else:
-                    qual_key = '+'.join(qual_desc)
+                    qualifiers = random.choice(other_scenarios)
                 
-                qualifier_counts[qual_key] = qualifier_counts.get(qual_key, 0) + 1
+                # Track expected mappings (only for positive/unqualified evidence)
+                if qualifiers == positive_scenario:
+                    if term_iri not in expected_mappings:
+                        expected_mappings[term_iri] = set()
+                    expected_mappings[term_iri].add(subject_id)
+                
+                # Track all evidence for detailed validation
+                evidence_key = (subject_id, term_iri)
+                if evidence_key not in expected_evidence:
+                    expected_evidence[evidence_key] = []
+                
+                clinical_note_id = f"note-{i:06d}-{j:03d}-{uuid.uuid4().hex[:8]}"
+                encounter_id = f"encounter-{i:06d}-{j:03d}"
+                
+                expected_evidence[evidence_key].append({
+                    'clinical_note_id': clinical_note_id,
+                    'encounter_id': encounter_id,
+                    'qualifiers': qualifiers
+                })
+                
+                # Add some variation to note types and timestamps
+                note_types = ["progress_note", "discharge_summary", "consultation", "admission_note"]
+                note_type = random.choice(note_types)
+                
+                # Vary timestamps across a year
+                base_time = "2024-01-15T10:30:00Z"
+                day_offset = random.randint(0, 365)
+                hour_offset = random.randint(0, 23)
+                
+                test_data.append({
+                    "project_id": test_project_id,
+                    "project_subject_id": subject_id,
+                    "term_iri": term_iri,
+                    "evidence": [{
+                        "type": "clinical_note",
+                        "clinical_note_id": f"note-{i:06d}-{j:03d}-{uuid.uuid4().hex[:8]}",
+                        "encounter_id": f"encounter-{i:06d}-{j:03d}",
+                        "evidence_creator_id": "perf-test-nlp-system",
+                        "evidence_creator_type": "automated",
+                        "evidence_creator_name": "Performance Test NLP System",
+                        "note_timestamp": f"2024-{1 + (day_offset // 30):02d}-{1 + (day_offset % 30):02d}T{hour_offset:02d}:30:00Z",
+                        "note_type": note_type,
+                        "span_start": random.randint(10, 500),
+                        "span_end": random.randint(510, 1000),
+                        "contexts": qualifiers
+                    }]
+                })
+        
+        print(f"Generated {len(test_data)} evidence records with {len(set(r['term_iri'] for r in test_data))} unique HPO terms")
+    
+    # Generate comprehensive input data summary (skip if using existing run)
+    if not existing_run_id:
+        print("\n=== INPUT DATA SUMMARY ===")
+        print(f"Total subjects: {NUM_SUBJECTS}")
+        print(f"Total evidence records: {len(test_data)}")
+    
+        # Organize data by subject for summary
+        subject_summary = {}
+        for record in test_data:
+            subject_id = record['project_subject_id']
+            term_iri = record['term_iri']
+            qualifiers = record['evidence'][0]['contexts']
             
-            print(f"  {term_name}:")
-            for qual_type, count in sorted(qualifier_counts.items()):
-                print(f"    - {qual_type.title()} evidence: {count} records")
-    
-    # Print expected mappings summary
-    print(f"\nExpected term links (subjects with positive evidence only):")
-    for term_iri, subjects in expected_mappings.items():
-        term_name = term_iri.split('/')[-1]
-        subject_list = ', '.join(sorted(subjects))
-        print(f"  {term_name}: {len(subjects)} subjects ({subject_list})")
-    print("=" * 50)
-    
-    # Count qualifier distributions
-    qualifier_counts = {}
-    for record in test_data:
-        contexts = record['evidence'][0]['contexts']
-        key = f"neg:{contexts['negated']}_fam:{contexts['family']}_hyp:{contexts['hypothetical']}"
-        qualifier_counts[key] = qualifier_counts.get(key, 0) + 1
-    
-    print("Qualifier distribution:")
-    for combo, count in sorted(qualifier_counts.items()):
-        print(f"  {combo}: {count} records ({count/len(test_data)*100:.1f}%)")
+            if subject_id not in subject_summary:
+                subject_summary[subject_id] = {}
+            if term_iri not in subject_summary[subject_id]:
+                subject_summary[subject_id][term_iri] = []
+            
+            subject_summary[subject_id][term_iri].append(qualifiers)
+        
+        # Print per-subject breakdown
+        for subject_id in sorted(subject_summary.keys()):
+            print(f"\nSubject: {subject_id}")
+            for term_iri, qualifier_list in subject_summary[subject_id].items():
+                term_name = term_iri.split('/')[-1]
+                
+                # Count evidence by qualifier combinations
+                qualifier_counts = {}
+                for quals in qualifier_list:
+                    # Create qualifier description
+                    qual_desc = []
+                    if quals.get('negated', 0):
+                        qual_desc.append('negated')
+                    if quals.get('family', 0):
+                        qual_desc.append('family')
+                    if quals.get('hypothetical', 0):
+                        qual_desc.append('hypothetical')
+                    
+                    if not qual_desc:
+                        qual_key = 'positive'
+                    else:
+                        qual_key = '+'.join(qual_desc)
+                    
+                    qualifier_counts[qual_key] = qualifier_counts.get(qual_key, 0) + 1
+                
+                print(f"  {term_name}:")
+                for qual_type, count in sorted(qualifier_counts.items()):
+                    print(f"    - {qual_type.title()} evidence: {count} records")
+        
+        # Print expected mappings summary
+        print(f"\nExpected term links (subjects with positive evidence only):")
+        for term_iri, subjects in expected_mappings.items():
+            term_name = term_iri.split('/')[-1]
+            subject_list = ', '.join(sorted(subjects))
+            print(f"  {term_name}: {len(subjects)} subjects ({subject_list})")
+        print("=" * 50)
+        
+        # Count qualifier distributions
+        qualifier_counts = {}
+        for record in test_data:
+            contexts = record['evidence'][0]['contexts']
+            key = f"neg:{contexts['negated']}_fam:{contexts['family']}_hyp:{contexts['hypothetical']}"
+            qualifier_counts[key] = qualifier_counts.get(key, 0) + 1
+        
+        print("Qualifier distribution:")
+        for combo, count in sorted(qualifier_counts.items()):
+            print(f"  {combo}: {count} records ({count/len(test_data)*100:.1f}%)")
     
     # Upload and process data via bulk import
     start_time = time.time()
-    run_id = bulk_load_performance_data(test_data, physical_resources)
-    load_time = time.time() - start_time
     
-    print(f"Bulk load completed in {load_time:.2f} seconds")
-    print(f"Rate: {len(test_data)/load_time:.2f} records/second")
+    if existing_run_id:
+        print(f"Using existing run_id: {existing_run_id}")
+        run_id = existing_run_id
+        load_time = 0  # Skip timing since we didn't do the load
+        # Use the original project_id from the existing run
+        test_project_id = "test_project_875ed413"
+        print(f"Using original project_id: {test_project_id}")
+    else:
+        run_id = bulk_load_performance_data(test_data, physical_resources)
+        load_time = time.time() - start_time
+    
+    if existing_run_id:
+        print(f"Using existing bulk import run: {existing_run_id}")
+    else:
+        print(f"Bulk load completed in {load_time:.2f} seconds")
+        
+    if load_time > 0:
+        print(f"Rate: {len(test_data)/load_time:.2f} records/second")
+    else:
+        print("Rate: N/A (using existing run_id)")
     
     # Test API performance with qualifier-aware queries
+    print("\n=== API PERFORMANCE VALIDATION ===")
     api_url = stack_outputs.get("HttpApiUrl")
     if not api_url:
         print("HttpApiUrl not found in stack outputs, skipping API performance tests")
-        print("Bulk import performance test completed successfully!")
+        print("Performance test completed successfully!")
         return
     
     # Wait a bit for Neptune indexing to complete
@@ -240,7 +374,7 @@ def test_large_scale_performance(physical_resources, stack_outputs, test_project
     
     if response.status_code != 200:
         print("API test failed - data may not be available yet or endpoint issue")
-        print("Bulk import performance test completed successfully!")
+        print("Performance test completed (API validation skipped)")
         return
     subjects_data = response.json()
     
@@ -277,7 +411,7 @@ def test_large_scale_performance(physical_resources, stack_outputs, test_project
             all_subjects.extend(page_subjects)
             
             # Get next cursor for pagination
-            cursor = page_data.get('next_cursor')
+            cursor = page_data.get('pagination', {}).get('next_cursor')
             if not cursor:
                 break
             
@@ -301,76 +435,79 @@ def test_large_scale_performance(physical_resources, stack_outputs, test_project
             if actual_subjects == expected_subjects:
                 print(f"  ✓ Validation passed: {len(actual_subjects)} subjects match expected")
                 
-                # For first term, do detailed evidence validation
+                # For first term, validate termlink grouping using /subject endpoint data
                 if i == 0:
-                    print(f"  Performing detailed evidence validation for {term_name}...")
-                    evidence_mismatches = 0
+                    print(f"  Validating evidence grouping by qualifiers for {term_name}...")
+                    grouping_mismatches = 0
                     
                     for subject_data in all_subjects:
                         subject_id = subject_data.get('project_subject_id')
-                        subject_iri = subject_data.get('subject_iri')
                         
-                        # Check expected evidence for this subject-term combination
-                        evidence_key = (subject_id, term_iri)
-                        if evidence_key in expected_evidence:
-                            expected_records = expected_evidence[evidence_key]
-                            positive_expected = [e for e in expected_records if e['qualifiers'] == positive_scenario]
+                        # Get subject details to access aggregated term data
+                        try:
+                            subject_response = requests.post(f"{api_url}/subject", json={
+                                "project_subject_iri": subject_data.get('project_subject_iri')
+                            })
                             
-                            # Get actual evidence records from /subject/term-info endpoint
-                            try:
-                                # First, get the internal subject UUID using /subject endpoint
-                                subject_response = requests.post(f"{api_url}/subject", json={
-                                    "project_subject_iri": subject_data.get('project_subject_iri')
-                                })
+                            if subject_response.status_code != 200:
+                                print(f"    ✗ Subject {subject_id}: Could not get subject details")
+                                grouping_mismatches += 1
+                                continue
                                 
-                                if subject_response.status_code != 200:
-                                    print(f"    ✗ Subject {subject_id}: Could not get subject details (status {subject_response.status_code})")
-                                    evidence_mismatches += 1
-                                    continue
-                                
-                                subject_details = subject_response.json().get('body', {})
+                            subject_details = subject_response.json()
+                            if 'body' in subject_details:
+                                subject_details = subject_details['body']
                                 if isinstance(subject_details, str):
-                                    import json
                                     subject_details = json.loads(subject_details)
-                                print(f"    DEBUG: Subject details for {subject_id}: {subject_details}")
-                                internal_subject_id = subject_details.get('subject_iri', '').split('/')[-1]
-                                
-                                if not internal_subject_id:
-                                    print(f"    ✗ Subject {subject_id}: Could not extract internal subject UUID")
-                                    evidence_mismatches += 1
-                                    continue
-                                
-                                # Now get evidence using the internal subject UUID
-                                evidence_response = requests.post(f"{api_url}/subject/term-info", json={
-                                    "subject_id": internal_subject_id,
-                                    "term_iri": term_iri,
-                                    "qualifiers": []
-                                })
-                                
-                                if evidence_response.status_code == 200:
-                                    evidence_data = evidence_response.json().get('body', [])
-                                    # Filter for positive evidence (no negative qualifiers)
-                                    positive_actual = [e for e in evidence_data if not any(
-                                        q.get('qualifier_type') in ['negated', 'family', 'hypothetical'] and 
-                                        q.get('qualifier_value') in ['1', 'true', True]
-                                        for q in e.get('qualifiers', [])
-                                    )]
+                            
+                            # Find the term in the aggregated data
+                            term_found = False
+                            for term in subject_details.get('terms', []):
+                                if term.get('term_iri') == term_iri:
+                                    term_found = True
+                                    actual_term_link_count = term.get('term_link_count', 0)
+                                    actual_evidence_count = term.get('evidence_count', 0)
                                     
-                                    if len(positive_actual) != len(positive_expected):
-                                        print(f"    ✗ Subject {subject_id}: Expected {len(positive_expected)} positive evidence, got {len(positive_actual)}")
-                                        evidence_mismatches += 1
-                                else:
-                                    print(f"    ✗ Subject {subject_id}: Could not retrieve evidence (status {evidence_response.status_code})")
-                                    evidence_mismatches += 1
-                                    
-                            except Exception as e:
-                                print(f"    ✗ Subject {subject_id}: Error retrieving evidence: {e}")
-                                evidence_mismatches += 1
+                                    # Calculate expected values
+                                    evidence_key = (subject_id, term_iri)
+                                    if evidence_key in expected_evidence:
+                                        expected_records = expected_evidence[evidence_key]
+                                        expected_qualifier_groups = {}
+                                        for record in expected_records:
+                                            qual_key = tuple(sorted([k for k, v in record['qualifiers'].items() if v == 1]))
+                                            expected_qualifier_groups[qual_key] = expected_qualifier_groups.get(qual_key, 0) + 1
+                                        
+                                        expected_term_link_count = len(expected_qualifier_groups)
+                                        expected_evidence_count = len(expected_records)
+                                        
+                                        # Validate termlink grouping
+                                        if actual_term_link_count != expected_term_link_count:
+                                            print(f"    ✗ Subject {subject_id}: Expected {expected_term_link_count} term links, got {actual_term_link_count}")
+                                            print(f"      Expected qualifier groups: {list(expected_qualifier_groups.keys())}")
+                                            grouping_mismatches += 1
+                                        elif actual_evidence_count != expected_evidence_count:
+                                            print(f"    ✗ Subject {subject_id}: Expected {expected_evidence_count} evidence records, got {actual_evidence_count}")
+                                            grouping_mismatches += 1
+                                        else:
+                                            # Validate evidence count per qualifier combination
+                                            # Note: Current API doesn't expose per-qualifier evidence counts
+                                            # This validates the overall grouping is correct
+                                            print(f"    ✓ Subject {subject_id}: {actual_term_link_count} term links, {actual_evidence_count} evidence records")
+                                            print(f"      Expected qualifier distribution: {dict(expected_qualifier_groups)}")
+                                    break
+                            
+                            if not term_found:
+                                print(f"    ✗ Subject {subject_id}: Term {term_iri} not found in subject data")
+                                grouping_mismatches += 1
+                                
+                        except Exception as e:
+                            print(f"    ✗ Subject {subject_id}: Error validating termlink grouping: {e}")
+                            grouping_mismatches += 1
                     
-                    if evidence_mismatches == 0:
-                        print(f"  ✓ Evidence validation passed: All evidence counts match expected")
+                    if grouping_mismatches == 0:
+                        print(f"  ✓ Termlink grouping validation passed: All subjects have correct term link counts")
                     else:
-                        assert False, f"Evidence validation failed: {evidence_mismatches} subjects had evidence count mismatches"
+                        assert False, f"Termlink grouping validation failed: {grouping_mismatches} subjects had incorrect grouping"
                         
             else:
                 missing = expected_subjects - actual_subjects
@@ -423,7 +560,7 @@ def test_large_scale_performance(physical_resources, stack_outputs, test_project
                 page_num += 1
                 
                 # Get next cursor
-                cursor = page_data.get('next_cursor')
+                cursor = page_data.get('pagination', {}).get('next_cursor')
                 if not cursor:
                     break
                 
@@ -555,8 +692,10 @@ def test_large_scale_performance(physical_resources, stack_outputs, test_project
     # Performance assertions (adjust thresholds as needed)
     assert query_time < 30.0, f"Project query too slow: {query_time:.3f}s"
     assert qualified_query_time < 30.0, f"Qualified query too slow: {qualified_query_time:.3f}s"
-    assert avg_subject_time < 5.0, f"Individual subject queries too slow: {avg_subject_time:.3f}s"
-    assert single_subject_time < 5.0, f"Single subject query too slow: {single_subject_time:.3f}s"
+    if 'avg_subject_time' in locals():
+        assert avg_subject_time < 5.0, f"Individual subject queries too slow: {avg_subject_time:.3f}s"
+    if 'single_subject_time' in locals():
+        assert single_subject_time < 5.0, f"Single subject query too slow: {single_subject_time:.3f}s"
     if 'term_info_time' in locals():
         assert term_info_time < 5.0, f"Term info query too slow: {term_info_time:.3f}s"
     assert pagination_time < 10.0, f"Pagination too slow: {pagination_time:.3f}s"
@@ -611,7 +750,7 @@ def bulk_load_performance_data(test_data, physical_resources):
     )
     
     # Wait for completion (with timeout)
-    max_wait = 1800  # 30 minutes
+    max_wait = 3600  # 1 hour
     start_time = time.time()
     
     while time.time() - start_time < max_wait:

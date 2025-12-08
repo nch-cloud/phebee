@@ -28,6 +28,7 @@ import uuid
 import hashlib
 import time
 from collections import defaultdict
+from .hash import generate_termlink_hash
 from typing import List, Optional, Sequence
 try:
     from aws_lambda_powertools import Metrics, Logger, Tracer
@@ -855,27 +856,7 @@ def delete_term_link(termlink_iri: str):
     execute_update(sparql)
 
 
-def generate_termlink_hash(source_node_iri: str, term_iri: str, qualifiers=None):
-    """
-    Generate a deterministic hash for a term link based on its components.
-    
-    Args:
-        source_node_iri (str): The IRI of the source node (subject, encounter, or clinical note)
-        term_iri (str): The IRI of the term being linked
-        qualifiers (list): List of qualifier IRIs, e.g., negated, hypothetical
-        
-    Returns:
-        str: A deterministic hash that can be used as part of the term link IRI
-    """
-    # Sort qualifiers to ensure consistent ordering
-    sorted_qualifiers = sorted(qualifiers) if qualifiers else []
-    
-    # Create a composite key
-    key_parts = [source_node_iri, term_iri] + sorted_qualifiers
-    key_string = '|'.join(key_parts)
-    
-    # Generate a deterministic hash
-    return hashlib.sha256(key_string.encode()).hexdigest()
+
 
 
 def check_existing_encounters(encounter_iris, batch_size=1000):

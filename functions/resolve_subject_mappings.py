@@ -24,9 +24,21 @@ def lambda_handler(event, context):
     table = dynamodb.Table(os.environ['PheBeeDynamoTable'])
     
     try:
-        # List all JSONL files in the prefix
-        response = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
-        jsonl_files = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.jsonl')]
+        # List all JSONL files in the prefix (with pagination)
+        jsonl_files = []
+        continuation_token = None
+        
+        while True:
+            if continuation_token:
+                response = s3.list_objects_v2(Bucket=bucket, Prefix=prefix, ContinuationToken=continuation_token)
+            else:
+                response = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
+            
+            jsonl_files.extend([obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.jsonl')])
+            
+            if not response.get('IsTruncated'):
+                break
+            continuation_token = response['NextContinuationToken']
         
         if not jsonl_files:
             raise ValueError(f"No JSONL files found in {input_path}")

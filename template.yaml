@@ -1040,8 +1040,8 @@ Resources:
       FunctionName: !Sub ${AppName}-ResolveSubjectMappingsFunction
       CodeUri: functions
       Handler: resolve_subject_mappings.lambda_handler
-      MemorySize: 512
-      Timeout: 300
+      MemorySize: 10240
+      Timeout: 900
       Environment:
         Variables:
           PheBeeDynamoTable: !Ref DynamoDBTable

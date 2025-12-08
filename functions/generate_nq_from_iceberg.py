@@ -69,8 +69,24 @@ def lambda_handler(event, context):
             
             time.sleep(2)
         
-        # Get query results
-        results = athena.get_query_results(QueryExecutionId=execution_id)
+        # Get query results with pagination
+        all_rows = []
+        next_token = None
+        
+        while True:
+            if next_token:
+                results = athena.get_query_results(QueryExecutionId=execution_id, NextToken=next_token)
+            else:
+                results = athena.get_query_results(QueryExecutionId=execution_id)
+            
+            all_rows.extend(results['ResultSet']['Rows'])
+            
+            # Check if there are more results
+            next_token = results.get('NextToken')
+            if not next_token:
+                break
+        
+        logger.info(f"Retrieved {len(all_rows)} total rows from Athena")
         
         # Generate N-Quads content (no prefixes needed)
         nq_lines = []
@@ -81,7 +97,7 @@ def lambda_handler(event, context):
         
         record_count = 0
         # Skip header row (index 0)
-        for row in results['ResultSet']['Rows'][1:]:
+        for row in all_rows[1:]:
             data = row['Data']
             if len(data) >= 4:
                 subject_id = data[0].get('VarCharValue', '')

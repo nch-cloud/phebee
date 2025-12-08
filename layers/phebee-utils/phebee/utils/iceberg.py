@@ -3,6 +3,7 @@ Iceberg evidence table utilities for PheBee.
 """
 import boto3
 import hashlib
+from .hash import generate_evidence_hash, generate_termlink_hash
 import json
 import logging
 import os
@@ -31,17 +32,16 @@ def generate_evidence_id(
     qualifiers: List[str] = None
 ) -> str:
     """Generate deterministic evidence ID from content."""
-    content_parts = [
-        subject_id,
-        term_iri,
-        creator_name,
-        clinical_note_id or "",
-        str(span_start) if span_start is not None else "",
-        str(span_end) if span_end is not None else "",
-        "|".join(sorted(qualifiers or []))
-    ]
-    content = "|".join(content_parts)
-    return hashlib.sha256(content.encode()).hexdigest()
+    # Use clinical_note_id as the primary identifier, fall back to creator_name if needed
+    note_id = clinical_note_id or creator_name
+    return generate_evidence_hash(
+        clinical_note_id=note_id,
+        encounter_id=subject_id,  # Using subject_id as encounter context
+        term_iri=term_iri,
+        span_start=span_start,
+        span_end=span_end,
+        qualifiers=qualifiers
+    )
 
 def extract_evidence_records(
     entries: List[Any],  # TermLinkInput objects
@@ -154,21 +154,27 @@ def derive_neptune_nq_from_evidence(evidence_records: List[Dict[str, Any]]) -> T
     g.bind("dcterms", DCTERMS)
     g.bind("xsd", XSD)
     
-    # Group evidence by (subject_id, term_iri, qualifiers) to create TermLinks
+    # Group evidence by (subject_id, term_iri, termlink_id) using existing termlink_id from Iceberg
     termlink_groups = {}
     created_termlinks = set()
     
     for record in evidence_records:
         subject_id = record["subject_id"]
         term_iri = record["term_iri"]
-        qualifiers = tuple(sorted(record.get("qualifiers", [])))
+        termlink_id = record.get("termlink_id")
+        qualifiers = record.get("qualifiers", [])
         
-        key = (subject_id, term_iri, qualifiers)
+        if not termlink_id:
+            # Skip records without termlink_id (shouldn't happen with bulk processor)
+            continue
+            
+        key = (subject_id, term_iri, termlink_id)
         if key not in termlink_groups:
             termlink_groups[key] = {
                 "subject_id": subject_id,
                 "term_iri": term_iri,
-                "qualifiers": list(qualifiers),
+                "termlink_id": termlink_id,
+                "qualifiers": qualifiers,
                 "earliest_timestamp": None,
                 "evidence_count": 0
             }
@@ -183,15 +189,10 @@ def derive_neptune_nq_from_evidence(evidence_records: List[Dict[str, Any]]) -> T
                 group["earliest_timestamp"] = timestamp
     
     # Generate RDF for each TermLink
-    for (subject_id, term_iri, qualifiers), group in termlink_groups.items():
-        # Create IRIs
+    for (subject_id, term_iri, termlink_id), group in termlink_groups.items():
+        # Create IRIs using existing termlink_id from Iceberg
         subject_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"
-        
-        # Generate termlink hash (simplified version of existing logic)
-        qualifier_str = "|".join(sorted(qualifiers)) if qualifiers else ""
-        termlink_content = f"{subject_iri}|{term_iri}|{qualifier_str}"
-        termlink_hash = hashlib.sha256(termlink_content.encode()).hexdigest()[:16]
-        termlink_iri = f"{subject_iri}/term-link/{termlink_hash}"
+        termlink_iri = f"{subject_iri}/term-link/{termlink_id}"
         
         subject_ref = URIRef(subject_iri)
         term_ref = URIRef(term_iri)
@@ -210,7 +211,7 @@ def derive_neptune_nq_from_evidence(evidence_records: List[Dict[str, Any]]) -> T
             g.add((termlink_ref, DCTERMS.created, RdfLiteral(group["earliest_timestamp"], datatype=XSD.dateTime)))
         
         # Add qualifiers
-        for qualifier in qualifiers:
+        for qualifier in group["qualifiers"]:
             qualifier_iri = f"http://ods.nationwidechildrens.org/phebee/qualifiers/{qualifier}"
             g.add((termlink_ref, PHEBEE_NS.hasQualifyingTerm, URIRef(qualifier_iri)))
         
@@ -454,9 +455,9 @@ def create_evidence_record(
         qualifiers=qualifiers or []
     )
     
-    # Generate termlink ID (simplified version)
-    termlink_content = f"{subject_id}|{term_iri}|{'|'.join(sorted(qualifiers or []))}"
-    termlink_id = hashlib.sha256(termlink_content.encode()).hexdigest()[:16]
+    # Generate termlink ID using shared function
+    subject_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"
+    termlink_id = generate_termlink_hash(subject_iri, term_iri, qualifiers or [])
     
     # Set assertion type and source level
     assertion_type = "manual_assertion"

@@ -2,7 +2,7 @@ import uuid
 import json
 import pytest
 from phebee.utils.aws import get_client
-from phebee.utils.sparql import generate_termlink_hash
+from phebee.utils.hash import generate_termlink_hash
 
 pytestmark = [pytest.mark.integration]
 
