@@ -7,11 +7,47 @@ import random
 import requests
 
 
+def extract_project_id_from_run(run_id, physical_resources):
+    """Extract project_id from an existing run's evidence files"""
+    s3_client = boto3.client('s3')
+    bucket_name = physical_resources['PheBeeBucket']
+    
+    # List evidence files for the run
+    prefix = f"performance-test/{run_id}/"
+    response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=prefix, MaxKeys=1)
+    
+    if 'Contents' not in response:
+        raise ValueError(f"No evidence files found for run_id: {run_id}")
+    
+    # Download and parse the first evidence file to extract project_id
+    first_file_key = response['Contents'][0]['Key']
+    obj = s3_client.get_object(Bucket=bucket_name, Key=first_file_key)
+    content = obj['Body'].read().decode('utf-8')
+    
+    # Parse the first line to extract project_id
+    first_line = content.strip().split('\n')[0]
+    if first_line:
+        evidence_record = json.loads(first_line)
+        return evidence_record.get('project_id')
+    
+    raise ValueError(f"Could not extract project_id from evidence file: {first_file_key}")
+
+
 @pytest.mark.performance
-def test_large_scale_performance(physical_resources, stack_outputs, test_project_id, num_subjects, num_terms, request):
+def test_large_scale_performance(physical_resources, stack_outputs, num_subjects, num_terms, request):
     """Test performance with large numbers of subjects and evidence records using realistic HPO terms and qualifiers"""
     
     # Check for existing run_id parameter
+    existing_run_id = getattr(request.config.option, 'existing_run_id', None)
+    
+    # Only use test_project_id fixture if not using existing run
+    if existing_run_id:
+        test_project_id = extract_project_id_from_run(existing_run_id, physical_resources)
+        print(f"Using project_id from existing run: {test_project_id}")
+    else:
+        # Generate new project_id for new runs
+        test_project_id = f"test_project_{uuid.uuid4().hex[:8]}"
+        print(f"Generated new project_id: {test_project_id}")
     existing_run_id = getattr(request.config.option, 'existing_run_id', None)
     
     # Configuration from command line parameters
@@ -335,9 +371,6 @@ def test_large_scale_performance(physical_resources, stack_outputs, test_project
         print(f"Using existing run_id: {existing_run_id}")
         run_id = existing_run_id
         load_time = 0  # Skip timing since we didn't do the load
-        # Use the original project_id from the existing run
-        test_project_id = "test_project_875ed413"
-        print(f"Using original project_id: {test_project_id}")
     else:
         run_id = bulk_load_performance_data(test_data, physical_resources)
         load_time = time.time() - start_time
@@ -378,7 +411,11 @@ def test_large_scale_performance(physical_resources, stack_outputs, test_project
         return
     subjects_data = response.json()
     
-    print(f"Project query: {query_time:.3f}s for {len(subjects_data.get('body', []))} subjects")
+    expected_subject_count = len(subject_ids) if subject_ids else "unknown"
+    actual_subject_count = len(subjects_data.get('body', []))
+    
+    print(f"API Call: GET /projects/{test_project_id}/subjects - Expected: {expected_subject_count} subjects from bulk import")
+    print(f"Result: Retrieved {actual_subject_count} subjects in {query_time:.3f}s - {'✓ PASS' if actual_subject_count == expected_subject_count else f'✗ FAIL: Expected {expected_subject_count}, got {actual_subject_count}'}")
     
     # Test 2: Query subjects by specific HPO terms
     test_terms = hpo_terms[:3]  # Test with first 3 terms
@@ -399,7 +436,9 @@ def test_large_scale_performance(physical_resources, stack_outputs, test_project
             if cursor:
                 request_body["cursor"] = cursor
                 
+            page_start = time.time()
             response = requests.post(f"{api_url}/subjects/query", json=request_body)
+            page_time = time.time() - page_start
             
             assert response.status_code == 200
             page_data = response.json()
@@ -409,6 +448,7 @@ def test_large_scale_performance(physical_resources, stack_outputs, test_project
                 break
                 
             all_subjects.extend(page_subjects)
+            print(f"      Page {len(all_subjects)//len(page_subjects)}: {len(page_subjects)} subjects ({page_time:.3f}s)")
             
             # Get next cursor for pagination
             cursor = page_data.get('pagination', {}).get('next_cursor')
@@ -423,9 +463,11 @@ def test_large_scale_performance(physical_resources, stack_outputs, test_project
         
         term_name = term_iri.split('/')[-1]
         actual_subject_ids = [s.get('project_subject_id') for s in all_subjects]
-        print(f"Term query ({term_name}): {term_query_time:.3f}s")
-        print(f"  Expected: {expected_mappings.get(term_iri, set())}")
-        print(f"  Actual: {set(actual_subject_ids)}")
+        expected_count = len(expected_mappings.get(term_iri, set()))
+        actual_count = len(actual_subject_ids)
+        
+        print(f"API Call: GET /projects/{test_project_id}/subjects?term_iri={term_name} - Expected: {expected_count} subjects with positive evidence")
+        print(f"Result: Retrieved {actual_count} subjects in {term_query_time:.3f}s - {'✓ PASS' if actual_count == expected_count else f'✗ FAIL: Expected {expected_count}, got {actual_count}'}")
         
         # Validate results against expected mappings
         if term_iri in expected_mappings:
@@ -433,24 +475,29 @@ def test_large_scale_performance(physical_resources, stack_outputs, test_project
             expected_subjects = expected_mappings[term_iri]
             
             if actual_subjects == expected_subjects:
-                print(f"  ✓ Validation passed: {len(actual_subjects)} subjects match expected")
+                print(f"  ✓ Subject IDs match expected set")
                 
                 # For first term, validate termlink grouping using /subject endpoint data
                 if i == 0:
                     print(f"  Validating evidence grouping by qualifiers for {term_name}...")
                     grouping_mismatches = 0
+                    sample_subjects = all_subjects[:10]  # Limit to 10 subjects for performance
                     
-                    for subject_data in all_subjects:
+                    print(f"    Validating termlink grouping for {len(sample_subjects)} sample subjects (API calls: POST /subject)")
+                    
+                    for i, subject_data in enumerate(sample_subjects):
                         subject_id = subject_data.get('project_subject_id')
                         
                         # Get subject details to access aggregated term data
                         try:
+                            start_time = time.time()
                             subject_response = requests.post(f"{api_url}/subject", json={
                                 "project_subject_iri": subject_data.get('project_subject_iri')
                             })
+                            call_time = time.time() - start_time
                             
                             if subject_response.status_code != 200:
-                                print(f"    ✗ Subject {subject_id}: Could not get subject details")
+                                print(f"    ✗ Subject {i+1}/{len(sample_subjects)} ({subject_id}): Could not get subject details ({call_time:.3f}s)")
                                 grouping_mismatches += 1
                                 continue
                                 
@@ -482,26 +529,29 @@ def test_large_scale_performance(physical_resources, stack_outputs, test_project
                                         
                                         # Validate termlink grouping
                                         if actual_term_link_count != expected_term_link_count:
-                                            print(f"    ✗ Subject {subject_id}: Expected {expected_term_link_count} term links, got {actual_term_link_count}")
+                                            print(f"    ✗ Subject {i+1}/{len(sample_subjects)} ({subject_id}): Expected {expected_term_link_count} term links, got {actual_term_link_count} ({call_time:.3f}s)")
                                             print(f"      Expected qualifier groups: {list(expected_qualifier_groups.keys())}")
                                             grouping_mismatches += 1
                                         elif actual_evidence_count != expected_evidence_count:
-                                            print(f"    ✗ Subject {subject_id}: Expected {expected_evidence_count} evidence records, got {actual_evidence_count}")
+                                            print(f"    ✗ Subject {i+1}/{len(sample_subjects)} ({subject_id}): Expected {expected_evidence_count} evidence records, got {actual_evidence_count} ({call_time:.3f}s)")
                                             grouping_mismatches += 1
                                         else:
                                             # Validate evidence count per qualifier combination
                                             # Note: Current API doesn't expose per-qualifier evidence counts
                                             # This validates the overall grouping is correct
-                                            print(f"    ✓ Subject {subject_id}: {actual_term_link_count} term links, {actual_evidence_count} evidence records")
-                                            print(f"      Expected qualifier distribution: {dict(expected_qualifier_groups)}")
+                                            print(f"    ✓ Subject {i+1}/{len(sample_subjects)} ({subject_id}): {actual_term_link_count} term links, {actual_evidence_count} evidence records ({call_time:.3f}s)")
+                                            if len(expected_qualifier_groups) <= 5:  # Only show distribution for simpler cases
+                                                print(f"      Expected qualifier distribution: {dict(expected_qualifier_groups)}")
+                                            else:
+                                                print(f"      Expected {len(expected_qualifier_groups)} qualifier groups with {expected_evidence_count} total evidence")
                                     break
                             
                             if not term_found:
-                                print(f"    ✗ Subject {subject_id}: Term {term_iri} not found in subject data")
+                                print(f"    ✗ Subject {i+1}/{len(sample_subjects)} ({subject_id}): Term {term_iri} not found in subject data ({call_time:.3f}s)")
                                 grouping_mismatches += 1
                                 
                         except Exception as e:
-                            print(f"    ✗ Subject {subject_id}: Error validating termlink grouping: {e}")
+                            print(f"    ✗ Subject {i+1}/{len(sample_subjects)} ({subject_id}): Error validating termlink grouping: {e}")
                             grouping_mismatches += 1
                     
                     if grouping_mismatches == 0:
@@ -588,8 +638,11 @@ def test_large_scale_performance(physical_resources, stack_outputs, test_project
     
     assert response.status_code == 200
     qualified_subjects = response.json()
+    qualified_count = len(qualified_subjects.get('body', []))
+    expected_qualified = len(expected_mappings.get(hpo_terms[0], set())) if hpo_terms[0] in expected_mappings else 0
     
-    print(f"Qualified query (non-qualified only): {qualified_query_time:.3f}s for {len(qualified_subjects.get('body', []))} subjects")
+    print(f"API Call: POST /subjects/query with include_qualified=false - Expected: {expected_qualified} subjects with positive evidence only")
+    print(f"Result: Retrieved {qualified_count} subjects in {qualified_query_time:.3f}s - {'✓ PASS' if qualified_count == expected_qualified else f'✗ FAIL: Expected {expected_qualified}, got {qualified_count}'}")
     
     # Test 4: Get individual subject details (sample from actual returned subjects)
     returned_subjects = subjects_data.get('body', [])
@@ -615,9 +668,11 @@ def test_large_scale_performance(physical_resources, stack_outputs, test_project
         
         if subject_times:
             avg_subject_time = sum(subject_times) / len(subject_times)
-            print(f"Individual subject queries: avg {avg_subject_time:.3f}s (sample of {len(subject_times)})")
+            print(f"API Call: GET /projects/{{project_id}}/subjects/{{subject_iri}} - Expected: Individual subject details")
+            print(f"Result: Retrieved {len(subject_times)} subjects in avg {avg_subject_time:.3f}s each - {'✓ PASS' if avg_subject_time < 2.0 else '✗ FAIL: Too slow'}")
         else:
-            print("No successful individual subject queries")
+            print("API Call: GET /projects/{project_id}/subjects/{subject_iri} - Expected: Individual subject details")
+            print("Result: ✗ FAIL: No successful individual subject queries")
     
     # Test 5: Get single subject details using /subject endpoint
     if returned_subjects:
@@ -633,12 +688,15 @@ def test_large_scale_performance(physical_resources, stack_outputs, test_project
             
             assert response.status_code == 200, f"Single subject query failed: {response.status_code}"
             subject_data = response.json()
-            print(f"Single subject query (/subject): {single_subject_time:.3f}s")
+            print(f"API Call: POST /subject with subject_iri - Expected: Single subject with termlinks")
+            print(f"Result: Retrieved subject data in {single_subject_time:.3f}s - {'✓ PASS' if single_subject_time < 2.0 else '✗ FAIL: Too slow'}")
         else:
-            print("No valid subject IRI found for /subject query")
+            print("API Call: POST /subject with subject_iri - Expected: Single subject with termlinks")
+            print("Result: ✗ FAIL: No valid subject IRI found")
             subject_data = {}
     else:
-        print("No subjects available for /subject query")
+        print("API Call: POST /subject with subject_iri - Expected: Single subject with termlinks")
+        print("Result: ✗ FAIL: No subjects available for testing")
         subject_data = {}
     
     # Test 6: Get subject term info details for specific term links
@@ -660,17 +718,11 @@ def test_large_scale_performance(physical_resources, stack_outputs, test_project
             assert response.status_code == 200
             term_info_data = response.json()
             
-            print(f"Subject term-info query: {term_info_time:.3f}s")
-            print(f"  Term: {term_iri}")
-            print(f"  Evidence count: {len(term_info_data.get('evidence', []))}")
+            evidence_count = len(term_info_data.get('evidence', []))
+            evidence_with_qualifiers = sum(1 for evidence in term_info_data.get('evidence', []) if evidence.get('qualifiers'))
             
-            # Check if qualifiers are present in the evidence
-            evidence_with_qualifiers = 0
-            for evidence in term_info_data.get('evidence', []):
-                if evidence.get('qualifiers'):
-                    evidence_with_qualifiers += 1
-            
-            print(f"  Evidence with qualifiers: {evidence_with_qualifiers}")
+            print(f"API Call: POST /subject/term-info with termlink_id - Expected: Evidence records for specific term")
+            print(f"Result: Retrieved {evidence_count} evidence records in {term_info_time:.3f}s ({evidence_with_qualifiers} with qualifiers) - {'✓ PASS' if evidence_count > 0 else '✗ FAIL: No evidence found'}")
         else:
             print("No termlink details available for term-info testing")
     else:
@@ -686,8 +738,10 @@ def test_large_scale_performance(physical_resources, stack_outputs, test_project
     
     assert response.status_code == 200
     paginated_data = response.json()
+    paginated_count = len(paginated_data.get('body', []))
     
-    print(f"Paginated query (limit=5): {pagination_time:.3f}s for {len(paginated_data.get('body', []))} subjects")
+    print(f"API Call: POST /subjects/query with limit=5 - Expected: 5 subjects (pagination test)")
+    print(f"Result: Retrieved {paginated_count} subjects in {pagination_time:.3f}s - {'✓ PASS' if paginated_count == 5 else f'✗ FAIL: Expected 5, got {paginated_count}'}")
     
     # Performance assertions (adjust thresholds as needed)
     assert query_time < 30.0, f"Project query too slow: {query_time:.3f}s"
