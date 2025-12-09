@@ -222,54 +222,69 @@ def test_bulk_import_stepfunction(physical_resources, test_project_id):
         output = json.loads(execution_response.get('output', '{}'))
         print(f"Execution output: {output}")
         
-        # Check that N-Quads files were created (new naming pattern from Lambda function)
-        nq_prefix = f"{run_id}/nq/"
+        # Check that TTL files were created (updated from N-Quads to TTL)
+        ttl_prefix = f"{run_id}/neptune/"
         
-        # List objects with the N-Quads prefix to find generated files
-        response = s3_client.list_objects_v2(Bucket=s3_bucket, Prefix=nq_prefix)
-        nq_files = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.nq')]
+        # List objects with the TTL prefix to find generated files
+        response = s3_client.list_objects_v2(Bucket=s3_bucket, Prefix=ttl_prefix)
+        ttl_files = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.ttl')]
         
-        if not nq_files:
-            pytest.fail(f"No N-Quads files found with prefix: {nq_prefix}")
+        if not ttl_files:
+            pytest.fail(f"No TTL files found with prefix: {ttl_prefix}")
         
-        print(f"N-Quads files created successfully: {nq_files}")
+        print(f"TTL files created successfully: {ttl_files}")
         
-        # Verify at least one N-Quads file exists and has content
-        first_nq_file = nq_files[0]
+        # Find a subjects TTL file that should contain HP terms
+        subjects_ttl_file = None
+        for ttl_file in ttl_files:
+            if '/subjects/' in ttl_file:
+                subjects_ttl_file = ttl_file
+                break
+        
+        if not subjects_ttl_file:
+            subjects_ttl_file = ttl_files[0]  # Fallback to first file
+            
+        print(f"Using TTL file for validation: {subjects_ttl_file}")
         try:
-            obj_response = s3_client.head_object(Bucket=s3_bucket, Key=first_nq_file)
+            obj_response = s3_client.head_object(Bucket=s3_bucket, Key=subjects_ttl_file)
             if obj_response['ContentLength'] == 0:
-                pytest.fail(f"N-Quads file is empty: {first_nq_file}")
+                pytest.fail(f"TTL file is empty: {subjects_ttl_file}")
             
-            # Check N-Quads content structure
-            nq_obj = s3_client.get_object(Bucket=s3_bucket, Key=first_nq_file)
-            nq_content = nq_obj['Body'].read().decode('utf-8')
+            # Check TTL content structure
+            ttl_obj = s3_client.get_object(Bucket=s3_bucket, Key=subjects_ttl_file)
+            ttl_content = ttl_obj['Body'].read().decode('utf-8')
             
-            # Validate basic N-Quads structure (N-Quads use full URIs, not prefixes)
-            required_uris = ['<http://ods.nationwidechildrens.org/phebee/', '<http://purl.obolibrary.org/obo/HP_']
-            for uri in required_uris:
-                if uri not in nq_content:
-                    pytest.fail(f"Missing required URI pattern in N-Quads: {uri}")
+            # Validate basic TTL structure
+            print(f"Checking TTL file: {subjects_ttl_file}")
+            print(f"TTL content length: {len(ttl_content)} characters")
+            print(f"TTL content preview (first 1000 chars): {ttl_content[:1000]}")
             
-            # Check for basic phenotype triples (use full URIs in N-Quads)
-            if '<http://ods.nationwidechildrens.org/phebee#hasTermLink>' not in nq_content:
-                pytest.fail("No termlink relationships found in N-Quads")
+            required_patterns = ['phebee:', 'HP_']  # HP terms appear as HP_ in full URIs
+            for pattern in required_patterns:
+                if pattern not in ttl_content:
+                    pytest.fail(f"Missing required pattern in TTL: {pattern}")
+            
+            # Check for basic phenotype triples
+            if 'hasTermLink' not in ttl_content:
+                pytest.fail("No termlink relationships found in TTL")
             
             # Basic validation - check that we have subjects and termlinks
-            subject_count = nq_content.count('<http://ods.nationwidechildrens.org/phebee#Subject>')
-            termlink_count = nq_content.count('<http://ods.nationwidechildrens.org/phebee#TermLink>')
+            subject_count = ttl_content.count('Subject')
+            termlink_count = ttl_content.count('TermLink')
             
-            print(f"N-Quads validation - Subjects: {subject_count}, TermLinks: {termlink_count}")
+            print(f"TTL validation - Subjects: {subject_count}, TermLinks: {termlink_count}")
             
             if subject_count == 0:
-                pytest.fail("No subjects found in N-Quads content")
+                pytest.fail("No subjects found in TTL content")
             if termlink_count == 0:
-                pytest.fail("No termlinks found in N-Quads content")
+                pytest.fail("No termlinks found in TTL content")
                 
-            print(f"N-Quads content validation passed for {first_nq_file}")
+            print(f"TTL content validation passed for {subjects_ttl_file}")
+                
+            print(f"TTL content validation passed for {subjects_ttl_file}")
             
         except s3_client.exceptions.NoSuchKey:
-            pytest.fail(f"N-Quads file not accessible: {first_nq_file}")
+            pytest.fail(f"TTL file not accessible: {subjects_ttl_file}")
         
         # Validate Iceberg data was written correctly
         print("Validating Iceberg data...")
@@ -556,20 +571,20 @@ def verify_iceberg_evidence(run_id):
 
 
 @pytest.mark.integration
-def test_nq_generation_comprehensive(physical_resources, test_project_id):
-    """Test comprehensive N-Quads generation with subjects, termlinks, terms, and qualifiers"""
+def test_ttl_generation_comprehensive(physical_resources, test_project_id):
+    """Test comprehensive TTL generation with subjects, termlinks, terms, and qualifiers"""
     
     s3_bucket = physical_resources.get("PheBeeBucket")
     if not s3_bucket:
         pytest.skip("PheBeeBucket not found in physical resources")
     
-    run_id = f"nq-test-{uuid.uuid4().hex[:8]}"
+    run_id = f"ttl-test-{uuid.uuid4().hex[:8]}"
     
     # Create test data with various qualifier combinations
     test_data = [
         {
             "project_id": test_project_id,
-            "project_subject_id": "nq-subject-001",
+            "project_subject_id": "ttl-subject-001",
             "term_iri": "http://purl.obolibrary.org/obo/HP_0001627",
             "evidence": [
                 {
@@ -627,7 +642,7 @@ def test_nq_generation_comprehensive(physical_resources, test_project_id):
         },
         {
             "project_id": test_project_id,
-            "project_subject_id": "nq-subject-002",
+            "project_subject_id": "ttl-subject-002",
             "term_iri": "http://purl.obolibrary.org/obo/HP_0002664",
             "evidence": [
                 {
@@ -654,7 +669,7 @@ def test_nq_generation_comprehensive(physical_resources, test_project_id):
     # Upload test data
     jsonl_content = "\n".join(json.dumps(record) for record in test_data)
     s3_client = boto3.client('s3')
-    input_key = f"nq-test-data/{run_id}/data.jsonl"
+    input_key = f"ttl-test-data/{run_id}/data.jsonl"
     
     s3_client.put_object(
         Bucket=s3_bucket,
@@ -671,14 +686,14 @@ def test_nq_generation_comprehensive(physical_resources, test_project_id):
         if not state_machine_arn:
             pytest.skip("BulkImportStateMachine not found")
         
-        execution_name = f"nq-test-{uuid.uuid4().hex[:8]}"
+        execution_name = f"ttl-test-{uuid.uuid4().hex[:8]}"
         
         response = stepfunctions_client.start_execution(
             stateMachineArn=state_machine_arn,
             name=execution_name,
             input=json.dumps({
                 "run_id": run_id,
-                "input_path": f"s3://{s3_bucket}/nq-test-data/{run_id}/"
+                "input_path": f"s3://{s3_bucket}/ttl-test-data/{run_id}/"
             })
         )
         
@@ -705,22 +720,22 @@ def test_nq_generation_comprehensive(physical_resources, test_project_id):
             
             time.sleep(30)
         
-        # Validate N-Quads files
-        nq_prefix = f"{run_id}/nq/"
-        response = s3_client.list_objects_v2(Bucket=s3_bucket, Prefix=nq_prefix)
-        nq_files = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.nq')]
+        # Validate TTL files
+        ttl_prefix = f"{run_id}/neptune/"
+        response = s3_client.list_objects_v2(Bucket=s3_bucket, Prefix=ttl_prefix)
+        ttl_files = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.ttl')]
         
-        assert nq_files, f"No N-Quads files found with prefix: {nq_prefix}"
+        assert ttl_files, f"No TTL files found with prefix: {ttl_prefix}"
         
-        # Download and analyze N-Quads content
-        all_nq_content = ""
-        for nq_file in nq_files:
-            nq_obj = s3_client.get_object(Bucket=s3_bucket, Key=nq_file)
-            nq_content = nq_obj['Body'].read().decode('utf-8')
-            all_nq_content += nq_content + "\n"
+        # Download and analyze TTL content
+        all_ttl_content = ""
+        for ttl_file in ttl_files:
+            ttl_obj = s3_client.get_object(Bucket=s3_bucket, Key=ttl_file)
+            ttl_content = ttl_obj['Body'].read().decode('utf-8')
+            all_ttl_content += ttl_content + "\n"
         
-        # Comprehensive N-Quads validation
-        validate_nq_structure(all_nq_content, test_data)
+        # Comprehensive TTL validation
+        validate_ttl_structure(all_ttl_content, test_data)
         
         print("Comprehensive N-Quads validation passed")
         
@@ -732,45 +747,50 @@ def test_nq_generation_comprehensive(physical_resources, test_project_id):
             pass
 
 
-def validate_nq_structure(nq_content: str, test_data: list):
-    """Validate comprehensive N-Quads structure including subjects, termlinks, terms, and qualifiers"""
+def validate_ttl_structure(ttl_content: str, test_data: list):
+    """Validate comprehensive TTL structure including subjects, termlinks, terms, and qualifiers"""
     
-    # 1. Validate URI patterns (N-Quads use full URIs, not prefixes)
+    # 1. Validate URI patterns (TTL may use prefixes or full URIs)
     required_uris = [
-        '<http://ods.nationwidechildrens.org/phebee/',
-        '<http://www.w3.org/1999/02/22-rdf-syntax-ns#',
-        '<http://purl.obolibrary.org/obo/HP_'
+        'http://ods.nationwidechildrens.org/phebee/',
+        'http://www.w3.org/1999/02/22-rdf-syntax-ns#',
+        'http://purl.obolibrary.org/obo/HP_'
     ]
     
     for uri in required_uris:
-        assert uri in nq_content, f"Missing required URI pattern: {uri}"
+        assert uri in ttl_content, f"Missing required URI pattern: {uri}"
     
-    lines = nq_content.split('\n')
+    lines = ttl_content.split('\n')
     
-    # 2. Extract all subjects, termlinks, and terms from N-Quads
-    subjects_in_nq = set()
-    termlinks_in_nq = set()
+    # 2. Extract all subjects, termlinks, and terms from TTL
+    subjects_in_ttl = set()
+    termlinks_in_ttl = set()
     subject_termlink_pairs = set()
     termlink_term_pairs = set()
     
     for line in lines:
         line = line.strip()
-        if '<http://ods.nationwidechildrens.org/phebee#Subject>' in line:
-            subject = line.split()[0]
-            subjects_in_nq.add(subject)
-        elif '<http://ods.nationwidechildrens.org/phebee#TermLink>' in line:
-            termlink = line.split()[0]
-            termlinks_in_nq.add(termlink)
-        elif '<http://ods.nationwidechildrens.org/phebee#hasTermLink>' in line:
+        if 'phebee#Subject' in line or ':Subject' in line:
+            # Extract subject URI from TTL format
+            if '<' in line and '>' in line:
+                subject = line.split()[0]
+                subjects_in_ttl.add(subject)
+        elif 'phebee#TermLink' in line or ':TermLink' in line:
+            if '<' in line and '>' in line:
+                termlink = line.split()[0]
+                termlinks_in_ttl.add(termlink)
+        elif 'phebee#hasTermLink' in line or ':hasTermLink' in line:
             parts = line.split()
-            subject = parts[0]
-            termlink = parts[2].rstrip(' .')
-            subject_termlink_pairs.add((subject, termlink))
-        elif '<http://ods.nationwidechildrens.org/phebee#hasTerm>' in line:
+            if len(parts) >= 3:
+                subject = parts[0]
+                termlink = parts[2].rstrip(' .;')
+                subject_termlink_pairs.add((subject, termlink))
+        elif 'phebee#hasTerm' in line or ':hasTerm' in line:
             parts = line.split()
-            termlink = parts[0]
-            term = parts[2].rstrip(' .')
-            termlink_term_pairs.add((termlink, term))
+            if len(parts) >= 3:
+                termlink = parts[0]
+                term = parts[2].rstrip(' .;')
+                termlink_term_pairs.add((termlink, term))
     
     # 3. Build expected data from input
     expected_evidence_count = 0
@@ -783,7 +803,7 @@ def validate_nq_structure(nq_content: str, test_data: list):
         project_subject_id = record['project_subject_id']
         term_iri = record['term_iri']
         
-        # Convert term IRI to expected format (N-Quads use full URIs)
+        # Convert term IRI to expected format (TTL may use full URIs or prefixes)
         expected_term = term_iri  # Keep full URI format
         expected_terms.add(expected_term)
         
@@ -794,12 +814,12 @@ def validate_nq_structure(nq_content: str, test_data: list):
     
     # 4. Validate exact counts
     print(f"Expected evidence records: {expected_evidence_count}")
-    print(f"Found termlinks: {len(termlinks_in_nq)}")
+    print(f"Found termlinks: {len(termlinks_in_ttl)}")
     print(f"Expected unique subject-term-qualifier combinations: {len(expected_subject_term_pairs)}")
     
     # Should have one termlink per evidence record (each has unique qualifiers)
-    assert len(termlinks_in_nq) == expected_evidence_count, \
-        f"Expected {expected_evidence_count} termlinks, found {len(termlinks_in_nq)}"
+    assert len(termlinks_in_ttl) == expected_evidence_count, \
+        f"Expected {expected_evidence_count} termlinks, found {len(termlinks_in_ttl)}"
     
     # 5. Validate all expected terms are present
     found_terms = set()
@@ -815,7 +835,7 @@ def validate_nq_structure(nq_content: str, test_data: list):
     qualifier_assertions = []
     
     for line in lines:
-        if '<http://ods.nationwidechildrens.org/phebee#hasQualifyingTerm>' in line:
+        if 'hasQualifyingTerm' in line or ':hasQualifyingTerm' in line:
             qualifier_assertions.append(line.strip())
     
     # Count expected positive qualifiers from test data
@@ -836,34 +856,34 @@ def validate_nq_structure(nq_content: str, test_data: list):
     
     # 6. Validate subject count (unique project subjects)
     expected_unique_subjects = len(set((r['project_id'], r['project_subject_id']) for r in test_data))
-    assert len(subjects_in_nq) >= expected_unique_subjects, \
-        f"Expected at least {expected_unique_subjects} subjects, found {len(subjects_in_nq)}"
+    assert len(subjects_in_ttl) >= expected_unique_subjects, \
+        f"Expected at least {expected_unique_subjects} subjects, found {len(subjects_in_ttl)}"
     
     # 7. Validate RDF structure integrity
-    assert len(subject_termlink_pairs) == len(termlinks_in_nq), \
-        f"Mismatch: {len(subject_termlink_pairs)} subject-termlink pairs vs {len(termlinks_in_nq)} termlinks"
+    assert len(subject_termlink_pairs) == len(termlinks_in_ttl), \
+        f"Mismatch: {len(subject_termlink_pairs)} subject-termlink pairs vs {len(termlinks_in_ttl)} termlinks"
     
-    assert len(termlink_term_pairs) == len(termlinks_in_nq), \
-        f"Mismatch: {len(termlink_term_pairs)} termlink-term pairs vs {len(termlinks_in_nq)} termlinks"
+    assert len(termlink_term_pairs) == len(termlinks_in_ttl), \
+        f"Mismatch: {len(termlink_term_pairs)} termlink-term pairs vs {len(termlinks_in_ttl)} termlinks"
     
     # 8. Validate each termlink connects exactly one subject to one term
     termlinks_with_subjects = set(termlink for _, termlink in subject_termlink_pairs)
     termlinks_with_terms = set(termlink for termlink, _ in termlink_term_pairs)
     
-    assert termlinks_with_subjects == termlinks_in_nq, \
+    assert termlinks_with_subjects == termlinks_in_ttl, \
         "Not all termlinks have subject connections"
     
-    assert termlinks_with_terms == termlinks_in_nq, \
+    assert termlinks_with_terms == termlinks_in_ttl, \
         "Not all termlinks have term connections"
     
     # 9. Validate no orphaned entities
     subjects_referenced = set(subject for subject, _ in subject_termlink_pairs)
-    assert subjects_referenced == subjects_in_nq, \
+    assert subjects_referenced == subjects_in_ttl, \
         "Some subjects are declared but not connected to termlinks"
     
-    print(f"✅ Exact N-Quads validation passed:")
-    print(f"  - Subjects: {len(subjects_in_nq)}")
-    print(f"  - TermLinks: {len(termlinks_in_nq)}")
+    print(f"✅ Exact TTL validation passed:")
+    print(f"  - Subjects: {len(subjects_in_ttl)}")
+    print(f"  - TermLinks: {len(termlinks_in_ttl)}")
     print(f"  - Terms: {len(found_terms)}")
     print(f"  - Subject-TermLink connections: {len(subject_termlink_pairs)}")
     print(f"  - TermLink-Term connections: {len(termlink_term_pairs)}")

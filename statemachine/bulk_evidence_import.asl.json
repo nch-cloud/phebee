@@ -84,7 +84,7 @@
       "Type": "Task",
       "Resource": "arn:aws:states:::lambda:invoke",
       "Parameters": {
-        "FunctionName": "${GenerateNQManifestFunction}",
+        "FunctionName": "${GenerateTTLManifestFunction}",
         "Payload": {
           "run_id.$": "$.run_id",
           "database": "${IcebergDatabase}",
@@ -120,7 +120,7 @@
             "Type": "Task",
             "Resource": "arn:aws:states:::lambda:invoke",
             "Parameters": {
-              "FunctionName": "${GenerateNQFromIcebergFunction}",
+              "FunctionName": "${GenerateTTLFromIcebergFunction}",
               "Payload": {
                 "page_number.$": "$",
                 "run_id.$": "$$.Execution.Input.run_id",

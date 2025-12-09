@@ -88,8 +88,8 @@ def lambda_handler(event, context):
         
         logger.info(f"Retrieved {len(all_rows)} total rows from Athena")
         
-        # Generate N-Quads content (no prefixes needed)
-        nq_lines = []
+        # Generate TTL content
+        ttl_lines = []
         
         # Track subjects and projects for organizing into named graphs
         subjects_data = {}  # subject_id -> {term_links: [...], project_info: {...}}
