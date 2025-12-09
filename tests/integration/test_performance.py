@@ -397,25 +397,55 @@ def test_large_scale_performance(physical_resources, stack_outputs, num_subjects
     print("Waiting 30 seconds for Neptune indexing to complete...")
     time.sleep(30)
 
-    # Test 1: Query subjects by project (using correct POST method)
+    # Test 1: Query subjects by project (using pagination)
     start_time = time.time()
-    response = requests.post(f"{api_url}/subjects/query", json={"project_id": test_project_id})
+    
+    # Get all subjects by paginating
+    all_project_subjects = []
+    limit = 50
+    cursor = None
+    
+    while True:
+        request_body = {"project_id": test_project_id, "limit": limit}
+        if cursor:
+            request_body["cursor"] = cursor
+            
+        response = requests.post(f"{api_url}/subjects/query", json=request_body)
+        
+        if response.status_code != 200:
+            print("API test failed - data may not be available yet or endpoint issue")
+            print("Performance test completed (API validation skipped)")
+            return
+            
+        page_data = response.json()
+        page_subjects = page_data.get('body', [])
+        
+        if not page_subjects:
+            break
+            
+        all_project_subjects.extend(page_subjects)
+        
+        # Get next cursor
+        cursor = page_data.get('pagination', {}).get('next_cursor')
+        if not cursor:
+            break
+            
+        # Safety break
+        if len(all_project_subjects) > 10000:
+            break
+    
     query_time = time.time() - start_time
     
-    print(f"API Response Status: {response.status_code}")
-    print(f"API Response Content: {response.text[:500]}")  # First 500 chars
-    
-    if response.status_code != 200:
-        print("API test failed - data may not be available yet or endpoint issue")
-        print("Performance test completed (API validation skipped)")
-        return
-    subjects_data = response.json()
-    
     expected_subject_count = len(subject_ids) if subject_ids else "unknown"
-    actual_subject_count = len(subjects_data.get('body', []))
+    actual_subject_count = len(all_project_subjects)
     
     print(f"API Call: GET /projects/{test_project_id}/subjects - Expected: {expected_subject_count} subjects from bulk import")
     print(f"Result: Retrieved {actual_subject_count} subjects in {query_time:.3f}s - {'✓ PASS' if actual_subject_count == expected_subject_count else f'✗ FAIL: Expected {expected_subject_count}, got {actual_subject_count}'}")
+    
+    assert actual_subject_count == expected_subject_count, f"Project query returned wrong count: expected {expected_subject_count}, got {actual_subject_count}"
+    
+    # Use paginated results for subsequent tests
+    subjects_data = {"body": all_project_subjects}
     
     # Test 2: Query subjects by specific HPO terms
     test_terms = hpo_terms[:3]  # Test with first 3 terms
@@ -468,6 +498,8 @@ def test_large_scale_performance(physical_resources, stack_outputs, num_subjects
         
         print(f"API Call: GET /projects/{test_project_id}/subjects?term_iri={term_name} - Expected: {expected_count} subjects with positive evidence")
         print(f"Result: Retrieved {actual_count} subjects in {term_query_time:.3f}s - {'✓ PASS' if actual_count == expected_count else f'✗ FAIL: Expected {expected_count}, got {actual_count}'}")
+        
+        assert actual_count == expected_count, f"Term query for {term_name} returned wrong count: expected {expected_count}, got {actual_count}"
         
         # Validate results against expected mappings
         if term_iri in expected_mappings:
@@ -627,22 +659,52 @@ def test_large_scale_performance(physical_resources, stack_outputs, num_subjects
             print(f"  Total paging time: {total_paging_time:.3f}s")
             print(f"  Average page time: {avg_page_time:.3f}s")
     
-    # Test 3: Query with qualifier filtering (include_qualified parameter)
+    # Test 3: Query with qualifier filtering (include_qualified parameter) - with pagination
     start_time = time.time()
-    response = requests.post(f"{api_url}/subjects/query", json={
-        "project_id": test_project_id,
-        "term_iri": hpo_terms[0],
-        "include_qualified": False  # Only non-negated, non-family, non-hypothetical
-    })
-    qualified_query_time = time.time() - start_time
     
-    assert response.status_code == 200
-    qualified_subjects = response.json()
-    qualified_count = len(qualified_subjects.get('body', []))
+    # Get all qualified subjects by paginating
+    all_qualified_subjects = []
+    limit = 50
+    cursor = None
+    
+    while True:
+        request_body = {
+            "project_id": test_project_id,
+            "term_iri": hpo_terms[0],
+            "include_qualified": False,
+            "limit": limit
+        }
+        if cursor:
+            request_body["cursor"] = cursor
+            
+        response = requests.post(f"{api_url}/subjects/query", json=request_body)
+        assert response.status_code == 200
+        
+        page_data = response.json()
+        page_subjects = page_data.get('body', [])
+        
+        if not page_subjects:
+            break
+            
+        all_qualified_subjects.extend(page_subjects)
+        
+        # Get next cursor
+        cursor = page_data.get('pagination', {}).get('next_cursor')
+        if not cursor:
+            break
+            
+        # Safety break
+        if len(all_qualified_subjects) > 10000:
+            break
+    
+    qualified_query_time = time.time() - start_time
+    qualified_count = len(all_qualified_subjects)
     expected_qualified = len(expected_mappings.get(hpo_terms[0], set())) if hpo_terms[0] in expected_mappings else 0
     
     print(f"API Call: POST /subjects/query with include_qualified=false - Expected: {expected_qualified} subjects with positive evidence only")
     print(f"Result: Retrieved {qualified_count} subjects in {qualified_query_time:.3f}s - {'✓ PASS' if qualified_count == expected_qualified else f'✗ FAIL: Expected {expected_qualified}, got {qualified_count}'}")
+    
+    assert qualified_count == expected_qualified, f"Qualified query returned wrong count: expected {expected_qualified}, got {qualified_count}"
     
     # Test 4: Get individual subject details (sample from actual returned subjects)
     returned_subjects = subjects_data.get('body', [])
@@ -669,10 +731,12 @@ def test_large_scale_performance(physical_resources, stack_outputs, num_subjects
         if subject_times:
             avg_subject_time = sum(subject_times) / len(subject_times)
             print(f"API Call: GET /projects/{{project_id}}/subjects/{{subject_iri}} - Expected: Individual subject details")
-            print(f"Result: Retrieved {len(subject_times)} subjects in avg {avg_subject_time:.3f}s each - {'✓ PASS' if avg_subject_time < 2.0 else '✗ FAIL: Too slow'}")
+            print(f"Result: Retrieved {len(subject_times)} subjects in avg {avg_subject_time:.3f}s each - {'✓ PASS' if avg_subject_time < 5.0 else '✗ FAIL: Too slow'}")
+            assert avg_subject_time < 5.0, f"Individual subject queries too slow: {avg_subject_time:.3f}s average"
         else:
             print("API Call: GET /projects/{project_id}/subjects/{subject_iri} - Expected: Individual subject details")
             print("Result: ✗ FAIL: No successful individual subject queries")
+            assert False, "No successful individual subject queries"
     
     # Test 5: Get single subject details using /subject endpoint
     if returned_subjects:
@@ -689,14 +753,17 @@ def test_large_scale_performance(physical_resources, stack_outputs, num_subjects
             assert response.status_code == 200, f"Single subject query failed: {response.status_code}"
             subject_data = response.json()
             print(f"API Call: POST /subject with subject_iri - Expected: Single subject with termlinks")
-            print(f"Result: Retrieved subject data in {single_subject_time:.3f}s - {'✓ PASS' if single_subject_time < 2.0 else '✗ FAIL: Too slow'}")
+            print(f"Result: Retrieved subject data in {single_subject_time:.3f}s - {'✓ PASS' if single_subject_time < 5.0 else '✗ FAIL: Too slow'}")
+            assert single_subject_time < 5.0, f"Single subject query too slow: {single_subject_time:.3f}s"
         else:
             print("API Call: POST /subject with subject_iri - Expected: Single subject with termlinks")
             print("Result: ✗ FAIL: No valid subject IRI found")
+            assert False, "No valid subject IRI found"
             subject_data = {}
     else:
         print("API Call: POST /subject with subject_iri - Expected: Single subject with termlinks")
         print("Result: ✗ FAIL: No subjects available for testing")
+        assert False, "No subjects available for testing"
         subject_data = {}
     
     # Test 6: Get subject term info details for specific term links
@@ -723,6 +790,7 @@ def test_large_scale_performance(physical_resources, stack_outputs, num_subjects
             
             print(f"API Call: POST /subject/term-info with termlink_id - Expected: Evidence records for specific term")
             print(f"Result: Retrieved {evidence_count} evidence records in {term_info_time:.3f}s ({evidence_with_qualifiers} with qualifiers) - {'✓ PASS' if evidence_count > 0 else '✗ FAIL: No evidence found'}")
+            assert evidence_count > 0, f"No evidence found for term info query"
         else:
             print("No termlink details available for term-info testing")
     else:
@@ -742,6 +810,8 @@ def test_large_scale_performance(physical_resources, stack_outputs, num_subjects
     
     print(f"API Call: POST /subjects/query with limit=5 - Expected: 5 subjects (pagination test)")
     print(f"Result: Retrieved {paginated_count} subjects in {pagination_time:.3f}s - {'✓ PASS' if paginated_count == 5 else f'✗ FAIL: Expected 5, got {paginated_count}'}")
+    
+    assert paginated_count == 5, f"Pagination test failed: expected 5 subjects, got {paginated_count}"
     
     # Performance assertions (adjust thresholds as needed)
     assert query_time < 30.0, f"Project query too slow: {query_time:.3f}s"
