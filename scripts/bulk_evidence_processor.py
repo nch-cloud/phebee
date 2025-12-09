@@ -290,7 +290,11 @@ def main():
             coalesce("hypothetical", spark_lit(""))
          ), 256)) \
          .withColumn("batch_id", input_file_name()) \
-         .withColumn("assertion_type", lit("positive")) \
+         .withColumn("assertion_type", 
+            when(col("creator.creator_type") == "automated", "http://purl.obolibrary.org/obo/ECO_0000203")
+            .when(col("creator.creator_type") == "manual", "http://purl.obolibrary.org/obo/ECO_0000218")
+            .otherwise(raise_error(concat(lit("Unknown creator_type: "), col("creator.creator_type"))))
+         ) \
          .withColumn("created_timestamp", current_timestamp()) \
          .withColumn("created_date", to_date(current_timestamp())) \
          .withColumn("source_level", lit("clinical_note")) \
