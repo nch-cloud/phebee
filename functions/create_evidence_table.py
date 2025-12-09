@@ -81,8 +81,7 @@ def create_table(database: str, table: str, s3_location: str, query_results_s3: 
         qualifiers array<struct<
             qualifier_type: string,
             qualifier_value: string
-        >>,
-        metadata map<string, string>
+        >>
     )
     PARTITIONED BY (bucket(16, subject_id), created_date)
     LOCATION '{s3_location}'

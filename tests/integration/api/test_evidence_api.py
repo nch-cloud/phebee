@@ -16,7 +16,6 @@ def test_create_and_delete_evidence(api_base_url, sigv4_auth):
         "evidence_type": "manual_annotation",
         "span_start": 5,
         "span_end": 20,
-        "metadata": {"source": "API", "version": "1.0.0"},
     }
 
     # --- Create ---
@@ -57,7 +56,6 @@ def test_get_evidence(api_base_url, sigv4_auth):
         "span_start": 3,
         "span_end": 9,
         "qualifiers": ["negated"],
-        "metadata": {"note": "via API test"},
     }
 
     # --- Create ---

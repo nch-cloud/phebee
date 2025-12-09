@@ -366,9 +366,6 @@ paths:
                   items:
                     type: string
                   description: Evidence qualifiers (e.g., negated)
-                metadata:
-                  type: object
-                  description: Additional evidence metadata
       responses:
         "201":
           description: Evidence created successfully
@@ -435,8 +432,6 @@ paths:
                     type: object
                   qualifiers:
                     type: array
-                  metadata:
-                    type: object
         "404":
           description: Evidence not found
       security:

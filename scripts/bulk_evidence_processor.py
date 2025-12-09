@@ -150,8 +150,7 @@ def extract_evidence_records(data: List[dict], subject_map: Dict[Tuple[str, str]
                 'qualifiers': [
                     {'qualifier_type': k, 'qualifier_value': str(v)}
                     for k, v in (evidence.get('contexts') or {}).items()
-                ],
-                'metadata': {}
+                ]
             }
             
             evidence_records.append(record)
@@ -193,8 +192,7 @@ def write_to_iceberg(spark, evidence_records: List[dict], database: str, table: 
         StructField("qualifiers", ArrayType(StructType([
             StructField("qualifier_type", StringType(), True),
             StructField("qualifier_value", StringType(), True)
-        ])), True),
-        StructField("metadata", MapType(StringType(), StringType()), True)
+        ])), True)
     ])
     
     # Create DataFrame
@@ -348,12 +346,11 @@ def main():
                 col("hypothetical").cast("string").alias("qualifier_value")
             )
          )) \
-         .withColumn("metadata", lit(None).cast("map<string,string>")) \
          .select(
             "evidence_id", "run_id", "batch_id", "evidence_type", "assertion_type",
             "created_timestamp", "created_date", "source_level", "subject_id",
             "encounter_id", "clinical_note_id", "termlink_id", "term_iri",
-            "note_context", "creator", "text_annotation", "qualifiers", "metadata"
+            "note_context", "creator", "text_annotation", "qualifiers"
          )
         
         evidence_count = flattened_df.count()

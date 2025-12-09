@@ -29,7 +29,6 @@ def lambda_handler(event, context):
         span_start = body.get("span_start")
         span_end = body.get("span_end")
         qualifiers = body.get("qualifiers", [])
-        metadata = body.get("metadata", {})
         
         # Clinical note context fields
         note_timestamp = body.get("note_timestamp")
@@ -73,7 +72,6 @@ def lambda_handler(event, context):
             span_start=span_start,
             span_end=span_end,
             qualifiers=qualifiers,
-            metadata=metadata,
             note_timestamp=note_timestamp,
             provider_type=provider_type,
             author_specialty=author_specialty,

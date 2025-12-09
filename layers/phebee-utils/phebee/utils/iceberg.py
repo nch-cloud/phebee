@@ -138,33 +138,6 @@ def extract_evidence_records(
     
     return evidence_records
 
-def write_evidence_to_iceberg(
-    evidence_records: List[Dict[str, Any]],
-    database: str,
-    table: str
-) -> None:
-    """
-    Write evidence records to Iceberg table using MERGE for idempotency.
-    
-    Args:
-        evidence_records: List of evidence records to insert
-        database: Iceberg database name
-        table: Iceberg table name
-    """
-    
-    if not evidence_records:
-        logger.info("No evidence records to write")
-        return
-    
-    # For now, we'll implement a simplified approach
-    # TODO: Implement proper MERGE for idempotency using Athena
-    
-    logger.info(f"Would write {len(evidence_records)} evidence records to {database}.{table}")
-    logger.info(f"Sample record: {evidence_records[0] if evidence_records else 'None'}")
-    
-    # TODO: Implement actual Iceberg write using Athena INSERT/MERGE
-    # This is a placeholder for the initial implementation
-
 
 def query_iceberg_evidence(query: str) -> List[Dict[str, Any]]:
     """
@@ -336,7 +309,6 @@ def create_evidence_record(
     span_start: int = None,
     span_end: int = None,
     qualifiers: List[str] = None,
-    metadata: Dict[str, Any] = None,
     note_timestamp: str = None,
     provider_type: str = None,
     author_specialty: str = None,
@@ -403,8 +375,7 @@ def create_evidence_record(
         } if span_start is not None or span_end is not None else None,
         "qualifiers": [
             {"qualifier_type": q, "qualifier_value": "1"} for q in (qualifiers or [])
-        ] if qualifiers else None,
-        "metadata": metadata or {}
+        ] if qualifiers else None
     }
     
     # Insert into Iceberg table using Athena
@@ -427,17 +398,6 @@ def create_evidence_record(
         qual_rows = [f"ROW('{q['qualifier_type']}', '{q['qualifier_value']}')" for q in record['qualifiers']]
         qualifiers_value = f"ARRAY[{', '.join(qual_rows)}]"
     
-    metadata_value = "MAP()"
-    if record.get('metadata') and record['metadata']:
-        keys = list(record['metadata'].keys())
-        values = list(record['metadata'].values())
-        if keys:
-            keys_quoted = [f"'{k}'" for k in keys]
-            values_quoted = [f"'{v}'" for v in values]
-            keys_array = f"ARRAY[{', '.join(keys_quoted)}]"
-            values_array = f"ARRAY[{', '.join(values_quoted)}]"
-            metadata_value = f"MAP({keys_array}, {values_array})"
-
     insert_query = f"""
     INSERT INTO {database_name}.{table_name} VALUES (
         '{evidence_id}',
@@ -456,8 +416,7 @@ def create_evidence_record(
         {note_context_value},
         {creator_value},
         {text_annotation_value},
-        {qualifiers_value},
-        {metadata_value}
+        {qualifiers_value}
     )
     """
     
@@ -574,18 +533,6 @@ def get_evidence_record(evidence_id: str) -> Dict[str, Any] | None:
                 for match in matches:
                     qualifiers.append(match.strip())
                 record["qualifiers"] = qualifiers
-        
-        # Add metadata if present
-        if row.get('metadata'):
-            # Parse metadata map - they come as string representation
-            metadata_str = row['metadata']
-            if metadata_str and metadata_str != '{}':
-                try:
-                    # Try to parse as JSON first
-                    record["metadata"] = json.loads(metadata_str)
-                except:
-                    # If that fails, leave as string
-                    record["metadata"] = metadata_str
         
         return record
         
