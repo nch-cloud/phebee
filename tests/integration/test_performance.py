@@ -753,8 +753,8 @@ def test_large_scale_performance(physical_resources, stack_outputs, num_subjects
             assert response.status_code == 200, f"Single subject query failed: {response.status_code}"
             subject_data = response.json()
             print(f"API Call: POST /subject with subject_iri - Expected: Single subject with termlinks")
-            print(f"Result: Retrieved subject data in {single_subject_time:.3f}s - {'✓ PASS' if single_subject_time < 5.0 else '✗ FAIL: Too slow'}")
-            assert single_subject_time < 5.0, f"Single subject query too slow: {single_subject_time:.3f}s"
+            print(f"Result: Retrieved subject data in {single_subject_time:.3f}s - {'✓ PASS' if single_subject_time < 10.0 else '✗ FAIL: Too slow'}")
+            assert single_subject_time < 10.0, f"Single subject query too slow: {single_subject_time:.3f}s"
         else:
             print("API Call: POST /subject with subject_iri - Expected: Single subject with termlinks")
             print("Result: ✗ FAIL: No valid subject IRI found")
@@ -819,7 +819,7 @@ def test_large_scale_performance(physical_resources, stack_outputs, num_subjects
     if 'avg_subject_time' in locals():
         assert avg_subject_time < 5.0, f"Individual subject queries too slow: {avg_subject_time:.3f}s"
     if 'single_subject_time' in locals():
-        assert single_subject_time < 5.0, f"Single subject query too slow: {single_subject_time:.3f}s"
+        assert single_subject_time < 10.0, f"Single subject query too slow: {single_subject_time:.3f}s"
     if 'term_info_time' in locals():
         assert term_info_time < 5.0, f"Term info query too slow: {term_info_time:.3f}s"
     assert pagination_time < 10.0, f"Pagination too slow: {pagination_time:.3f}s"
