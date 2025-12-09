@@ -43,7 +43,7 @@ def lambda_handler(event, context):
     include_qualified = body.get("include_qualified", False)
     
     # Pagination parameters
-    limit = body.get("limit", 200)
+    limit = body.get("limit", 1000)
     cursor = body.get("cursor")
 
     result = get_subjects(

@@ -402,7 +402,7 @@ def test_large_scale_performance(physical_resources, stack_outputs, num_subjects
     
     # Get all subjects by paginating
     all_project_subjects = []
-    limit = 50
+    limit = 1000
     cursor = None
     
     while True:
@@ -454,7 +454,7 @@ def test_large_scale_performance(physical_resources, stack_outputs, num_subjects
         
         # Get all results by paginating with cursor
         all_subjects = []
-        limit = 50
+        limit = 1000
         cursor = None
         
         while True:
@@ -610,7 +610,7 @@ def test_large_scale_performance(physical_resources, stack_outputs, num_subjects
             unique_subjects = set()
             page_times = []
             page_num = 1
-            limit = 50  # Page size
+            limit = 1000  # Page size
             cursor = None
             
             print(f"Paging through all results for {term_name}...")
@@ -664,7 +664,7 @@ def test_large_scale_performance(physical_resources, stack_outputs, num_subjects
     
     # Get all qualified subjects by paginating
     all_qualified_subjects = []
-    limit = 50
+    limit = 1000
     cursor = None
     
     while True:
