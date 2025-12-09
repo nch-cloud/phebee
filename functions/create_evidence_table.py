@@ -62,10 +62,10 @@ def create_table(database: str, table: str, s3_location: str, query_results_s3: 
         termlink_id string,
         term_iri string,
         note_context struct<
-            note_id: string,
             note_type: string,
             note_date: timestamp,
-            encounter_id: string
+            provider_type: string,
+            author_specialty: string
         >,
         creator struct<
             creator_id: string,

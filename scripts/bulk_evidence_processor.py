@@ -174,10 +174,10 @@ def write_to_iceberg(spark, evidence_records: List[dict], database: str, table: 
         StructField("subject_id", StringType(), False),
         StructField("reference_id", StringType(), True),
         StructField("note_context", StructType([
-            StructField("note_id", StringType(), True),
             StructField("note_type", StringType(), True),
             StructField("note_date", StringType(), True),
-            StructField("encounter_id", StringType(), True)
+            StructField("provider_type", StringType(), True),
+            StructField("author_specialty", StringType(), True)
         ]), True),
         StructField("creator", StructType([
             StructField("creator_id", StringType(), True),
@@ -318,10 +318,10 @@ def main():
             )
          ), 256)) \
          .withColumn("note_context", struct(
-            col("clinical_note_id").alias("note_id"),
             col("note_type"),
             col("note_timestamp").cast("timestamp").alias("note_date"),
-            col("encounter_id")
+            col("provider_type"),
+            col("author_specialty")
          )) \
          .withColumn("creator", struct(
             col("evidence_creator_id").alias("creator_id"),
