@@ -289,7 +289,7 @@ def main():
             coalesce("family", spark_lit("")),
             coalesce("hypothetical", spark_lit(""))
          ), 256)) \
-         .withColumn("batch_id", lit("")) \
+         .withColumn("batch_id", input_file_name()) \
          .withColumn("assertion_type", lit("positive")) \
          .withColumn("created_timestamp", current_timestamp()) \
          .withColumn("created_date", to_date(current_timestamp())) \
