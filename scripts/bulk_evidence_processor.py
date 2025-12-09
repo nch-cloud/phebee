@@ -298,6 +298,14 @@ def main():
          .withColumn("created_timestamp", current_timestamp()) \
          .withColumn("created_date", to_date(current_timestamp())) \
          .withColumn("source_level", lit("clinical_note")) \
+         .withColumn("evidence_type", 
+            when((col("source_level") == "clinical_note") & (col("creator.creator_type") == "manual"), 
+                 "http://purl.obolibrary.org/obo/ECO_0006161")
+            .when((col("source_level") == "clinical_note") & (col("creator.creator_type") == "automated"), 
+                  "http://purl.obolibrary.org/obo/ECO_0006162")
+            .otherwise(raise_error(concat(lit("Unknown source_level/creator_type combination: "), 
+                                         col("source_level"), lit("/"), col("creator.creator_type"))))
+         ) \
          .withColumn("termlink_id", sha2(concat_ws("|", 
             "subject_id", 
             "term_iri",
