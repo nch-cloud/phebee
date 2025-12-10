@@ -179,7 +179,6 @@ Resources:
               - !GetAtt GetSourceInfoFunction.Arn
               - !GetAtt CreateProjectFunction.Arn
               - !GetAtt CreateSubjectFunction.Arn
-              - !GetAtt ExportPhenopacketsFunction.Arn
               - !GetAtt GetSubjectFunction.Arn
               - !GetAtt GetSubjectTermInfoFunction.Arn
               - !GetAtt GetSubjectsPhenotypesFunction.Arn
@@ -784,22 +783,6 @@ Resources:
         - !Ref PheBeeS3WritePolicy
         - !Ref PheBeeNeptuneWritePolicy
         - !Ref PheBeeDynamoDBWritePolicy
-
-  ExportPhenopacketsFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: !Sub ${AppName}-ExportPhenopacketsFunction
-      CodeUri: functions
-      Handler: export_phenopackets.lambda_handler
-      MemorySize: 512
-      Layers:
-        - !Ref PheBeeUtilsLayer
-      Environment:
-        Variables:
-          PheBeeBucketName: !Ref PheBeeBucket
-          PheBeeDynamoTable: !Ref DynamoDBTable
-      Policies:
-        - !Ref PheBeeDynamoDBReadPolicy
 
   QueryProvenanceFunction:
     Type: AWS::Serverless::Function

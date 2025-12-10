@@ -246,7 +246,7 @@ def export_phenopacket_zip_to_s3(physical_resources, project_id, bucket, key):
         print(f"Export response: {result}")
 
         assert result["statusCode"] == 200, (
-            "ExportPhenopacketsFunction lambda did not succeed"
+            "GetSubjectsPhenotypesFunction lambda did not succeed"
         )
 
         return EXPORT_KEY
