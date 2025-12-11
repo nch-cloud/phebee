@@ -83,7 +83,7 @@ def create_table(database: str, table: str, s3_location: str, query_results_s3: 
             qualifier_value: string
         >>
     )
-    PARTITIONED BY (bucket(16, subject_id), created_date)
+    PARTITIONED BY (bucket(64, subject_id), created_date)
     LOCATION '{s3_location}'
     TBLPROPERTIES (
         'table_type'='ICEBERG',

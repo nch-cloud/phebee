@@ -36,6 +36,8 @@ def test_bulk_import_stepfunction(physical_resources, test_project_id):
                     "evidence_creator_name": "NLP Extractor",
                     "note_timestamp": "2024-01-15T10:30:00Z",
                     "note_type": "progress_note",
+                    "provider_type": "physician",
+                    "author_specialty": "cardiology",
                     "span_start": 45,
                     "span_end": 58,
                     "contexts": {
@@ -63,6 +65,8 @@ def test_bulk_import_stepfunction(physical_resources, test_project_id):
                     "evidence_creator_name": "NLP Extractor",
                     "note_timestamp": "2024-01-16T14:20:00Z",
                     "note_type": "discharge_summary",
+                    "provider_type": "nurse_practitioner", 
+                    "author_specialty": "internal_medicine",
                     "span_start": 199,
                     "span_end": 211,
                     "contexts": {
@@ -87,6 +91,8 @@ def test_bulk_import_stepfunction(physical_resources, test_project_id):
                     "evidence_creator_name": "NLP Extractor",
                     "note_timestamp": "2024-01-16T14:20:00Z",
                     "note_type": "discharge_summary",
+                    "provider_type": "physician_assistant",
+                    "author_specialty": "emergency_medicine",
                     "span_start": 250,
                     "span_end": 260,
                     "contexts": {
@@ -111,6 +117,8 @@ def test_bulk_import_stepfunction(physical_resources, test_project_id):
                     "evidence_creator_name": "NLP Extractor",
                     "note_timestamp": "2024-01-16T14:20:00Z",
                     "note_type": "discharge_summary",
+                    "provider_type": "physician",
+                    "author_specialty": "oncology",
                     "span_start": 120,
                     "span_end": 135,
                     "contexts": {
@@ -550,7 +558,7 @@ def verify_iceberg_evidence(run_id):
         evidence_id, found_run_id, subject_id, term_iri, evidence_type, creator_id = data
         
         assert found_run_id == run_id, f"Expected run_id {run_id}, got {found_run_id}"
-        assert evidence_type == "clinical_note", f"Expected clinical_note, got {evidence_type}"
+        assert evidence_type == "http://purl.obolibrary.org/obo/ECO_0006162", f"Expected ECO_0006162 (automated clinical note), got {evidence_type}"
         assert creator_id == "nlp-system-v1", f"Expected nlp-system-v1, got {creator_id}"
         
         found_subjects.add(subject_id)
@@ -596,6 +604,8 @@ def test_ttl_generation_comprehensive(physical_resources, test_project_id):
                     "evidence_creator_name": "NLP System",
                     "note_timestamp": "2024-01-15T10:30:00Z",
                     "note_type": "progress_note",
+                    "provider_type": "physician",
+                    "author_specialty": "neurology",
                     "span_start": 45,
                     "span_end": 58,
                     "contexts": {
@@ -613,6 +623,8 @@ def test_ttl_generation_comprehensive(physical_resources, test_project_id):
                     "evidence_creator_name": "NLP System",
                     "note_timestamp": "2024-01-16T14:20:00Z",
                     "note_type": "discharge_summary",
+                    "provider_type": "nurse",
+                    "author_specialty": "critical_care",
                     "span_start": 100,
                     "span_end": 115,
                     "contexts": {
@@ -630,6 +642,8 @@ def test_ttl_generation_comprehensive(physical_resources, test_project_id):
                     "evidence_creator_name": "NLP System",
                     "note_timestamp": "2024-01-17T09:15:00Z",
                     "note_type": "consultation",
+                    "provider_type": "specialist",
+                    "author_specialty": "psychiatry",
                     "span_start": 200,
                     "span_end": 220,
                     "contexts": {
@@ -654,6 +668,8 @@ def test_ttl_generation_comprehensive(physical_resources, test_project_id):
                     "evidence_creator_name": "NLP System",
                     "note_timestamp": "2024-01-18T11:45:00Z",
                     "note_type": "progress_note",
+                    "provider_type": "resident",
+                    "author_specialty": "pediatrics",
                     "span_start": 75,
                     "span_end": 90,
                     "contexts": {

@@ -293,6 +293,7 @@ def get_subjects(
     term_source_version: str = None,
     project_subject_ids: list[str] = None,
     include_qualified: bool = False,
+    include_child_terms: bool = True,
 ) -> dict:
     # Extract project_id from project_iri
     project_id = project_iri.split("/")[-1]
@@ -339,9 +340,11 @@ def get_subjects(
                 }
             }"""
         
-        # Build term hierarchy clause - temporarily disabled for testing
-        # term_hierarchy_clause = f"?term rdfs:subClassOf* <{term_iri}> ."
-        term_hierarchy_clause = f"FILTER (?term = <{term_iri}>)"  # Exact match only
+        # Build term hierarchy clause based on include_child_terms parameter
+        if include_child_terms:
+            term_hierarchy_clause = f"?term rdfs:subClassOf* <{term_iri}> ."
+        else:
+            term_hierarchy_clause = f"FILTER (?term = <{term_iri}>)"
             
         term_filter_clause = f"""
             # Find termlinks for these subjects with the specified term
@@ -355,32 +358,62 @@ def get_subjects(
             # Qualifier filtering
             {qualifier_filter}
         """
+    else:
+        # No term filtering - just get all subjects
+        term_filter_clause = ""
+        term_hierarchy_clause = ""
 
     # Build cursor filtering clause
     cursor_clause = f"FILTER (str(?subjectIRI) > \"{cursor}\")" if cursor else ""
     
-    # First query: Get paginated subjects only
-    subjects_query = f"""
-    PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
-    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
-
-    SELECT DISTINCT ?subjectIRI ?projectSubjectIdNode
-    WHERE {{
-        {subject_id_filter_clause}
+    # Build the SPARQL query based on whether we have term filtering or not
+    if term_iri:
+        # Query with term filtering - include ontology graphs for hierarchy
+        subjects_query = f"""
+        PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+        PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+        PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
         
-        GRAPH <http://ods.nationwidechildrens.org/phebee/subjects> {{
+        SELECT DISTINCT ?subjectIRI ?projectSubjectIdNode
+        FROM <http://ods.nationwidechildrens.org/phebee/subjects>
+        FROM <http://ods.nationwidechildrens.org/phebee/projects/{project_id}>
+        FROM <http://ods.nationwidechildrens.org/phebee/hpo~{hpo_version}>
+        FROM <http://ods.nationwidechildrens.org/phebee/mondo~{mondo_version}>
+        WHERE {{
+            {subject_id_filter_clause}
+            
             ?subjectIRI rdf:type phebee:Subject .
+            
             {term_filter_clause}
-        }}
-        
-        GRAPH <http://ods.nationwidechildrens.org/phebee/projects/{project_id}> {{
+            
+            # Project filtering
             {project_filter_clause}
+            
+            {cursor_clause}
         }}
+        ORDER BY str(?subjectIRI)
+        LIMIT {limit + 1}"""
+    else:
+        # Query without term filtering - no need for ontology graphs
+        subjects_query = f"""
+        PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+        PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
         
-        {cursor_clause}
-    }}
-    ORDER BY str(?subjectIRI)
-    LIMIT {limit + 1}"""
+        SELECT DISTINCT ?subjectIRI ?projectSubjectIdNode
+        FROM <http://ods.nationwidechildrens.org/phebee/subjects>
+        FROM <http://ods.nationwidechildrens.org/phebee/projects/{project_id}>
+        WHERE {{
+            {subject_id_filter_clause}
+            
+            ?subjectIRI rdf:type phebee:Subject .
+            
+            # Project filtering
+            {project_filter_clause}
+            
+            {cursor_clause}
+        }}
+        ORDER BY str(?subjectIRI)
+        LIMIT {limit + 1}"""
     
     # Execute subjects query
     subjects_result = execute_query(subjects_query)

@@ -270,6 +270,8 @@ def main():
             col("evidence_item.evidence_creator_name").alias("evidence_creator_name"),
             col("evidence_item.note_timestamp").alias("note_timestamp"),
             col("evidence_item.note_type").alias("note_type"),
+            col("evidence_item.provider_type").alias("provider_type"),
+            col("evidence_item.author_specialty").alias("author_specialty"),
             col("evidence_item.span_start").alias("span_start"),
             col("evidence_item.span_end").alias("span_end"),
             col("evidence_item.contexts.negated").alias("negated"),
@@ -289,20 +291,20 @@ def main():
          ), 256)) \
          .withColumn("batch_id", input_file_name()) \
          .withColumn("assertion_type", 
-            when(col("creator.creator_type") == "automated", "http://purl.obolibrary.org/obo/ECO_0000203")
-            .when(col("creator.creator_type") == "manual", "http://purl.obolibrary.org/obo/ECO_0000218")
-            .otherwise(raise_error(concat(lit("Unknown creator_type: "), col("creator.creator_type"))))
+            when(col("evidence_creator_type") == "automated", "http://purl.obolibrary.org/obo/ECO_0000203")
+            .when(col("evidence_creator_type") == "manual", "http://purl.obolibrary.org/obo/ECO_0000218")
+            .otherwise(raise_error(concat(lit("Unknown creator_type: "), col("evidence_creator_type"))))
          ) \
          .withColumn("created_timestamp", current_timestamp()) \
          .withColumn("created_date", to_date(current_timestamp())) \
          .withColumn("source_level", lit("clinical_note")) \
          .withColumn("evidence_type", 
-            when((col("source_level") == "clinical_note") & (col("creator.creator_type") == "manual"), 
+            when((col("source_level") == "clinical_note") & (col("evidence_creator_type") == "manual"), 
                  "http://purl.obolibrary.org/obo/ECO_0006161")
-            .when((col("source_level") == "clinical_note") & (col("creator.creator_type") == "automated"), 
+            .when((col("source_level") == "clinical_note") & (col("evidence_creator_type") == "automated"), 
                   "http://purl.obolibrary.org/obo/ECO_0006162")
             .otherwise(raise_error(concat(lit("Unknown source_level/creator_type combination: "), 
-                                         col("source_level"), lit("/"), col("creator.creator_type"))))
+                                         col("source_level"), lit("/"), col("evidence_creator_type"))))
          ) \
          .withColumn("termlink_id", sha2(concat_ws("|", 
             "subject_id", 

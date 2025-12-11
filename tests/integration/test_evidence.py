@@ -3,13 +3,12 @@ import json
 import uuid
 import boto3
 import time
+from general_utils import invoke_lambda as _invoke_lambda
 
 
 def invoke_lambda(name, payload):
     """Invoke a Lambda and return the parsed body if API-proxy shaped, else the raw payload."""
-    lambda_client = boto3.client("lambda")
-    resp = lambda_client.invoke(FunctionName=name, Payload=json.dumps(payload).encode())
-    raw = json.loads(resp["Payload"].read())
+    raw = _invoke_lambda(name, payload)
     # If API-proxy style {statusCode, body}, return parsed body only
     if isinstance(raw, dict) and "body" in raw:
         body = raw.get("body")

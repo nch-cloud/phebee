@@ -130,8 +130,7 @@ def extract_evidence_records(
                     "span_start": evidence.span_start,
                     "span_end": evidence.span_end
                 } if evidence.span_start is not None or evidence.span_end is not None else None,
-                "qualifiers": qualifiers if qualifiers else None,
-                "metadata": {}
+                "qualifiers": qualifiers if qualifiers else None
             }
             
             evidence_records.append(record)
@@ -485,7 +484,6 @@ def get_evidence_record(evidence_id: str) -> Dict[str, Any] | None:
         text_annotation.span_start as span_start,
         text_annotation.span_end as span_end,
         qualifiers,
-        metadata,
         created_timestamp
     FROM {database_name}.{table_name}
     WHERE evidence_id = '{evidence_id}'

@@ -1,6 +1,18 @@
-from phebee.utils.aws import get_current_timestamp
+from phebee.utils.aws import get_current_timestamp, get_client
 import json
 from datetime import datetime
+
+
+def invoke_lambda(name, payload):
+    """Helper function to invoke a Lambda function."""
+    lambda_client = get_client("lambda")
+    response = lambda_client.invoke(
+        FunctionName=name,
+        Payload=json.dumps(payload).encode("utf-8"),
+        InvocationType="RequestResponse",
+    )
+    return json.loads(response["Payload"].read().decode("utf-8"))
+
 
 def check_timestamp_in_test(timestamp, test_start_time):
     return timestamp and timestamp > test_start_time and timestamp < get_current_timestamp()

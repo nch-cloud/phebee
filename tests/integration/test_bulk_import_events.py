@@ -5,17 +5,7 @@ import pytest
 import boto3
 import time
 from phebee.utils.aws import get_client
-
-
-def invoke_lambda(name, payload):
-    """Helper function to invoke a Lambda function."""
-    lambda_client = get_client("lambda")
-    response = lambda_client.invoke(
-        FunctionName=name,
-        Payload=json.dumps(payload).encode("utf-8"),
-        InvocationType="RequestResponse",
-    )
-    return json.loads(response["Payload"].read().decode("utf-8"))
+from general_utils import invoke_lambda
 
 
 def create_test_data():
@@ -35,6 +25,8 @@ def create_test_data():
                     "evidence_creator_name": "NLP Extractor",
                     "note_timestamp": "2024-01-15T10:30:00Z",
                     "note_type": "progress_note",
+                    "provider_type": "physician",
+                    "author_specialty": "internal_medicine",
                     "span_start": 45,
                     "span_end": 58,
                     "contexts": {

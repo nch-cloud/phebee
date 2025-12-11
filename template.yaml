@@ -1682,9 +1682,9 @@ Resources:
       ServiceToken: !GetAtt CreateEvidenceTableFunction.Arn
       Database: !Ref IcebergDatabase
       Table: !Ref IcebergEvidenceTable
-      S3Location: !Sub "s3://${PheBeeBucket}/iceberg/evidence/${AppName}/"
+      S3Location: !Sub "s3://${PheBeeBucket}/iceberg/evidence/"
       QueryResultsS3: !Sub "s3://${PheBeeBucket}/athena-results/${AppName}/"
-      Version: "2.0"
+      Version: "4.0"
 
   #################
   # S3 Storage

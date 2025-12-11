@@ -1,18 +1,11 @@
 import json
 import pytest
+from general_utils import invoke_lambda as _invoke_lambda
 
 
 def invoke_lambda(name, payload):
     """Invoke a Lambda and return the parsed body if API-proxy shaped, else the raw payload."""
-    import boto3
-    lambda_client = boto3.client("lambda")
-    response = lambda_client.invoke(
-        FunctionName=name,
-        Payload=json.dumps(payload).encode("utf-8"),
-        InvocationType="RequestResponse"
-    )
-    
-    payload_data = json.loads(response["Payload"].read())
+    payload_data = _invoke_lambda(name, payload)
     
     # If it looks like an API Gateway proxy response, extract the body
     if isinstance(payload_data, dict) and "statusCode" in payload_data and "body" in payload_data:
