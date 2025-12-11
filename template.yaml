@@ -1877,6 +1877,16 @@ Outputs:
     Export:
       Name: !Sub "${AppName}-StartNeptuneBulkLoadFunctionArn"
 
+  PheBeeBucketName:
+    Value: !Ref PheBeeBucket
+    Export:
+      Name: !Sub "${AppName}-PheBeeBucketName"
+
+  PheBeeBucketArn:
+    Value: !GetAtt PheBeeBucket.Arn
+    Export:
+      Name: !Sub "${AppName}-PheBeeBucketArn"
+
   CheckNeptuneBulkLoadStatusFunctionArn:
     Value: !GetAtt CheckNeptuneBulkLoadStatusFunction.Arn
     Export:
