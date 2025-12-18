@@ -16,7 +16,7 @@ def generate_termlink_hash(source_node_iri: str, term_iri: str, qualifiers: Opti
     Args:
         source_node_iri (str): The IRI of the source node (subject, encounter, or clinical note)
         term_iri (str): The IRI of the term being linked
-        qualifiers (list): List of qualifier IRIs, e.g., negated, hypothetical
+        qualifiers (list): List of positive qualifier names (e.g., ["negated", "family"])
         
     Returns:
         str: A deterministic hash that can be used as part of the term link IRI
@@ -24,12 +24,14 @@ def generate_termlink_hash(source_node_iri: str, term_iri: str, qualifiers: Opti
     # Sort qualifiers to ensure consistent ordering
     sorted_qualifiers = sorted(qualifiers) if qualifiers else []
     
-    # Create a composite key
-    key_parts = [source_node_iri, term_iri] + sorted_qualifiers
-    key_string = '|'.join(key_parts)
+    # Join positive qualifiers with commas (matches existing format)
+    qualifier_contexts = ",".join(sorted_qualifiers)
+    
+    # Create hash input: source_node_iri|term_iri|qualifier_contexts
+    hash_input = f"{source_node_iri}|{term_iri}|{qualifier_contexts}"
     
     # Generate a deterministic hash
-    return hashlib.sha256(key_string.encode()).hexdigest()
+    return hashlib.sha256(hash_input.encode()).hexdigest()
 
 
 def generate_evidence_hash(

@@ -618,15 +618,11 @@ def get_evidence_for_termlink(
     Returns:
         List of evidence records
     """
-    # Build qualifier filter
+    logger.info(f"Getting evidence for subject_id={subject_id}, term_iri={term_iri}, qualifiers={qualifiers}")
+    
+    # Build qualifier filter - simplified to not filter by qualifiers for now
+    # This allows us to get all evidence for the termlink regardless of qualifiers
     qualifier_filter = ""
-    if qualifiers:
-        # Convert qualifiers to JSON array format for matching
-        qualifier_conditions = []
-        for qualifier in qualifiers:
-            qualifier_conditions.append(f"JSON_EXTRACT_SCALAR(qualifiers, '$[*].qualifier_type') = '{qualifier}'")
-        if qualifier_conditions:
-            qualifier_filter = f"AND ({' OR '.join(qualifier_conditions)})"
     
     database_name = os.environ.get('ICEBERG_DATABASE', 'phebee')
     table_name = os.environ.get('ICEBERG_EVIDENCE_TABLE', 'evidence')
@@ -634,12 +630,21 @@ def get_evidence_for_termlink(
     query = f"""
     SELECT 
         evidence_id,
+        run_id,
+        batch_id,
         evidence_type,
         assertion_type,
         created_timestamp,
-        creator.creator_id as creator,
-        text_annotation.span_start,
-        text_annotation.span_end,
+        created_date,
+        source_level,
+        subject_id,
+        encounter_id,
+        clinical_note_id,
+        termlink_id,
+        term_iri,
+        note_context,
+        creator,
+        text_annotation,
         qualifiers
     FROM {database_name}.{table_name}
     WHERE subject_id = '{subject_id}' 
@@ -648,27 +653,74 @@ def get_evidence_for_termlink(
     ORDER BY created_timestamp
     """
     
+    logger.info(f"Evidence query: {query}")
+    
     try:
         results = query_iceberg_evidence(query)
+        logger.info(f"Evidence query returned {len(results)} rows")
         
-        # Format evidence records
+        # Format evidence records - mirror database schema exactly
         evidence = []
         for row in results:
+            # Parse struct fields that may come as strings from Athena
+            def parse_struct_field(field_value):
+                if field_value is None:
+                    return None
+                if isinstance(field_value, str):
+                    try:
+                        # Try to parse as JSON first
+                        return json.loads(field_value)
+                    except (json.JSONDecodeError, ValueError):
+                        # If not JSON, try to parse struct format like {key=value, key=value}
+                        if field_value.startswith('{') and field_value.endswith('}'):
+                            # Remove braces and split by commas
+                            content = field_value[1:-1]
+                            pairs = content.split(', ')
+                            result = {}
+                            for pair in pairs:
+                                if '=' in pair:
+                                    key, value = pair.split('=', 1)
+                                    # Remove any extra whitespace and handle null values
+                                    key = key.strip()
+                                    value = value.strip()
+                                    if value.lower() == 'null':
+                                        result[key] = None
+                                    else:
+                                        # Convert numeric fields to appropriate types
+                                        if key in ['span_start', 'span_end'] and value.isdigit():
+                                            result[key] = int(value)
+                                        elif key == 'confidence_score':
+                                            try:
+                                                result[key] = float(value)
+                                            except ValueError:
+                                                result[key] = value
+                                        else:
+                                            result[key] = value
+                            return result
+                        return field_value
+                return field_value
+            
             record = {
-                "evidence_id": row['evidence_id'],
+                "evidence_id": row.get('evidence_id'),
+                "run_id": row.get('run_id'),
+                "batch_id": row.get('batch_id'),
                 "evidence_type": row.get('evidence_type'),
                 "assertion_type": row.get('assertion_type'),
-                "created": row.get('created_timestamp'),
-                "creator": row.get('creator')
+                "created_timestamp": row.get('created_timestamp'),
+                "created_date": row.get('created_date'),
+                "source_level": row.get('source_level'),
+                "subject_id": row.get('subject_id'),
+                "encounter_id": row.get('encounter_id'),
+                "clinical_note_id": row.get('clinical_note_id'),
+                # Parse struct fields
+                "note_context": parse_struct_field(row.get('note_context')),
+                "creator": parse_struct_field(row.get('creator')),
+                "text_annotation": parse_struct_field(row.get('text_annotation'))
             }
-            
-            # Add span info if present
-            if row.get('span_start') or row.get('span_end'):
-                record["span_start"] = int(row['span_start']) if row.get('span_start') else None
-                record["span_end"] = int(row['span_end']) if row.get('span_end') else None
             
             evidence.append(record)
         
+        logger.info(f"Returning {len(evidence)} evidence records")
         return evidence
         
     except Exception as e:
@@ -697,24 +749,48 @@ def get_subject_term_info(
     if not evidence_data:
         return None
     
-    # Generate term links from evidence
-    term_links = []
-    for evidence in evidence_data:
-        # Create deterministic term link IRI
-        source_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"
-        if evidence.get('encounter_id'):
-            source_iri += f"/encounters/{evidence['encounter_id']}"
-        if evidence.get('clinical_note_id'):
-            source_iri += f"/clinical-notes/{evidence['clinical_note_id']}"
-            
-        termlink_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}/term-link/{evidence['evidence_id']}"
-        
-        term_links.append({
-            "termlink_iri": termlink_iri,
-            "evidence_count": 1,
-            "source_iri": source_iri,
-            "source_type": evidence.get('evidence_type', 'clinical_note')
-        })
+    # Create deterministic termlink ID using only true qualifiers
+    # Extract qualifier values from evidence data if available
+    qualifiers_dict = {}
+    if evidence_data and evidence_data[0].get('qualifiers'):
+        qualifiers_from_evidence = evidence_data[0]['qualifiers']
+        # Convert from array format to dictionary format
+        if isinstance(qualifiers_from_evidence, list):
+            # Convert array of {qualifier_type, qualifier_value} to dict
+            for qualifier in qualifiers_from_evidence:
+                if isinstance(qualifier, dict) and 'qualifier_type' in qualifier and 'qualifier_value' in qualifier:
+                    # Convert values to boolean - handle both string and numeric formats
+                    value = qualifier['qualifier_value']
+                    if isinstance(value, str):
+                        if value.lower() == 'true':
+                            qualifiers_dict[qualifier['qualifier_type']] = True
+                        elif value.lower() == 'false':
+                            qualifiers_dict[qualifier['qualifier_type']] = False
+                    elif isinstance(value, (int, float)):
+                        # Handle numeric values: 1.0 = True, 0.0 = False
+                        qualifiers_dict[qualifier['qualifier_type']] = bool(value)
+        elif isinstance(qualifiers_from_evidence, dict):
+            qualifiers_dict = qualifiers_from_evidence
+        else:
+            logger.warning(f"Expected qualifiers to be list or dict, got {type(qualifiers_from_evidence)}: {qualifiers_from_evidence}")
+    
+    # Get only qualifiers that are true, sort alphabetically
+    true_qualifiers = sorted([key for key, value in qualifiers_dict.items() if value is True])
+    
+    # Use shared hash function for consistency
+    subject_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"
+    termlink_hash = generate_termlink_hash(subject_iri, term_iri, true_qualifiers)
+    termlink_iri = f"{subject_iri}/term-link/{termlink_hash}"
+    
+    # Create single termlink with all evidence
+    source_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"
+    
+    term_links = [{
+        "termlink_iri": termlink_iri,
+        "evidence_count": len(evidence_data),
+        "source_iri": source_iri,
+        "source_type": evidence_data[0].get('evidence_type', 'http://purl.obolibrary.org/obo/ECO_0006162') if evidence_data else None
+    }]
     
     return {
         "term_iri": term_iri,

@@ -619,8 +619,7 @@ def get_term_links_with_counts(
           "term_iri": str,
           "term_label": Optional[str],
           "qualifiers": [str, ...],
-          "evidence_count": int,
-          "term_link_count": int
+          "evidence_count": int
         },
         ...
       ]
@@ -684,13 +683,11 @@ def get_term_links_with_counts(
                     "term_iri": term_iri,
                     "term_label": None,  # TODO: Add term label lookup
                     "qualifiers": qualifiers,
-                    "evidence_count": 0,
-                    "term_link_count": 0
+                    "evidence_count": 0
                 }
             
             # Accumulate counts
             term_groups[group_key]["evidence_count"] += evidence_count
-            term_groups[group_key]["term_link_count"] += 1
         
         # Convert to list and add term labels if versions provided
         links = list(term_groups.values())
@@ -739,13 +736,13 @@ def get_term_links_with_counts(
 
 
 def create_term_link(
-    source_node_iri: str, term_iri: str, creator_iri: str, qualifiers=None
+    subject_iri: str, term_iri: str, creator_iri: str, qualifiers=None
 ) -> dict:
     """
-    Create a term link between a source node (subject, encounter, or clinical note) and a term.
+    Create a term link between a subject and a term.
     
     Args:
-        source_node_iri (str): The IRI of the source node (subject, encounter, or clinical note)
+        subject_iri (str): The IRI of the subject
         term_iri (str): The IRI of the term
         creator_iri (str): The IRI of the creator
         qualifiers (list): List of qualifier IRIs
@@ -753,9 +750,9 @@ def create_term_link(
     Returns:
         dict: Dictionary with the term link IRI and whether it was created
     """
-    # Generate deterministic hash based on source node, term, and qualifiers
-    termlink_hash = generate_termlink_hash(source_node_iri, term_iri, qualifiers)
-    termlink_iri = f"{source_node_iri}/term-link/{termlink_hash}"
+    # Generate deterministic hash based on subject, term, and qualifiers
+    termlink_hash = generate_termlink_hash(subject_iri, term_iri, qualifiers)
+    termlink_iri = f"{subject_iri}/term-link/{termlink_hash}"
     
     # Check if the term link already exists
     link_exists = node_exists(termlink_iri)
@@ -769,11 +766,10 @@ def create_term_link(
 
     triples = [
         f"<{termlink_iri}> rdf:type phebee:TermLink",
-        f"<{termlink_iri}> phebee:sourceNode <{source_node_iri}>",
         f"<{termlink_iri}> phebee:hasTerm <{term_iri}>",
         f"<{termlink_iri}> phebee:creator <{creator_iri}>",
         f'<{termlink_iri}> dcterms:created "{created}"^^xsd:dateTime',
-        f"<{source_node_iri}> phebee:hasTermLink <{termlink_iri}>",
+        f"<{subject_iri}> phebee:hasTermLink <{termlink_iri}>",
     ]
             
     # Add qualifier triples if any
@@ -805,16 +801,11 @@ def get_term_link(termlink_iri: str) -> dict:
     PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
     PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
     
-    SELECT ?term ?source_node ?source_type ?qualifier
+    SELECT ?term ?qualifier
     WHERE {{
         GRAPH <http://ods.nationwidechildrens.org/phebee/subjects> {{
             <{termlink_iri}> a phebee:TermLink ;
-                           phebee:hasTerm ?term ;
-                           phebee:sourceNode ?source_node .
-            
-            OPTIONAL {{
-                ?source_node a ?source_type .
-            }}
+                           phebee:hasTerm ?term .
             
             OPTIONAL {{
                 <{termlink_iri}> phebee:hasQualifyingTerm ?qualifier .
@@ -831,8 +822,9 @@ def get_term_link(termlink_iri: str) -> dict:
     # Get basic term link info from first row
     first_row = bindings[0]
     term_iri = first_row["term"]["value"]
-    source_node_iri = first_row["source_node"]["value"]
-    source_type = first_row.get("source_type", {}).get("value", "").split("#")[-1] if "source_type" in first_row else "Unknown"
+    
+    # Extract subject_id from termlink_iri
+    subject_id = termlink_iri.split("/subjects/")[1].split("/term-link/")[0]
     
     # Get term label
     term_label = None
@@ -855,18 +847,14 @@ def get_term_link(termlink_iri: str) -> dict:
     # Get evidence from Iceberg
     from phebee.utils.iceberg import get_evidence_for_termlink
     
-    # Extract subject_id from source_node_iri
-    subject_id = source_node_iri.split("/")[-1]
+    # Extract subject_id from termlink_iri
+    subject_id = termlink_iri.split("/subjects/")[1].split("/term-link/")[0]
     evidence = get_evidence_for_termlink(subject_id, term_iri, list(qualifiers))
     
     return {
         "termlink_iri": termlink_iri,
         "term_iri": term_iri,
         "term_label": term_label,
-        "source_node": {
-            "iri": source_node_iri,
-            "type": source_type
-        },
         "qualifiers": sorted(list(qualifiers)),
         "evidence": evidence
     }

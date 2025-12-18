@@ -11,6 +11,58 @@ from urllib.parse import quote
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import *
 from pyspark.sql.types import *
+import hashlib
+from pyspark.sql.functions import udf
+from pyspark.sql.types import StringType
+
+# Use Python UDF for termlink hash generation to ensure exact consistency with API
+# This guarantees identical hash results between bulk processing and runtime API calls
+# Make sure this stays in lockstep with hash.py implementation!
+
+def generate_termlink_hash(source_node_iri: str, term_iri: str, qualifiers: list = None) -> str:
+    """
+    Generate a deterministic hash for a term link based on its components.
+    
+    Args:
+        source_node_iri (str): The IRI of the source node (subject, encounter, or clinical note)
+        term_iri (str): The IRI of the term being linked
+        qualifiers (list): List of positive qualifier names (e.g., ["negated", "family"])
+        
+    Returns:
+        str: A deterministic hash that can be used as part of the term link IRI
+    """
+    # Sort qualifiers to ensure consistent ordering
+    sorted_qualifiers = sorted(qualifiers) if qualifiers else []
+    
+    # Join positive qualifiers with commas (matches existing format)
+    qualifier_contexts = ",".join(sorted_qualifiers)
+    
+    # Create hash input: source_node_iri|term_iri|qualifier_contexts
+    hash_input = f"{source_node_iri}|{term_iri}|{qualifier_contexts}"
+    
+    # Generate a deterministic hash
+    return hashlib.sha256(hash_input.encode()).hexdigest()
+
+# For PySpark, we need a wrapper that handles the specific columns
+def create_termlink_hash_wrapper(subject_id, term_iri, family, hypothetical, negated):
+    """Wrapper for PySpark UDF with current qualifier columns"""
+    # Convert PySpark numeric values to boolean and get positive qualifiers
+    qualifiers = []
+    if bool(family):  # Handle 1.0/0.0 as True/False
+        qualifiers.append("family")
+    if bool(hypothetical):
+        qualifiers.append("hypothetical") 
+    if bool(negated):
+        qualifiers.append("negated")
+    
+    # Build subject IRI
+    subject_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"
+    
+    return generate_termlink_hash(subject_iri, term_iri, qualifiers)
+
+# Register UDF
+generate_termlink_hash_udf = udf(create_termlink_hash_wrapper, StringType())
+
 import boto3
 
 # Configure logging
@@ -226,8 +278,8 @@ def main():
         mapping_key = '/'.join(args.mapping_file.split('/')[3:])
         
         obj = s3.get_object(Bucket=mapping_bucket, Key=mapping_key)
-        subject_mapping = json.loads(obj['Body'].read().decode('utf-8'))
-        logger.info(f"Loaded {len(subject_mapping)} subject mappings")
+        subject_mapping_array = json.loads(obj['Body'].read().decode('utf-8'))
+        logger.info(f"Loaded {len(subject_mapping_array)} subject mappings")
         
         # Read input data using Spark
         logger.info(f"Reading JSONL files from {args.input_path}")
@@ -235,14 +287,30 @@ def main():
         # Read all JSONL files recursively
         df = spark.read.option("multiline", "false") \
                       .option("recursiveFileLookup", "true") \
-                      .json(args.input_path + "*.jsonl")
+                      .json(args.input_path.rstrip('/') + "/*.json")
         
         logger.info(f"Loaded DataFrame with {df.count()} entries")
         
-        # Convert subject mapping to DataFrame for joining
-        mapping_rows = [(key.split('|')[0], key.split('|')[1], subject_id) 
-                       for key, subject_id in subject_mapping.items()]
-        mapping_df = spark.createDataFrame(mapping_rows, ["project_id", "project_subject_id", "subject_id"])
+        # Debug: Show original DataFrame structure
+        logger.info(f"Original DataFrame columns: {df.columns}")
+        logger.info("Original DataFrame schema:")
+        df.printSchema()
+        logger.info("Sample original DataFrame record:")
+        df.show(1, truncate=False)
+
+        # Convert subject mapping array to DataFrame for joining
+        mapping_df = spark.createDataFrame(subject_mapping_array)
+        
+        # Debug: Show mapping DataFrame structure
+        logger.info(f"Mapping DataFrame columns: {mapping_df.columns}")
+        logger.info("Mapping DataFrame schema:")
+        mapping_df.printSchema()
+        logger.info("Sample mapping DataFrame record:")
+        mapping_df.show(1, truncate=False)
+        
+        # Drop any existing subject_id column from original DataFrame to avoid ambiguity
+        if "subject_id" in df.columns:
+            df = df.drop("subject_id")
         
         # Join to add subject_id to the DataFrame
         df_with_subjects = df.join(mapping_df, ["project_id", "project_subject_id"], "left")
@@ -250,10 +318,10 @@ def main():
         # Explode evidence array to create one row per evidence item
         from pyspark.sql.functions import explode, col, lit
         evidence_df = df_with_subjects.select(
-            "subject_id",
-            "project_id", 
-            "project_subject_id",
-            "term_iri",
+            col("subject_id"),
+            col("project_id"), 
+            col("project_subject_id"),
+            col("term_iri"),
             explode("evidence").alias("evidence_item")
         )
         
@@ -306,17 +374,13 @@ def main():
             .otherwise(raise_error(concat(lit("Unknown source_level/creator_type combination: "), 
                                          col("source_level"), lit("/"), col("evidence_creator_type"))))
          ) \
-         .withColumn("termlink_id", sha2(concat_ws("|", 
-            "subject_id", 
-            "term_iri",
-            # Hardcoded sorted contexts for true determinism across schema changes
-            concat_ws(",",
-                concat(lit("family:"), coalesce(col("family").cast("string"), lit("null"))),
-                concat(lit("hypothetical:"), coalesce(col("hypothetical").cast("string"), lit("null"))),
-                concat(lit("negated:"), coalesce(col("negated").cast("string"), lit("null")))
-                # Add new context fields here in alphabetical order
-            )
-         ), 256)) \
+         .withColumn("termlink_id", generate_termlink_hash_udf(
+            col("subject_id"), 
+            col("term_iri"),
+            col("family"),
+            col("hypothetical"), 
+            col("negated")
+         )) \
          .withColumn("note_context", struct(
             col("note_type"),
             col("note_timestamp").cast("timestamp").alias("note_date"),

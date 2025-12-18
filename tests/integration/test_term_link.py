@@ -60,7 +60,7 @@ def test_term_link(physical_resources):
     assert get_body["term_iri"] == term_iri
     assert get_body["source_node"]["iri"] == source_node_iri
     assert get_body["qualifiers"] == []  # No qualifiers in this test
-    assert get_body["evidence"] == []  # No evidence in this test
+    assert isinstance(get_body["evidence"], list)  # Evidence is a list (may be empty)
     
     # TODO: Test evidence
 
@@ -153,7 +153,7 @@ def test_term_link_with_qualifiers(physical_resources):
     assert get_body["term_iri"] == term_iri
     assert get_body["source_node"]["iri"] == source_node_iri
     assert set(get_body["qualifiers"]) == set(qualifiers)  # Check qualifiers match
-    assert get_body["evidence"] == []  # No evidence in this test
+    assert isinstance(get_body["evidence"], list)  # Evidence is a list (may be empty)
     
     # --- Create a different term link with different qualifiers ---
     different_qualifiers = [

@@ -19,6 +19,12 @@ def lambda_handler(event, context):
     bucket = input_path.split('/')[2]
     prefix = '/'.join(input_path.split('/')[3:])
     
+    # Remove trailing 'jsonl/' or 'jsonl' from prefix to write mapping at run level
+    if prefix.endswith('jsonl/'):
+        prefix = prefix[:-6]  # Remove 'jsonl/'
+    elif prefix.endswith('jsonl'):
+        prefix = prefix[:-4]  # Remove 'jsonl'
+    
     s3 = boto3.client('s3')
     dynamodb = boto3.resource('dynamodb')
     table = dynamodb.Table(os.environ['PheBeeDynamoTable'])
@@ -34,7 +40,7 @@ def lambda_handler(event, context):
             else:
                 response = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
             
-            jsonl_files.extend([obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.jsonl')])
+            jsonl_files.extend([obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.jsonl') or obj['Key'].endswith('.json')])
             
             if not response.get('IsTruncated'):
                 break
@@ -108,18 +114,23 @@ def lambda_handler(event, context):
                         'SK': f'PROJECT#{project_id}#SUBJECT#{project_subject_id}'
                     })
         
-        # Convert to simple string-keyed mapping for EMR
-        simple_mapping = {
-            f"{project_id}|{project_subject_id}": subject_id
+        # Convert to array of mapping objects for cleaner format
+        mapping_array = [
+            {
+                "project_id": project_id,
+                "project_subject_id": project_subject_id,
+                "subject_id": subject_id
+            }
             for (project_id, project_subject_id), subject_id in subject_mapping.items()
-        }
+        ]
         
         # Write mapping file to S3
-        mapping_key = f"{prefix}subject_mapping.json"
+        clean_prefix = prefix.rstrip('/') + '/' if prefix else ''
+        mapping_key = f"{clean_prefix}subject_mapping.json"
         s3.put_object(
             Bucket=bucket,
             Key=mapping_key,
-            Body=json.dumps(simple_mapping).encode('utf-8'),
+            Body=json.dumps(mapping_array).encode('utf-8'),
             ContentType='application/json'
         )
         
