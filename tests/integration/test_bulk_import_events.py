@@ -23,19 +23,21 @@ def create_test_data():
                     "evidence_creator_id": "nlp-system-v1",
                     "evidence_creator_type": "automated",
                     "evidence_creator_name": "NLP Extractor",
-                    "note_timestamp": "2024-01-15T10:30:00Z",
+                    "note_timestamp": "2024-01-15",
                     "note_type": "progress_note",
                     "provider_type": "physician",
                     "author_specialty": "internal_medicine",
                     "span_start": 45,
                     "span_end": 58,
                     "contexts": {
-                        "negated": 0,
-                        "family": 0,
-                        "hypothetical": 0
+                        "negated": 0.0,
+                        "family": 0.0,
+                        "hypothetical": 0.0
                     }
                 }
-            ]
+            ],
+            "row_num": 1,
+            "batch_id": 0
         }
     ]
 
@@ -48,12 +50,13 @@ def bulk_upload_run(test_data, physical_resources):
     s3_bucket = physical_resources.get("PheBeeBucket")
     s3_client = boto3.client('s3')
     
+    # Create JSONL content and upload to jsonl subdirectory to avoid conflict with subject_mapping.json
     jsonl_content = "\n".join(json.dumps(record) for record in test_data)
-    input_key = f"test-data/{run_id}/input.jsonl"
+    jsonl_key = f"test-data/{run_id}/jsonl/input.json"
     
     s3_client.put_object(
         Bucket=s3_bucket,
-        Key=input_key,
+        Key=jsonl_key,
         Body=jsonl_content.encode('utf-8'),
         ContentType='application/x-ndjson'
     )
@@ -62,7 +65,7 @@ def bulk_upload_run(test_data, physical_resources):
     stepfunctions_client = boto3.client('stepfunctions')
     state_machine_arn = physical_resources.get("BulkImportStateMachine")
     
-    input_path = f"s3://{s3_bucket}/test-data/{run_id}/"
+    input_path = f"s3://{s3_bucket}/test-data/{run_id}/jsonl"
     
     stepfunctions_client.start_execution(
         stateMachineArn=state_machine_arn,

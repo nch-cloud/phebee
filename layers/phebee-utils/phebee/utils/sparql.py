@@ -849,12 +849,14 @@ def get_term_link(termlink_iri: str) -> dict:
     
     # Extract subject_id from termlink_iri
     subject_id = termlink_iri.split("/subjects/")[1].split("/term-link/")[0]
+    subject_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"
     evidence = get_evidence_for_termlink(subject_id, term_iri, list(qualifiers))
     
     return {
         "termlink_iri": termlink_iri,
         "term_iri": term_iri,
         "term_label": term_label,
+        "subject_iri": subject_iri,
         "qualifiers": sorted(list(qualifiers)),
         "evidence": evidence
     }

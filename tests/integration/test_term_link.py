@@ -33,8 +33,10 @@ def test_term_link(physical_resources):
         Payload=json.dumps({"body": json.dumps(payload)}).encode("utf-8"),
         InvocationType="RequestResponse",
     )
+    print(create_resp)
     assert create_resp["StatusCode"] == 200
     create_body = json.loads(json.loads(create_resp["Payload"].read())["body"])
+    print(create_body)
     termlink_iri = create_body["termlink_iri"]
     
     # Build expected source_node_iri from subject_id
@@ -58,7 +60,7 @@ def test_term_link(physical_resources):
     print(f"test_term_link get_body: {get_body}")
     assert get_body["termlink_iri"] == termlink_iri
     assert get_body["term_iri"] == term_iri
-    assert get_body["source_node"]["iri"] == source_node_iri
+    assert get_body["subject_iri"] == source_node_iri
     assert get_body["qualifiers"] == []  # No qualifiers in this test
     assert isinstance(get_body["evidence"], list)  # Evidence is a list (may be empty)
     
@@ -151,7 +153,7 @@ def test_term_link_with_qualifiers(physical_resources):
     print(f"test_term_link_with_qualifiers get_body: {get_body}")
     assert get_body["termlink_iri"] == termlink_iri
     assert get_body["term_iri"] == term_iri
-    assert get_body["source_node"]["iri"] == source_node_iri
+    assert get_body["subject_iri"] == source_node_iri
     assert set(get_body["qualifiers"]) == set(qualifiers)  # Check qualifiers match
     assert isinstance(get_body["evidence"], list)  # Evidence is a list (may be empty)
     

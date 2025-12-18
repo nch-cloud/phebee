@@ -203,7 +203,7 @@ def lambda_handler(event, context):
                         qualifier_type = qualifier.get('qualifier_type', '')
                         qualifier_value = qualifier.get('qualifier_value', '')
                         
-                        if qualifier_value in ['1', 'true', True]:
+                        if qualifier_value in ['1', '1.0', 'true', True]:
                             subjects_ttl.append(f"{termlink_uri} phebee:hasQualifyingTerm phebee:{qualifier_type} .")
         
         # Upload subjects TTL

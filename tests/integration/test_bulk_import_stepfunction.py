@@ -34,19 +34,21 @@ def test_bulk_import_stepfunction(physical_resources, test_project_id):
                     "evidence_creator_id": "nlp-system-v1",
                     "evidence_creator_type": "automated",
                     "evidence_creator_name": "NLP Extractor",
-                    "note_timestamp": "2024-01-15T10:30:00Z",
+                    "note_timestamp": "2024-01-15",
                     "note_type": "progress_note",
                     "provider_type": "physician",
                     "author_specialty": "cardiology",
                     "span_start": 45,
                     "span_end": 58,
                     "contexts": {
-                        "negated": 0,
-                        "family": 0,
-                        "hypothetical": 0
+                        "negated": 0.0,
+                        "family": 0.0,
+                        "hypothetical": 0.0
                     }
                 }
-            ]
+            ],
+            "row_num": 1,
+            "batch_id": 0
         }
     ]
     
@@ -63,19 +65,21 @@ def test_bulk_import_stepfunction(physical_resources, test_project_id):
                     "evidence_creator_id": "nlp-system-v1",
                     "evidence_creator_type": "automated",
                     "evidence_creator_name": "NLP Extractor",
-                    "note_timestamp": "2024-01-16T14:20:00Z",
+                    "note_timestamp": "2024-01-16",
                     "note_type": "discharge_summary",
                     "provider_type": "nurse_practitioner", 
                     "author_specialty": "internal_medicine",
                     "span_start": 199,
                     "span_end": 211,
                     "contexts": {
-                        "negated": 0,
-                        "family": 0,
-                        "hypothetical": 0
+                        "negated": 0.0,
+                        "family": 0.0,
+                        "hypothetical": 0.0
                     }
                 }
-            ]
+            ],
+            "row_num": 2,
+            "batch_id": 0
         },
         {
             "project_id": test_project_id,
@@ -89,19 +93,21 @@ def test_bulk_import_stepfunction(physical_resources, test_project_id):
                     "evidence_creator_id": "nlp-system-v1",
                     "evidence_creator_type": "automated",
                     "evidence_creator_name": "NLP Extractor",
-                    "note_timestamp": "2024-01-16T14:20:00Z",
+                    "note_timestamp": "2024-01-16",
                     "note_type": "discharge_summary",
                     "provider_type": "physician_assistant",
                     "author_specialty": "emergency_medicine",
                     "span_start": 250,
                     "span_end": 260,
                     "contexts": {
-                        "negated": 0,
-                        "family": 1,
-                        "hypothetical": 0
+                        "negated": 0.0,
+                        "family": 1.0,
+                        "hypothetical": 0.0
                     }
                 }
-            ]
+            ],
+            "row_num": 3,
+            "batch_id": 0
         },
         {
             "project_id": test_project_id,
@@ -115,19 +121,21 @@ def test_bulk_import_stepfunction(physical_resources, test_project_id):
                     "evidence_creator_id": "nlp-system-v1",
                     "evidence_creator_type": "automated",
                     "evidence_creator_name": "NLP Extractor",
-                    "note_timestamp": "2024-01-16T14:20:00Z",
+                    "note_timestamp": "2024-01-16",
                     "note_type": "discharge_summary",
                     "provider_type": "physician",
                     "author_specialty": "oncology",
                     "span_start": 120,
                     "span_end": 135,
                     "contexts": {
-                        "negated": 0,
-                        "family": 0,
-                        "hypothetical": 0
+                        "negated": 0.0,
+                        "family": 0.0,
+                        "hypothetical": 0.0
                     }
                 }
-            ]
+            ],
+            "row_num": 4,
+            "batch_id": 0
         }
     ]
     
@@ -135,11 +143,11 @@ def test_bulk_import_stepfunction(physical_resources, test_project_id):
     jsonl_content_1 = "\n".join(json.dumps(record) for record in test_data_1)
     jsonl_content_2 = "\n".join(json.dumps(record) for record in test_data_2)
     
-    # Upload test data to S3 - multiple files
+    # Upload test data to S3 - multiple files in jsonl subdirectory
     s3_client = boto3.client('s3')
     
     # Upload first file
-    input_key_1 = f"test-data/{run_id}/batch1.jsonl"
+    input_key_1 = f"test-data/{run_id}/jsonl/batch1.json"
     s3_client.put_object(
         Bucket=s3_bucket,
         Key=input_key_1,
@@ -148,13 +156,14 @@ def test_bulk_import_stepfunction(physical_resources, test_project_id):
     )
     
     # Upload second file
-    input_key_2 = f"test-data/{run_id}/batch2.jsonl"
+    input_key_2 = f"test-data/{run_id}/jsonl/batch2.json"
     s3_client.put_object(
         Bucket=s3_bucket,
         Key=input_key_2,
         Body=jsonl_content_2.encode('utf-8'),
         ContentType='application/x-ndjson'
     )
+
     
     try:
         # Start Step Function execution
@@ -173,7 +182,7 @@ def test_bulk_import_stepfunction(physical_resources, test_project_id):
             name=execution_name,
             input=json.dumps({
                 "run_id": run_id,
-                "input_path": f"s3://{s3_bucket}/test-data/{run_id}/"
+                "input_path": f"s3://{s3_bucket}/test-data/{run_id}/jsonl"
             })
         )
         
@@ -602,16 +611,16 @@ def test_ttl_generation_comprehensive(physical_resources, test_project_id):
                     "evidence_creator_id": "nlp-system",
                     "evidence_creator_type": "automated",
                     "evidence_creator_name": "NLP System",
-                    "note_timestamp": "2024-01-15T10:30:00Z",
+                    "note_timestamp": "2024-01-15",
                     "note_type": "progress_note",
                     "provider_type": "physician",
                     "author_specialty": "neurology",
                     "span_start": 45,
                     "span_end": 58,
                     "contexts": {
-                        "negated": 0,
-                        "family": 0,
-                        "hypothetical": 0
+                        "negated": 0.0,
+                        "family": 0.0,
+                        "hypothetical": 0.0
                     }
                 },
                 {
@@ -621,16 +630,16 @@ def test_ttl_generation_comprehensive(physical_resources, test_project_id):
                     "evidence_creator_id": "nlp-system",
                     "evidence_creator_type": "automated",
                     "evidence_creator_name": "NLP System",
-                    "note_timestamp": "2024-01-16T14:20:00Z",
+                    "note_timestamp": "2024-01-16",
                     "note_type": "discharge_summary",
                     "provider_type": "nurse",
                     "author_specialty": "critical_care",
                     "span_start": 100,
                     "span_end": 115,
                     "contexts": {
-                        "negated": 1,
-                        "family": 0,
-                        "hypothetical": 0
+                        "negated": 1.0,
+                        "family": 0.0,
+                        "hypothetical": 0.0
                     }
                 },
                 {
@@ -640,19 +649,21 @@ def test_ttl_generation_comprehensive(physical_resources, test_project_id):
                     "evidence_creator_id": "nlp-system",
                     "evidence_creator_type": "automated",
                     "evidence_creator_name": "NLP System",
-                    "note_timestamp": "2024-01-17T09:15:00Z",
+                    "note_timestamp": "2024-01-17",
                     "note_type": "consultation",
                     "provider_type": "specialist",
                     "author_specialty": "psychiatry",
                     "span_start": 200,
                     "span_end": 220,
                     "contexts": {
-                        "negated": 0,
-                        "family": 1,
-                        "hypothetical": 0
+                        "negated": 0.0,
+                        "family": 1.0,
+                        "hypothetical": 0.0
                     }
                 }
-            ]
+            ],
+            "row_num": 1,
+            "batch_id": 0
         },
         {
             "project_id": test_project_id,
@@ -666,26 +677,28 @@ def test_ttl_generation_comprehensive(physical_resources, test_project_id):
                     "evidence_creator_id": "nlp-system",
                     "evidence_creator_type": "automated",
                     "evidence_creator_name": "NLP System",
-                    "note_timestamp": "2024-01-18T11:45:00Z",
+                    "note_timestamp": "2024-01-18",
                     "note_type": "progress_note",
                     "provider_type": "resident",
                     "author_specialty": "pediatrics",
                     "span_start": 75,
                     "span_end": 90,
                     "contexts": {
-                        "negated": 0,
-                        "family": 0,
-                        "hypothetical": 1
+                        "negated": 0.0,
+                        "family": 0.0,
+                        "hypothetical": 1.0
                     }
                 }
-            ]
+            ],
+            "row_num": 2,
+            "batch_id": 0
         }
     ]
     
-    # Upload test data
+    # Upload test data to jsonl subdirectory
     jsonl_content = "\n".join(json.dumps(record) for record in test_data)
     s3_client = boto3.client('s3')
-    input_key = f"ttl-test-data/{run_id}/data.jsonl"
+    input_key = f"ttl-test-data/{run_id}/jsonl/data.json"
     
     s3_client.put_object(
         Bucket=s3_bucket,
@@ -709,7 +722,7 @@ def test_ttl_generation_comprehensive(physical_resources, test_project_id):
             name=execution_name,
             input=json.dumps({
                 "run_id": run_id,
-                "input_path": f"s3://{s3_bucket}/ttl-test-data/{run_id}/"
+                "input_path": f"s3://{s3_bucket}/ttl-test-data/{run_id}/jsonl"
             })
         )
         
@@ -740,6 +753,11 @@ def test_ttl_generation_comprehensive(physical_resources, test_project_id):
         ttl_prefix = f"{run_id}/neptune/"
         response = s3_client.list_objects_v2(Bucket=s3_bucket, Prefix=ttl_prefix)
         ttl_files = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.ttl')]
+        
+        print(f"TTL prefix: s3://{s3_bucket}/{ttl_prefix}")
+        print(f"TTL files found:")
+        for ttl_file in ttl_files:
+            print(f"  - s3://{s3_bucket}/{ttl_file}")
         
         assert ttl_files, f"No TTL files found with prefix: {ttl_prefix}"
         
@@ -860,11 +878,12 @@ def validate_ttl_structure(ttl_content: str, test_data: list):
         for evidence in record['evidence']:
             contexts = evidence.get('contexts', {})
             for qualifier_type, qualifier_value in contexts.items():
-                if qualifier_value in [1, '1', True, 'true']:
+                if qualifier_value in [1, 1.0, '1', True, 'true']:
                     expected_positive_qualifiers += 1
     
     print(f"Expected positive qualifiers: {expected_positive_qualifiers}")
     print(f"Found qualifier assertions: {len(qualifier_assertions)}")
+    print(f"Qualifier assertions found: {qualifier_assertions}")
     
     # Should have qualifier assertions for positive qualifiers
     assert len(qualifier_assertions) == expected_positive_qualifiers, \

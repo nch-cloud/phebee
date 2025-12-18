@@ -34,7 +34,7 @@ def lambda_handler(event, context):
         creator_iri = f"http://ods.nationwidechildrens.org/phebee/creators/{creator_id}"
 
         result = create_term_link(
-            source_node_iri=source_node_iri,
+            subject_iri=source_node_iri,
             term_iri=term_iri,
             creator_iri=creator_iri,
             qualifiers=qualifiers  # Pass qualifiers to the function

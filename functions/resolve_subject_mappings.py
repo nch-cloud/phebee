@@ -19,11 +19,10 @@ def lambda_handler(event, context):
     bucket = input_path.split('/')[2]
     prefix = '/'.join(input_path.split('/')[3:])
     
-    # Remove trailing 'jsonl/' or 'jsonl' from prefix to write mapping at run level
-    if prefix.endswith('jsonl/'):
-        prefix = prefix[:-6]  # Remove 'jsonl/'
-    elif prefix.endswith('jsonl'):
-        prefix = prefix[:-4]  # Remove 'jsonl'
+    # Remove trailing 'jsonl' from prefix to write mapping at run level
+    prefix = prefix.rstrip('/')  # Remove any trailing slash first
+    if prefix.endswith('jsonl'):
+        prefix = prefix[:-5]  # Remove 'jsonl'
     
     s3 = boto3.client('s3')
     dynamodb = boto3.resource('dynamodb')
