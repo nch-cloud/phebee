@@ -13,6 +13,37 @@ def _get_client():
     return boto3.client("dynamodb")
 
 
+def _get_table():
+    return boto3.resource("dynamodb").Table(_get_table_name())
+
+
+def reset_dynamodb_table():
+    """
+    Deletes ALL items from the table (paged scan + batch_writer).
+    For dev/test only. PITR is enabled in template for safety.
+    """
+    table = _get_table()
+    
+    # Paginated scan + batch delete
+    scan_kwargs = {}
+    
+    while True:
+        response = table.scan(**scan_kwargs)
+        
+        # Batch delete items
+        with table.batch_writer() as batch:
+            for item in response.get('Items', []):
+                batch.delete_item(Key={
+                    'PK': item['PK'],
+                    'SK': item['SK']
+                })
+        
+        # Check if there are more items to scan
+        if 'LastEvaluatedKey' not in response:
+            break
+        scan_kwargs['ExclusiveStartKey'] = response['LastEvaluatedKey']
+
+
 # ---------------------------
 # Source version utilities
 # ---------------------------
