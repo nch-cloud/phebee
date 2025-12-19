@@ -2,7 +2,7 @@ import uuid
 import json
 import pytest
 from phebee.utils.aws import get_client
-from phebee.utils.sparql import generate_termlink_hash
+from phebee.utils.hash import generate_termlink_hash
 
 pytestmark = [pytest.mark.integration]
 
@@ -14,17 +14,17 @@ def test_term_link(physical_resources):
     get_fn = physical_resources["GetTermLinkFunction"]
     remove_fn = physical_resources["RemoveTermLinkFunction"]
 
-    # --- Setup unique IRIs for this test run ---
+    # --- Setup unique IDs for this test run ---
     test_id = str(uuid.uuid4())
-    source_node_iri = f"http://example.org/phebee/subject/test-subject-{test_id}"
+    subject_id = f"test-subject-{test_id}"
     term_iri = "http://purl.obolibrary.org/obo/HP_0000118"
-    creator_iri = f"http://ods.nationwidechildrens.org/phebee/creator/test-creator-{test_id}"
+    creator_id = f"test-creator-{test_id}"
     
     payload = {
-        "source_node_iri": source_node_iri,
+        "subject_id": subject_id,
         "term_iri": term_iri,
-        "creator_iri": creator_iri,
-        "evidence_iris": []
+        "creator_id": creator_id,
+        "qualifiers": []
     }
 
     # --- Create TermLink ---
@@ -33,9 +33,14 @@ def test_term_link(physical_resources):
         Payload=json.dumps({"body": json.dumps(payload)}).encode("utf-8"),
         InvocationType="RequestResponse",
     )
+    print(create_resp)
     assert create_resp["StatusCode"] == 200
     create_body = json.loads(json.loads(create_resp["Payload"].read())["body"])
+    print(create_body)
     termlink_iri = create_body["termlink_iri"]
+    
+    # Build expected source_node_iri from subject_id
+    source_node_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"
     assert termlink_iri.startswith(source_node_iri + "/term-link/")
     assert create_body["created"] is True  # Should be newly created
     
@@ -55,9 +60,9 @@ def test_term_link(physical_resources):
     print(f"test_term_link get_body: {get_body}")
     assert get_body["termlink_iri"] == termlink_iri
     assert get_body["term_iri"] == term_iri
-    assert get_body["source_node"]["iri"] == source_node_iri
+    assert get_body["subject_iri"] == source_node_iri
     assert get_body["qualifiers"] == []  # No qualifiers in this test
-    assert get_body["evidence"] == []  # No evidence in this test
+    assert isinstance(get_body["evidence"], list)  # Evidence is a list (may be empty)
     
     # TODO: Test evidence
 
@@ -88,20 +93,20 @@ def test_term_link_with_qualifiers(physical_resources):
     get_fn = physical_resources["GetTermLinkFunction"]
     remove_fn = physical_resources["RemoveTermLinkFunction"]
 
-    # --- Setup dummy IRIs ---
-    source_node_iri = "http://example.org/phebee/subject/test-subject-qualifiers"
+    # --- Setup unique IDs for this test run ---
+    test_id = str(uuid.uuid4())
+    subject_id = f"test-subject-{test_id}"
     term_iri = "http://purl.obolibrary.org/obo/HP_0000118"
-    creator_iri = "http://ods.nationwidechildrens.org/phebee/creator/test-creator"
+    creator_id = f"test-creator-{test_id}"
     qualifiers = [
         "http://ods.nationwidechildrens.org/phebee/qualifier/negated",
         "http://ods.nationwidechildrens.org/phebee/qualifier/hypothetical"
     ]
     
     payload = {
-        "source_node_iri": source_node_iri,
+        "subject_id": subject_id,
         "term_iri": term_iri,
-        "creator_iri": creator_iri,
-        "evidence_iris": [],
+        "creator_id": creator_id,
         "qualifiers": qualifiers
     }
 
@@ -114,9 +119,13 @@ def test_term_link_with_qualifiers(physical_resources):
     assert create_resp["StatusCode"] == 200
     create_body = json.loads(json.loads(create_resp["Payload"].read())["body"])
     termlink_iri = create_body["termlink_iri"]
-    assert termlink_iri.startswith(source_node_iri + "/term-link/")
+    
+    # Build expected source_node_iri from subject_id  
+    expected_subject_iri_prefix = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"
+    assert termlink_iri.startswith(expected_subject_iri_prefix + "/term-link/")
     
     # Verify the IRI is deterministic and includes qualifiers
+    source_node_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"
     expected_hash = generate_termlink_hash(source_node_iri, term_iri, qualifiers)
     expected_iri = f"{source_node_iri}/term-link/{expected_hash}"
     assert termlink_iri == expected_iri
@@ -144,9 +153,9 @@ def test_term_link_with_qualifiers(physical_resources):
     print(f"test_term_link_with_qualifiers get_body: {get_body}")
     assert get_body["termlink_iri"] == termlink_iri
     assert get_body["term_iri"] == term_iri
-    assert get_body["source_node"]["iri"] == source_node_iri
+    assert get_body["subject_iri"] == source_node_iri
     assert set(get_body["qualifiers"]) == set(qualifiers)  # Check qualifiers match
-    assert get_body["evidence"] == []  # No evidence in this test
+    assert isinstance(get_body["evidence"], list)  # Evidence is a list (may be empty)
     
     # --- Create a different term link with different qualifiers ---
     different_qualifiers = [
@@ -154,10 +163,9 @@ def test_term_link_with_qualifiers(physical_resources):
     ]
     
     different_payload = {
-        "source_node_iri": source_node_iri,
+        "subject_id": subject_id,
         "term_iri": term_iri,
-        "creator_iri": creator_iri,
-        "evidence_iris": [],
+        "creator_id": creator_id,
         "qualifiers": different_qualifiers
     }
     

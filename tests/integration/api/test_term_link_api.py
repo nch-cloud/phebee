@@ -1,20 +1,20 @@
 import pytest
 import requests
+import uuid
 
 pytestmark = [pytest.mark.integration, pytest.mark.api]
 
 
 def test_create_and_delete_term_link(api_base_url, sigv4_auth):
-    source_node_iri = "http://example.org/phebee/subject/test-subject"
+    subject_id = f"test-subject-{uuid.uuid4()}"
     term_iri = "http://purl.obolibrary.org/obo/HP_0000118"
-    creator_iri = "http://ods.nationwidechildrens.org/phebee/creator/test-creator"
-    evidence_iris = ["http://example.org/phebee/annotation/example-evidence"]
+    creator_id = f"test-creator-{uuid.uuid4()}"
 
     payload = {
-        "source_node_iri": source_node_iri,
+        "subject_id": subject_id,
         "term_iri": term_iri,
-        "creator_iri": creator_iri,
-        "evidence_iris": evidence_iris,
+        "creator_id": creator_id,
+        "qualifiers": []
     }
 
     # --- Create TermLink ---
@@ -27,7 +27,9 @@ def test_create_and_delete_term_link(api_base_url, sigv4_auth):
 
     create_body = create_resp.json()
     termlink_iri = create_body["termlink_iri"]
-    assert termlink_iri.startswith(source_node_iri + "/term-link/")
+    # TermLink IRI should be based on subject_id
+    expected_source_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"
+    assert termlink_iri.startswith(expected_source_iri + "/term-link/")
 
     # --- Delete TermLink ---
     delete_resp = requests.post(
@@ -46,13 +48,14 @@ def test_create_and_delete_term_link(api_base_url, sigv4_auth):
 def test_get_term_link(api_base_url, sigv4_auth):
     source_node_iri = "http://example.org/phebee/subject/test-subject"
     term_iri = "http://purl.obolibrary.org/obo/HP_0000118"
-    creator_iri = "http://ods.nationwidechildrens.org/phebee/creator/test-creator"
+    subject_id = f"test-subject-{uuid.uuid4()}"
+    creator_id = f"test-creator-{uuid.uuid4()}"
 
     payload = {
-        "source_node_iri": source_node_iri,
+        "subject_id": subject_id,
         "term_iri": term_iri,
-        "creator_iri": creator_iri,
-        "evidence_iris": [],
+        "creator_id": creator_id,
+        "qualifiers": []
     }
 
     # --- Create TermLink ---

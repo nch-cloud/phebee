@@ -10,6 +10,8 @@ from phebee.utils.sparql import (
     create_subject,
     link_subject_to_project,
 )
+from phebee.utils.dynamodb import _get_table_name
+import boto3
 
 logger = Logger()
 tracer = Tracer()
@@ -22,6 +24,31 @@ def create_error_response(status_code, message):
         "body": json.dumps({"subject_created": False, "error": message}),
         "headers": {"Content-Type": "application/json"},
     }
+
+
+def create_dynamodb_mapping(project_id: str, project_subject_id: str, subject_iri: str):
+    """Create DynamoDB mapping for project-subject relationship"""
+    table_name = _get_table_name()
+    dynamodb = boto3.resource('dynamodb')
+    table = dynamodb.Table(table_name)
+    
+    try:
+        with table.batch_writer() as batch:
+            # Direction 1: Project → Subject
+            batch.put_item(Item={
+                'PK': f'PROJECT#{project_id}',
+                'SK': f'SUBJECT#{project_subject_id}',
+                'subject_id': subject_iri  # Store full IRI
+            })
+            
+            # Direction 2: Subject → Project  
+            batch.put_item(Item={
+                'PK': f'SUBJECT#{subject_iri}',
+                'SK': f'PROJECT#{project_id}#SUBJECT#{project_subject_id}'
+            })
+    except Exception as e:
+        logger.error(f"Failed to create DynamoDB mapping: {e}")
+        # Don't fail the whole operation, just log the error
 
 
 def lambda_handler(event, context):
@@ -74,6 +101,10 @@ def lambda_handler(event, context):
             subject_iri = known_subject["subject_iri"]
         else:
             subject_iri = create_subject(project_id, project_subject_id)
+            # Link new subject to project
+            link_subject_to_project(subject_iri, project_id, project_subject_id)
+            # Create DynamoDB mapping for new subject
+            create_dynamodb_mapping(project_id, project_subject_id, subject_iri)
             subject_data = {
                 "iri": subject_iri,
                 "projects": {project_id: project_subject_id},
@@ -92,6 +123,8 @@ def lambda_handler(event, context):
 
     # Link existing subject to project (if needed)
     link_subject_to_project(subject_iri, project_id, project_subject_id)
+    # Create DynamoDB mapping for existing subject linked to new project
+    create_dynamodb_mapping(project_id, project_subject_id, subject_iri)
     fire_event(
         SUBJECT_LINKED,
         {"subject_iri": subject_iri, "projects": {project_id: project_subject_id}},

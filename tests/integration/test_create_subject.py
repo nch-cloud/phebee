@@ -1,8 +1,10 @@
 import uuid
 import json
 import pytest
+import os
 from phebee.utils.aws import get_client
 from general_utils import parse_lambda_response
+import boto3
 
 pytestmark = [pytest.mark.integration]
 
@@ -37,6 +39,7 @@ def test_create_new_subject(physical_resources, test_project_id):
     assert body["subject_created"] is True
     assert body["subject"]["projects"][project_id] == project_subject_id
 
+    # Verify Neptune graph creation
     get_payload = {
         "project_subject_iri": project_subject_iri
     }
@@ -53,6 +56,21 @@ def test_create_new_subject(physical_resources, test_project_id):
     assert "subject_iri" in get_body
     assert "project_subject_iri" in get_body
     assert get_body["project_subject_iri"] == project_subject_iri
+
+    # Verify DynamoDB mapping creation
+    dynamodb = boto3.resource('dynamodb')
+    table_name = os.environ['PheBeeDynamoTable']  # Use environment variable set by test setup
+    table = dynamodb.Table(table_name)
+    
+    response = table.get_item(
+        Key={
+            'PK': f'PROJECT#{project_id}',
+            'SK': f'SUBJECT#{project_subject_id}'
+        }
+    )
+    
+    assert 'Item' in response
+    assert response['Item']['subject_id'] == body["subject"]["iri"]
 
 
 def test_link_existing_subject(physical_resources, test_project_id):

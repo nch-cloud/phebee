@@ -42,8 +42,11 @@ def lambda_handler(event, context):
     # Qualifier filtering parameter
     include_qualified = body.get("include_qualified", False)
     
+    # Term hierarchy parameter
+    include_child_terms = body.get("include_child_terms", True)
+    
     # Pagination parameters
-    limit = body.get("limit", 200)
+    limit = body.get("limit", 1000)
     cursor = body.get("cursor")
 
     result = get_subjects(
@@ -57,6 +60,7 @@ def lambda_handler(event, context):
         term_source_version=term_source_version,
         project_subject_ids=project_subject_ids,
         include_qualified=include_qualified,
+        include_child_terms=include_child_terms,
     )
     
     # Extract subjects and pagination info

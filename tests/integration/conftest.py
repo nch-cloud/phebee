@@ -1,5 +1,25 @@
 import os
 import pytest
+
+
+
+
+
+def pytest_collection_modifyitems(config, items):
+    """Modify test collection to handle performance tests"""
+    if config.getoption("--run-performance"):
+        # Remove skip marker from performance tests when --run-performance is used
+        for item in items:
+            if "test_large_scale_performance" in item.name:
+                # Remove the skip marker
+                skip_markers = [mark for mark in item.iter_markers(name="skip")]
+                for mark in skip_markers:
+                    item.remove_marker(mark)
+    else:
+        # Add skip marker to performance tests when not running performance tests
+        for item in items:
+            if "performance" in [mark.name for mark in item.iter_markers()]:
+                item.add_marker(pytest.mark.skip(reason="Performance test - use --run-performance to enable"))
 import subprocess
 import boto3
 import uuid
@@ -301,7 +321,7 @@ def update_eco(request, cloudformation_stack, physical_resources):
 @pytest.fixture
 def test_project_id(cloudformation_stack):
     lambda_client = get_client("lambda")
-    project_id = f"test-project-{uuid.uuid4().hex[:8]}"
+    project_id = f"test_project_{uuid.uuid4().hex[:8]}"
     payload = {"project_id": project_id, "project_label": "Lambda-Initiated Project"}
 
     print(f"Test project id: {project_id}")
@@ -328,16 +348,16 @@ def test_project_id(cloudformation_stack):
 
     yield body.get("project_id")
 
-    # Teardown
-    delete_response = lambda_client.invoke(
-        FunctionName=f"{cloudformation_stack}-RemoveProjectFunction",
-        InvocationType="RequestResponse",
-        Payload=json.dumps({"body": json.dumps({"project_id": project_id})}),
-    )
+    # Teardown - TEMPORARILY DISABLED FOR DEBUGGING
+    # delete_response = lambda_client.invoke(
+    #     FunctionName=f"{cloudformation_stack}-RemoveProjectFunction",
+    #     InvocationType="RequestResponse",
+    #     Payload=json.dumps({"body": json.dumps({"project_id": project_id})}),
+    # )
 
-    result = json.loads(delete_response["Payload"].read().decode("utf-8"))
-    if delete_response["StatusCode"] != 200:
-        print(f"WARNING: Teardown failed: {result}")
+    # result = json.loads(delete_response["Payload"].read().decode("utf-8"))
+    # if delete_response["StatusCode"] != 200:
+    #     print(f"WARNING: Teardown failed: {result}")
 
 
 @pytest.fixture
@@ -358,9 +378,9 @@ def create_test_subject(physical_resources):
         ).encode("utf-8"),
         InvocationType="RequestResponse",
     )
-    project_body = json.loads(
-        json.loads(project_response["Payload"].read().decode("utf-8"))["body"]
-    )
+    raw_response = json.loads(project_response["Payload"].read().decode("utf-8"))
+    print(f"Raw project response: {raw_response}")
+    project_body = json.loads(raw_response["body"])
     print(project_body)
 
     def _make_subject():
@@ -411,45 +431,6 @@ def create_test_subject(physical_resources):
         ),
         InvocationType="RequestResponse",
     )
-
-
-@pytest.fixture
-def create_test_encounter_iri(create_test_subject, physical_resources):
-    lambda_client = get_client("lambda")
-    created_encounters = []
-
-    def _make_encounter():
-        subject_iri = create_test_subject()["iri"]
-        encounter_id = f"test-enc-{uuid.uuid4().hex[:6]}"
-        payload = {"subject_iri": subject_iri, "encounter_id": encounter_id}
-
-        print(f"payload: {payload}")
-
-        response = lambda_client.invoke(
-            FunctionName=physical_resources["CreateEncounterFunction"],
-            Payload=json.dumps({"body": json.dumps(payload)}).encode("utf-8"),
-            InvocationType="RequestResponse",
-        )
-
-        body = json.loads(json.loads(response["Payload"].read())["body"])
-
-        print(f"body: {body}")
-
-        encounter_iri = body["encounter_iri"]
-
-        created_encounters.append((subject_iri, encounter_id))
-        return encounter_iri
-
-    yield _make_encounter
-
-    # Cleanup
-    for subject_iri, encounter_id in created_encounters:
-        payload = {"subject_iri": subject_iri, "encounter_id": encounter_id}
-        lambda_client.invoke(
-            FunctionName=physical_resources["RemoveEncounterFunction"],
-            Payload=json.dumps({"body": json.dumps(payload)}).encode("utf-8"),
-            InvocationType="RequestResponse",
-        )
 
 
 # Fixture to create the test project
@@ -589,3 +570,15 @@ def pytest_collection_modifyitems(session, config, items):
     config.pluginmanager.get_plugin("terminalreporter").write_line(
         "\n Reordered tests so that tests marked with 'run_first' run at the start and tests marked with 'run_last' run at the end of the session."
     )
+
+
+@pytest.fixture(scope="session")
+def num_subjects(request):
+    """Number of subjects for performance tests"""
+    return request.config.getoption("--num-subjects")
+
+
+@pytest.fixture(scope="session") 
+def num_terms(request):
+    """Number of terms/notes per subject for performance tests"""
+    return request.config.getoption("--num-terms")

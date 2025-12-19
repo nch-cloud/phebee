@@ -1,0 +1,282 @@
+{
+  "Comment": "Bulk Evidence Import Pipeline with EMR Serverless, DynamoDB, Lambda preprocessing, and proper permissions",
+  "StartAt": "ValidateInput",
+  "States": {
+    "ValidateInput": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${ValidateBulkImportFunction}",
+        "Payload": {
+          "run_id.$": "$.run_id",
+          "input_path.$": "$.input_path"
+        }
+      },
+      "ResultPath": "$.validation",
+      "Next": "ResolveSubjectMappings",
+      "Catch": [{
+        "ErrorEquals": ["States.ALL"],
+        "Next": "NotifyFailure",
+        "ResultPath": "$.error"
+      }]
+    },
+    
+    "ResolveSubjectMappings": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${ResolveSubjectMappingsFunction}",
+        "Payload": {
+          "run_id.$": "$.run_id",
+          "input_path.$": "$.input_path"
+        }
+      },
+      "ResultPath": "$.subject_mapping",
+      "Next": "ProcessWithEMR",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "NotifyFailure",
+          "ResultPath": "$.error"
+        }
+      ]
+    },
+    
+    "ProcessWithEMR": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::emr-serverless:startJobRun.sync",
+      "Parameters": {
+        "ApplicationId": "${EMRServerlessApplicationId}",
+        "ExecutionRoleArn": "${EMRExecutionRoleArn}",
+        "JobDriver": {
+          "SparkSubmit": {
+            "EntryPoint": "s3://${PheBeeBucketName}/scripts/bulk_evidence_processor.py",
+            "EntryPointArguments.$": "States.Array('--run-id', $.run_id, '--input-path', $.input_path, '--mapping-file', $.subject_mapping.Payload.body.mapping_file, '--iceberg-database', '${IcebergDatabase}', '--iceberg-table', '${IcebergEvidenceTable}', '--output-bucket', '${PheBeeBucketName}', '--neptune-cluster', '${NeptuneClusterEndpoint}')",
+            "SparkSubmitParameters": "--conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions --conf spark.sql.catalog.glue_catalog=org.apache.iceberg.spark.SparkCatalog --conf spark.sql.catalog.glue_catalog.warehouse=s3://${PheBeeBucketName}/iceberg-warehouse --conf spark.sql.catalog.glue_catalog.catalog-impl=org.apache.iceberg.aws.glue.GlueCatalog --conf spark.sql.catalog.glue_catalog.io-impl=org.apache.iceberg.aws.s3.S3FileIO"
+          }
+        },
+        "ConfigurationOverrides": {
+          "MonitoringConfiguration": {
+            "S3MonitoringConfiguration": {
+              "LogUri": "s3://${PheBeeBucketName}/emr-logs/"
+            }
+          }
+        }
+      },
+      "ResultPath": "$.emr_result",
+      "Next": "GenerateTTLManifest",
+      "Catch": [{
+        "ErrorEquals": ["States.ALL"],
+        "Next": "NotifyFailure",
+        "ResultPath": "$.error"
+      }]
+    },
+    
+    "GenerateTTLManifest": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${GenerateTTLManifestFunction}",
+        "Payload": {
+          "run_id.$": "$.run_id",
+          "database": "${IcebergDatabase}",
+          "table": "${IcebergEvidenceTable}",
+          "bucket": "${PheBeeBucketName}",
+          "page_size": 10000
+        }
+      },
+      "ResultPath": "$.ttl_manifest",
+      "Next": "GenerateTTLFromPages",
+      "Catch": [{
+        "ErrorEquals": ["States.ALL"],
+        "Next": "NotifyFailure",
+        "ResultPath": "$.error"
+      }]
+    },
+
+    "GenerateTTLFromPages": {
+      "Type": "Map",
+      "ItemsPath": "$.ttl_manifest.Payload.body.page_numbers",
+      "MaxConcurrency": 50,
+      "ResultPath": null,
+      "Next": "StartProjectLoad",
+      "Catch": [{
+        "ErrorEquals": ["States.ALL"],
+        "Next": "NotifyFailure",
+        "ResultPath": "$.error"
+      }],
+      "Iterator": {
+        "StartAt": "GenerateTTLForPage",
+        "States": {
+          "GenerateTTLForPage": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "${GenerateTTLFromIcebergFunction}",
+              "Payload": {
+                "page_number.$": "$",
+                "run_id.$": "$$.Execution.Input.run_id",
+                "database": "${IcebergDatabase}",
+                "table": "${IcebergEvidenceTable}",
+                "bucket": "${PheBeeBucketName}"
+              }
+            },
+            "End": true
+          }
+        }
+      }
+    },
+    
+    "StartProjectLoad": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${StartNeptuneBulkLoadFunction}",
+        "Payload": {
+          "run_id.$": "$.run_id",
+          "ttl_prefix.$": "States.Format('s3://${PheBeeBucketName}/{}/neptune/', $.run_id)",
+          "load_type": "projects"
+        }
+      },
+      "ResultPath": "$.project_load",
+      "Next": "MonitorProjectLoad",
+      "Catch": [{
+        "ErrorEquals": ["States.ALL"],
+        "Next": "NotifyFailure",
+        "ResultPath": "$.error"
+      }]
+    },
+    
+    "MonitorProjectLoad": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${CheckNeptuneBulkLoadStatusFunction}",
+        "Payload": {
+          "load_id.$": "$.project_load.Payload.body.loads[0].load_id"
+        }
+      },
+      "ResultPath": "$.project_status",
+      "Next": "CheckProjectLoadComplete"
+    },
+    
+    "CheckProjectLoadComplete": {
+      "Type": "Choice",
+      "Choices": [{
+        "Variable": "$.project_status.Payload.body.status",
+        "StringEquals": "LOAD_COMPLETED",
+        "Next": "StartSubjectsLoad"
+      }, {
+        "Variable": "$.project_status.Payload.body.status",
+        "StringEquals": "LOAD_FAILED",
+        "Next": "NotifyFailure"
+      }],
+      "Default": "WaitForProjectLoad"
+    },
+    
+    "WaitForProjectLoad": {
+      "Type": "Wait",
+      "Seconds": 30,
+      "Next": "MonitorProjectLoad"
+    },
+    
+    "StartSubjectsLoad": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${StartNeptuneBulkLoadFunction}",
+        "Payload": {
+          "run_id.$": "$.run_id",
+          "ttl_prefix.$": "States.Format('s3://${PheBeeBucketName}/{}/neptune/', $.run_id)",
+          "load_type": "subjects"
+        }
+      },
+      "ResultPath": "$.subjects_load",
+      "Next": "MonitorSubjectsLoad",
+      "Catch": [{
+        "ErrorEquals": ["States.ALL"],
+        "Next": "NotifyFailure",
+        "ResultPath": "$.error"
+      }]
+    },
+    
+    "MonitorSubjectsLoad": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${CheckNeptuneBulkLoadStatusFunction}",
+        "Payload": {
+          "load_id.$": "$.subjects_load.Payload.body.loads[0].load_id"
+        }
+      },
+      "ResultPath": "$.subjects_status",
+      "Next": "CheckSubjectsLoadComplete"
+    },
+    
+    "CheckSubjectsLoadComplete": {
+      "Type": "Choice",
+      "Choices": [{
+        "Variable": "$.subjects_status.Payload.body.status",
+        "StringEquals": "LOAD_COMPLETED",
+        "Next": "NotifySuccess"
+      }, {
+        "Variable": "$.subjects_status.Payload.body.status",
+        "StringEquals": "LOAD_FAILED",
+        "Next": "NotifyFailure"
+      }],
+      "Default": "WaitForSubjectsLoad"
+    },
+    
+    "WaitForSubjectsLoad": {
+      "Type": "Wait",
+      "Seconds": 30,
+      "Next": "MonitorSubjectsLoad"
+    },
+    
+    "NotifySuccess": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${NotifyBulkImportCompleteFunction}",
+        "Payload": {
+          "run_id.$": "$.run_id",
+          "status": "SUCCESS",
+          "emr_job_id.$": "$.emr_result.JobRunId",
+          "load_ids": [
+            "$.project_load.Payload.body.loads[0].load_id",
+            "$.subjects_load.Payload.body.loads[0].load_id"
+          ]
+        }
+      },
+      "End": true
+    },
+    
+    "NotifyFailure": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke", 
+      "Parameters": {
+        "FunctionName": "${NotifyBulkImportFailureFunction}",
+        "Payload": {
+          "run_id.$": "$.run_id",
+          "status": "FAILED",
+          "error.$": "$.error"
+        }
+      },
+      "Next": "FailExecution"
+    },
+    
+    "FailExecution": {
+      "Type": "Fail",
+      "Cause": "Bulk import failed",
+      "Error": "BulkImportError"
+    }
+  }
+}

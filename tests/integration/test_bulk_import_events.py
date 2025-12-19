@@ -5,18 +5,78 @@ import pytest
 import boto3
 import time
 from phebee.utils.aws import get_client
-from test_bulk_upload import bulk_upload_run
+from general_utils import invoke_lambda
 
 
-def invoke_lambda(name, payload):
-    """Helper function to invoke a Lambda function."""
-    lambda_client = get_client("lambda")
-    response = lambda_client.invoke(
-        FunctionName=name,
-        Payload=json.dumps(payload).encode("utf-8"),
-        InvocationType="RequestResponse",
+def create_test_data():
+    """Create test data for bulk import"""
+    return [
+        {
+            "project_id": "test-project",
+            "project_subject_id": f"subject-{uuid.uuid4().hex[:8]}",
+            "term_iri": "http://purl.obolibrary.org/obo/HP_0001627",
+            "evidence": [
+                {
+                    "type": "clinical_note",
+                    "clinical_note_id": f"note-{uuid.uuid4().hex[:8]}",
+                    "encounter_id": f"encounter-{uuid.uuid4().hex[:8]}",
+                    "evidence_creator_id": "nlp-system-v1",
+                    "evidence_creator_type": "automated",
+                    "evidence_creator_name": "NLP Extractor",
+                    "note_timestamp": "2024-01-15",
+                    "note_type": "progress_note",
+                    "provider_type": "physician",
+                    "author_specialty": "internal_medicine",
+                    "span_start": 45,
+                    "span_end": 58,
+                    "contexts": {
+                        "negated": 0.0,
+                        "family": 0.0,
+                        "hypothetical": 0.0
+                    }
+                }
+            ],
+            "row_num": 1,
+            "batch_id": 0
+        }
+    ]
+
+
+def bulk_upload_run(test_data, physical_resources):
+    """Simple bulk upload function for testing events"""
+    run_id = f"test-run-{uuid.uuid4().hex[:8]}"
+    
+    # Upload test data to S3
+    s3_bucket = physical_resources.get("PheBeeBucket")
+    s3_client = boto3.client('s3')
+    
+    # Create JSONL content and upload to jsonl subdirectory to avoid conflict with subject_mapping.json
+    jsonl_content = "\n".join(json.dumps(record) for record in test_data)
+    jsonl_key = f"test-data/{run_id}/jsonl/input.json"
+    
+    s3_client.put_object(
+        Bucket=s3_bucket,
+        Key=jsonl_key,
+        Body=jsonl_content.encode('utf-8'),
+        ContentType='application/x-ndjson'
     )
-    return json.loads(response["Payload"].read().decode("utf-8"))
+    
+    # Start Step Function execution
+    stepfunctions_client = boto3.client('stepfunctions')
+    state_machine_arn = physical_resources.get("BulkImportStateMachine")
+    
+    input_path = f"s3://{s3_bucket}/test-data/{run_id}/jsonl"
+    
+    stepfunctions_client.start_execution(
+        stateMachineArn=state_machine_arn,
+        name=run_id,
+        input=json.dumps({
+            "run_id": run_id,
+            "input_path": input_path
+        })
+    )
+    
+    return run_id, f"domain-{run_id}", f"prov-{run_id}"
 
 
 @pytest.mark.integration
@@ -25,8 +85,7 @@ def test_bulk_import_success_event(physical_resources, test_project_id):
     
     sqs_client = boto3.client("sqs")
     events_client = boto3.client("events")
-    stack_name = os.environ.get("STACK_NAME", "phebee-dev-2")
-    event_bus_name = f"phebee-bus-{stack_name}"
+    event_bus_name = physical_resources["PheBeeBus"]
     
     # Create test SQS queue
     queue_name = f"phebee-test-events-{uuid.uuid4().hex[:8]}"
@@ -67,22 +126,22 @@ def test_bulk_import_success_event(physical_resources, test_project_id):
     )
     
     try:
-        # Simple test payload
-        test_payload = [{
-            "project_id": test_project_id,
-            "project_subject_id": f"subj-{uuid.uuid4()}",
-            "term_iri": "http://purl.obolibrary.org/obo/HP_0001249",
-            "evidence_code": "IEA"
-        }]
+        # Create test data
+        test_data = create_test_data()
         
         # Run bulk upload (this will trigger the Step Function)
-        run_id, domain_load_id, prov_load_id = bulk_upload_run([test_payload], physical_resources)
+        run_id, domain_load_id, prov_load_id = bulk_upload_run(test_data, physical_resources)
         
-        # Wait for Step Function to complete and fire event
-        time.sleep(75)
-        
-        # Check SQS queue for event
-        messages = sqs_client.receive_message(QueueUrl=queue_url, MaxNumberOfMessages=10, WaitTimeSeconds=5)
+        # Poll for Step Function completion and event firing
+        messages = None
+        for attempt in range(5):  # Poll for up to 5 minutes
+            time.sleep(60)  # Wait 1 minute between polls
+            
+            # Check SQS queue for event
+            messages = sqs_client.receive_message(QueueUrl=queue_url, MaxNumberOfMessages=10, WaitTimeSeconds=5)
+            
+            if "Messages" in messages:
+                break
         
         assert "Messages" in messages, f"No events received in queue for run_id: {run_id}"
         
