@@ -39,7 +39,7 @@ def lambda_handler(event, context):
             else:
                 response = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
             
-            jsonl_files.extend([obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.jsonl') or obj['Key'].endswith('.json')])
+            jsonl_files.extend([obj['Key'] for obj in response.get('Contents', []) if '/jsonl/' in obj['Key'] and (obj['Key'].endswith('.jsonl') or obj['Key'].endswith('.json'))])
             
             if not response.get('IsTruncated'):
                 break

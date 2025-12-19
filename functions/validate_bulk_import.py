@@ -29,13 +29,14 @@ def lambda_handler(event, context):
         # List JSONL files in the prefix
         try:
             response = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
-            jsonl_files = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.jsonl') or obj['Key'].endswith('.json')]
+
+            jsonl_files = [obj['Key'] for obj in response.get('Contents', []) if '/jsonl/' in obj['Key'] and (obj['Key'].endswith('.jsonl') or obj['Key'].endswith('.json'))]
             
             if not jsonl_files:
                 raise ValueError(f"No JSONL files found in: {input_path}")
             
             # Calculate total size
-            total_size = sum(obj['Size'] for obj in response.get('Contents', []) if obj['Key'].endswith('.jsonl') or obj['Key'].endswith('.json'))
+            total_size = sum(obj['Size'] for obj in response.get('Contents', []) if '/jsonl/' in obj['Key'] and (obj['Key'].endswith('.jsonl') or obj['Key'].endswith('.json')))
             
             logger.info(f"Validated input directory: {input_path}, found {len(jsonl_files)} JSONL files, total size: {total_size} bytes")
             
