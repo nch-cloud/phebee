@@ -401,15 +401,15 @@ def main():
          .withColumn("qualifiers", array(
             struct(
                 lit("negated").alias("qualifier_type"),
-                col("negated").cast("string").alias("qualifier_value")
+                when((col("negated") == 1.0) | (col("negated") == "true") | (col("negated") == True), "true").otherwise("false").alias("qualifier_value")
             ),
             struct(
                 lit("family").alias("qualifier_type"),
-                col("family").cast("string").alias("qualifier_value")
+                when((col("family") == 1.0) | (col("family") == "true") | (col("family") == True), "true").otherwise("false").alias("qualifier_value")
             ),
             struct(
                 lit("hypothetical").alias("qualifier_type"),
-                col("hypothetical").cast("string").alias("qualifier_value")
+                when((col("hypothetical") == 1.0) | (col("hypothetical") == "true") | (col("hypothetical") == True), "true").otherwise("false").alias("qualifier_value")
             )
          )) \
          .select(
