@@ -26,7 +26,7 @@ def generate_termlink_hash(source_node_iri: str, term_iri: str, qualifiers: list
     Args:
         source_node_iri (str): The IRI of the source node (subject, encounter, or clinical note)
         term_iri (str): The IRI of the term being linked
-        qualifiers (list): List of positive qualifier names (e.g., ["negated", "family"])
+        qualifiers (list): List of qualifier name:value pairs (e.g., ["negated:true", "severity:mild"])
         
     Returns:
         str: A deterministic hash that can be used as part of the term link IRI
@@ -46,14 +46,32 @@ def generate_termlink_hash(source_node_iri: str, term_iri: str, qualifiers: list
 # For PySpark, we need a wrapper that handles the specific columns
 def create_termlink_hash_wrapper(subject_id, term_iri, family, hypothetical, negated):
     """Wrapper for PySpark UDF with current qualifier columns"""
-    # Convert PySpark numeric values to boolean and get positive qualifiers
     qualifiers = []
-    if bool(family):  # Handle 1.0/0.0 as True/False
-        qualifiers.append("family")
-    if bool(hypothetical):
-        qualifiers.append("hypothetical") 
-    if bool(negated):
-        qualifiers.append("negated")
+    
+    # Convert numerical values to booleans for cleaner hash format
+    def normalize_qualifier_value(value):
+        if value in ["false", "0", 0, 0.0, False]:
+            return None  # Exclude falsey values
+        elif value in ["true", "1", 1, 1.0, True]:
+            return "true"
+        else:
+            return str(value)  # Keep other values as strings
+    
+    # Include name:value for any non-falsey qualifier
+    family_val = normalize_qualifier_value(family)
+    if family_val:
+        qualifiers.append(f"family:{family_val}")
+        
+    hypothetical_val = normalize_qualifier_value(hypothetical)
+    if hypothetical_val:
+        qualifiers.append(f"hypothetical:{hypothetical_val}")
+        
+    negated_val = normalize_qualifier_value(negated)
+    if negated_val:
+        qualifiers.append(f"negated:{negated_val}")
+    
+    # Sort for deterministic ordering
+    qualifiers.sort()
     
     # Build subject IRI
     subject_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"

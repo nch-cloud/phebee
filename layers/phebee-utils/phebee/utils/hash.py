@@ -16,7 +16,7 @@ def generate_termlink_hash(source_node_iri: str, term_iri: str, qualifiers: Opti
     Args:
         source_node_iri (str): The IRI of the source node (subject, encounter, or clinical note)
         term_iri (str): The IRI of the term being linked
-        qualifiers (list): List of positive qualifier names (e.g., ["negated", "family"])
+        qualifiers (list): List of qualifier name:value pairs (e.g., ["negated:true", "severity:mild"])
         
     Returns:
         str: A deterministic hash that can be used as part of the term link IRI

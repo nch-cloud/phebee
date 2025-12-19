@@ -266,7 +266,7 @@ def get_evidence_for_phenopackets(
                 qualifiers_list = json.loads(row.get('qualifiers', '[]')) if row.get('qualifiers') else []
                 # Check for negated qualifier
                 for q in qualifiers_list:
-                    if q.get('qualifier_type') == 'negated' and q.get('qualifier_value') == '1':
+                    if q.get('qualifier_type') == 'negated' and q.get('qualifier_value') in ['true', '1', 1, 1.0, True]:
                         excluded = True
                         break
             except:
@@ -373,7 +373,7 @@ def create_evidence_record(
             "span_end": span_end
         } if span_start is not None or span_end is not None else None,
         "qualifiers": [
-            {"qualifier_type": q, "qualifier_value": "1"} for q in (qualifiers or [])
+            {"qualifier_type": q, "qualifier_value": "true"} for q in (qualifiers or [])
         ] if qualifiers else None
     }
     
@@ -479,6 +479,7 @@ def get_evidence_record(evidence_id: str) -> Dict[str, Any] | None:
         evidence_type,
         subject_id,
         term_iri,
+        termlink_id,
         creator.creator_id as creator_id,
         creator.creator_type as creator_type,
         text_annotation.span_start as span_start,
@@ -505,6 +506,7 @@ def get_evidence_record(evidence_id: str) -> Dict[str, Any] | None:
             "evidence_type": row.get('evidence_type'),
             "subject_id": row.get('subject_id'),
             "term_iri": row.get('term_iri'),
+            "termlink_id": row.get('termlink_id'),
             "creator": {
                 "creator_id": row.get('creator_id'),
                 "creator_type": row.get('creator_type')
@@ -524,13 +526,22 @@ def get_evidence_record(evidence_id: str) -> Dict[str, Any] | None:
             # Parse qualifiers array - they come as string representation
             qualifiers_str = row['qualifiers']
             if qualifiers_str and qualifiers_str != '[]':
-                # Parse format like [{qualifier_type=negated, qualifier_value=1}]
-                qualifiers = []
-                # Extract qualifier_type values from the struct format
-                matches = re.findall(r'qualifier_type=([^,}]+)', qualifiers_str)
-                for match in matches:
-                    qualifiers.append(match.strip())
-                record["qualifiers"] = qualifiers
+                # Parse format like [{qualifier_type=negated, qualifier_value=true}]
+                qualifiers_dict = {}
+                try:
+                    # Try to parse as JSON first
+                    qualifiers_list = json.loads(qualifiers_str)
+                    for q in qualifiers_list:
+                        if isinstance(q, dict) and 'qualifier_type' in q and 'qualifier_value' in q:
+                            qualifiers_dict[q['qualifier_type']] = q['qualifier_value']
+                except (json.JSONDecodeError, ValueError):
+                    # Fall back to regex parsing for struct format
+                    import re
+                    matches = re.findall(r'\{qualifier_type=([^,]+), qualifier_value=([^}]+)\}', qualifiers_str)
+                    for qualifier_type, qualifier_value in matches:
+                        qualifiers_dict[qualifier_type.strip()] = qualifier_value.strip()
+                
+                record["qualifiers"] = qualifiers_dict
         
         return record
         
@@ -715,7 +726,8 @@ def get_evidence_for_termlink(
                 # Parse struct fields
                 "note_context": parse_struct_field(row.get('note_context')),
                 "creator": parse_struct_field(row.get('creator')),
-                "text_annotation": parse_struct_field(row.get('text_annotation'))
+                "text_annotation": parse_struct_field(row.get('text_annotation')),
+                "qualifiers": row.get('qualifiers')  # Include qualifiers field
             }
             
             evidence.append(record)
@@ -774,12 +786,27 @@ def get_subject_term_info(
         else:
             logger.warning(f"Expected qualifiers to be list or dict, got {type(qualifiers_from_evidence)}: {qualifiers_from_evidence}")
     
-    # Get only qualifiers that are true, sort alphabetically
-    true_qualifiers = sorted([key for key, value in qualifiers_dict.items() if value is True])
+    # Build qualifier list with name:value format for non-falsey qualifiers
+    def normalize_qualifier_value(value):
+        if value in ["false", "0", 0, 0.0, False]:
+            return None  # Exclude falsey values
+        elif value in ["true", "1", 1, 1.0, True]:
+            return "true"
+        else:
+            return str(value)  # Keep other values as strings
+    
+    qualifier_list = []
+    for qualifier_type, qualifier_value in qualifiers_dict.items():
+        normalized_val = normalize_qualifier_value(qualifier_value)
+        if normalized_val:
+            qualifier_list.append(f"{qualifier_type}:{normalized_val}")
+    
+    # Sort for deterministic ordering
+    qualifier_list.sort()
     
     # Use shared hash function for consistency
     subject_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"
-    termlink_hash = generate_termlink_hash(subject_iri, term_iri, true_qualifiers)
+    termlink_hash = generate_termlink_hash(subject_iri, term_iri, qualifier_list)
     termlink_iri = f"{subject_iri}/term-link/{termlink_hash}"
     
     # Create single termlink with all evidence
@@ -873,7 +900,7 @@ def get_subject_term_info(
                     qualifiers_list = json.loads(row['qualifiers'])
                     record["qualifiers"] = [
                         q['qualifier_type'] for q in qualifiers_list 
-                        if q.get('qualifier_value') == '1'
+                        if q.get('qualifier_value') in ['true', '1', 1, 1.0, True]
                     ]
                 except:
                     record["qualifiers"] = []
