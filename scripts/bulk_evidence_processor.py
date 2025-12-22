@@ -43,6 +43,41 @@ def generate_termlink_hash(source_node_iri: str, term_iri: str, qualifiers: list
     # Generate a deterministic hash
     return hashlib.sha256(hash_input.encode()).hexdigest()
 
+
+def generate_evidence_hash(
+    clinical_note_id: str,
+    encounter_id: str,
+    term_iri: str,
+    span_start: int = None,
+    span_end: int = None,
+    qualifiers: list = None
+) -> str:
+    """
+    Generate deterministic evidence ID from content.
+    KEEP IN SYNC WITH hash.py implementation!
+    
+    Args:
+        clinical_note_id: Clinical note identifier
+        encounter_id: Encounter identifier  
+        term_iri: Term IRI
+        span_start: Text span start position
+        span_end: Text span end position
+        qualifiers: List of qualifier name:value pairs (e.g., ["negated:true", "family:false"])
+        
+    Returns:
+        str: Deterministic evidence hash
+    """
+    content_parts = [
+        clinical_note_id,
+        encounter_id,
+        term_iri,
+        str(span_start) if span_start is not None else "",
+        str(span_end) if span_end is not None else "",
+        "|".join(sorted(qualifiers or []))
+    ]
+    content = "|".join(content_parts)
+    return hashlib.sha256(content.encode()).hexdigest()
+
 # For PySpark, we need a wrapper that handles the specific columns
 def create_termlink_hash_wrapper(subject_id, term_iri, family, hypothetical, negated):
     """Wrapper for PySpark UDF with current qualifier columns"""
@@ -78,8 +113,37 @@ def create_termlink_hash_wrapper(subject_id, term_iri, family, hypothetical, neg
     
     return generate_termlink_hash(subject_iri, term_iri, qualifiers)
 
-# Register UDF
+
+def create_evidence_hash_wrapper(clinical_note_id, encounter_id, term_iri, span_start, span_end, negated, family, hypothetical):
+    """Wrapper for PySpark UDF to generate evidence hash"""
+    # Build qualifiers list with name:value pairs (only positive ones)
+    qualifiers = []
+    
+    def normalize_qualifier_value(value):
+        if value in ["false", "0", 0, 0.0, False]:
+            return "false"
+        elif value in ["true", "1", 1, 1.0, True]:
+            return "true"
+        else:
+            return str(value)
+    
+    # Add all qualifiers with their values (including false ones for evidence hash)
+    qualifiers.append(f"negated:{normalize_qualifier_value(negated)}")
+    qualifiers.append(f"family:{normalize_qualifier_value(family)}")
+    qualifiers.append(f"hypothetical:{normalize_qualifier_value(hypothetical)}")
+    
+    return generate_evidence_hash(
+        clinical_note_id or "",
+        encounter_id or "",
+        term_iri,
+        int(span_start) if span_start is not None else None,
+        int(span_end) if span_end is not None else None,
+        qualifiers
+    )
+
+# Register UDFs
 generate_termlink_hash_udf = udf(create_termlink_hash_wrapper, StringType())
+generate_evidence_hash_udf = udf(create_evidence_hash_wrapper, StringType())
 
 import boto3
 
@@ -364,17 +428,16 @@ def main():
             col("evidence_item.contexts.family").alias("family"),
             col("evidence_item.contexts.hypothetical").alias("hypothetical")
         ).withColumn("run_id", lit(args.run_id)) \
-         .withColumn("evidence_id", sha2(concat_ws("|", 
-            "subject_id", 
-            "term_iri",
-            coalesce("encounter_id", spark_lit("")),
-            coalesce("clinical_note_id", spark_lit("")),
-            coalesce("span_start", spark_lit("")),
-            coalesce("span_end", spark_lit("")),
-            coalesce("negated", spark_lit("")),
-            coalesce("family", spark_lit("")),
-            coalesce("hypothetical", spark_lit(""))
-         ), 256)) \
+         .withColumn("evidence_id", generate_evidence_hash_udf(
+            col("clinical_note_id"),
+            col("encounter_id"), 
+            col("term_iri"),
+            col("span_start"),
+            col("span_end"),
+            col("negated"),
+            col("family"),
+            col("hypothetical")
+         )) \
          .withColumn("batch_id", input_file_name()) \
          .withColumn("assertion_type", 
             when(col("evidence_creator_type") == "automated", "http://purl.obolibrary.org/obo/ECO_0000203")
@@ -440,12 +503,14 @@ def main():
         evidence_count = flattened_df.count()
         logger.info(f"Flattened to {evidence_count} evidence records")
         
-        # Write to Iceberg table
+        # Write to Iceberg table with deduplication
         logger.info(f"Writing to Iceberg table {args.iceberg_database}.{args.iceberg_table}")
-        flattened_df.write \
-                   .format("iceberg") \
-                   .mode("append") \
-                   .save(f"glue_catalog.{args.iceberg_database}.{args.iceberg_table}")
+        flattened_df.writeTo(f"glue_catalog.{args.iceberg_database}.{args.iceberg_table}") \
+                    .mergeInto("target") \
+                    .whenMatchedUpdate(condition="target.evidence_id = source.evidence_id",
+                                       set={"run_id": "source.run_id", "created_timestamp": "source.created_timestamp"}) \
+                    .whenNotMatchedInsert("*") \
+                    .merge()
         
         logger.info(f"Successfully processed {evidence_count} evidence records")
         logger.info(f"Data written to Iceberg table: {args.iceberg_database}.{args.iceberg_table}")

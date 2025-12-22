@@ -51,7 +51,7 @@ def generate_evidence_hash(
         term_iri: Term IRI
         span_start: Text span start position
         span_end: Text span end position
-        qualifiers: List of qualifier strings
+        qualifiers: List of qualifier name:value pairs (e.g., ["negated:true", "family:false"])
         
     Returns:
         str: Deterministic evidence hash
