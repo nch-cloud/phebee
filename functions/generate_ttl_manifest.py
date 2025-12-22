@@ -20,6 +20,13 @@ def lambda_handler(event, context):
         
         athena = boto3.client('athena')
         
+        # Check workgroup configuration for managed results
+        wg_cfg = athena.get_work_group(WorkGroup="primary")["WorkGroup"]["Configuration"]
+        managed_config = wg_cfg.get("ManagedQueryResultsConfiguration", {})
+        managed = managed_config.get("Enabled", False) if isinstance(managed_config, dict) else False
+        
+        query_result_location = f"s3://{bucket}/athena-results/"
+        
         # First, count total records
         count_query = f"""
         SELECT COUNT(*) as total_count
@@ -27,14 +34,17 @@ def lambda_handler(event, context):
         WHERE run_id = '{run_id}'
         """
         
-        query_result_location = f"s3://{bucket}/athena-results/"
+        # Build query parameters conditionally
+        count_params = {
+            "QueryString": count_query,
+            "WorkGroup": "primary"
+        }
+        
+        if not managed:
+            count_params["ResultConfiguration"] = {"OutputLocation": query_result_location}
         
         # Execute count query
-        count_response = athena.start_query_execution(
-            QueryString=count_query,
-            ResultConfiguration={'OutputLocation': query_result_location},
-            WorkGroup='primary'
-        )
+        count_response = athena.start_query_execution(**count_params)
         
         count_execution_id = count_response['QueryExecutionId']
         
