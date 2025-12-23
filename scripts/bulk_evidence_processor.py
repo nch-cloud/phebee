@@ -11,6 +11,7 @@ from urllib.parse import quote
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import *
 from pyspark.sql.types import *
+from pyspark import StorageLevel  # <-- added (for persist)
 import hashlib
 from pyspark.sql.functions import udf
 from pyspark.sql.types import StringType
@@ -406,7 +407,10 @@ def main():
             col("term_iri"),
             explode("evidence").alias("evidence_item")
         )
-        
+
+        # Create common timestamp for all rows in the batch
+        run_ts = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+
         # Flatten evidence structure to match Iceberg schema
         from pyspark.sql.functions import sha2, concat_ws, coalesce, lit as spark_lit, current_timestamp, to_date, struct, array, when, to_json
         flattened_df = evidence_df.select(
@@ -444,8 +448,6 @@ def main():
             .when(col("evidence_creator_type") == "manual", "http://purl.obolibrary.org/obo/ECO_0000218")
             .otherwise(raise_error(concat(lit("Unknown creator_type: "), col("evidence_creator_type"))))
          ) \
-         .withColumn("created_timestamp", current_timestamp()) \
-         .withColumn("created_date", to_date(current_timestamp())) \
          .withColumn("source_level", lit("clinical_note")) \
          .withColumn("evidence_type", 
             when((col("source_level") == "clinical_note") & (col("evidence_creator_type") == "manual"), 
@@ -493,24 +495,113 @@ def main():
                 when((col("hypothetical") == 1.0) | (col("hypothetical") == "true") | (col("hypothetical") == True), "true").otherwise("false").alias("qualifier_value")
             )
          )) \
+         .withColumn("created_timestamp", lit(run_ts).cast("timestamp")) \
+         .withColumn("created_date", to_date(lit(run_ts))) \
          .select(
             "evidence_id", "run_id", "batch_id", "evidence_type", "assertion_type",
             "created_timestamp", "created_date", "source_level", "subject_id",
             "encounter_id", "clinical_note_id", "termlink_id", "term_iri",
             "note_context", "creator", "text_annotation", "qualifiers"
          )
-        
+
+        # Safer for huge batches: avoid caching wide rows in memory; spill to disk instead.
+        flattened_df = flattened_df.persist(StorageLevel.DISK_ONLY)
+
+        # Fail fast if subject_id is missing after mapping join (do this before expensive counts)
+        if flattened_df.where(col("subject_id").isNull()).limit(1).count():
+            raise ValueError("Found rows with null subject_id after mapping join; aborting.")
+
         evidence_count = flattened_df.count()
         logger.info(f"Flattened to {evidence_count} evidence records")
         
-        # Write to Iceberg table with deduplication
+        # Write to Iceberg table
         logger.info(f"Writing to Iceberg table {args.iceberg_database}.{args.iceberg_table}")
-        flattened_df.writeTo(f"glue_catalog.{args.iceberg_database}.{args.iceberg_table}") \
-                    .mergeInto("target") \
-                    .whenMatchedUpdate(condition="target.evidence_id = source.evidence_id",
-                                       set={"run_id": "source.run_id", "created_timestamp": "source.created_timestamp"}) \
-                    .whenNotMatchedInsert("*") \
-                    .merge()
+        
+        target_name = f"glue_catalog.{args.iceberg_database}.{args.iceberg_table}"
+
+        # ---------------------------------------------------------------------
+        # 1) In-batch dedupe + validations on a NARROW key DF (safer for big batches)
+        # ---------------------------------------------------------------------
+        dedupe_keys = ["subject_id", "evidence_id"]
+
+        keys_df = flattened_df.select(*dedupe_keys).persist(StorageLevel.MEMORY_AND_DISK)
+
+        before = evidence_count
+        old_keys_df = keys_df
+        keys_df = keys_df.dropDuplicates(dedupe_keys).persist(StorageLevel.MEMORY_AND_DISK)
+        old_keys_df.unpersist()
+
+        after = keys_df.count()
+
+        if after < before:
+            logger.warning(f"Dropped {before - after} duplicate rows within batch on keys {dedupe_keys}")
+
+        # Enforce global uniqueness of evidence_id in the batch (catastrophic tripwire, but now over a narrow DF)
+        dup_evidence_id = keys_df.groupBy("evidence_id").count().where(col("count") > 1).limit(1).count()
+        if dup_evidence_id:
+            raise ValueError("Batch contains evidence_id reused across multiple subject_id values (unexpected)")
+
+        # ---------------------------------------------------------------------
+        # 2) Identify subjects touched in this run (small: hundreds)
+        # ---------------------------------------------------------------------
+        batch_subjects = keys_df.select("subject_id").distinct()
+
+        # ---------------------------------------------------------------------
+        # 3) Read only existing keys for those subjects (leverages subject bucketing)
+        #    Avoid caching existing_keys (it may be huge for hot subjects); stream it into the join.
+        # ---------------------------------------------------------------------
+        target_df = spark.table(target_name)
+
+        existing_keys = (
+            target_df.join(broadcast(batch_subjects), on="subject_id", how="inner")
+                    .select("subject_id", "evidence_id")
+                    .distinct()
+        )
+
+        # ---------------------------------------------------------------------
+        # 4) Compute keys to insert, then join back to wide rows only at the end
+        # ---------------------------------------------------------------------
+        to_insert_keys = (
+            keys_df.join(existing_keys, on=dedupe_keys, how="left_anti")
+        ).persist(StorageLevel.MEMORY_AND_DISK)
+
+        insert_count = to_insert_keys.count()
+        logger.info(f"Insert-only filter results: {insert_count} new rows to append (out of {after} in-batch unique rows)")
+
+        if insert_count == 0:
+            logger.info("No new rows to insert. Skipping append.")
+        else:
+            # Join keys back to the full rows for writing; persist to avoid recompute during write
+            to_insert = (
+                flattened_df.join(to_insert_keys, on=dedupe_keys, how="inner")
+            ).dropDuplicates(dedupe_keys).persist(StorageLevel.DISK_ONLY)
+
+            # Count once to materialize (and validate) the actual rows to write
+            _ = to_insert.count()
+
+            # -----------------------------------------------------------------
+            # 5) Append with stable column order matching the target schema
+            # -----------------------------------------------------------------
+            target_cols = target_df.columns
+
+            # Ensure source has exactly the target columns (no extras / missing)
+            missing = [c for c in target_cols if c not in to_insert.columns]
+            extra = [c for c in to_insert.columns if c not in target_cols]
+            if missing:
+                raise ValueError(f"Source is missing target columns: {missing}")
+            if extra:
+                logger.warning(f"Source has extra columns not in target; they will be dropped: {extra}")
+
+            to_insert.select(*target_cols).writeTo(target_name).append()
+
+            to_insert.unpersist()
+
+        logger.info(f"Successfully processed {after} in-batch unique evidence records; inserted {insert_count}")
+
+        # Clean up cached DFs
+        to_insert_keys.unpersist()
+        keys_df.unpersist()
+        flattened_df.unpersist()
         
         logger.info(f"Successfully processed {evidence_count} evidence records")
         logger.info(f"Data written to Iceberg table: {args.iceberg_database}.{args.iceberg_table}")

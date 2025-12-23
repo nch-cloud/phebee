@@ -11,13 +11,12 @@ def lambda_handler(event, context):
     """Generate N-Quads files from Athena query results for a single page"""
     logger.info(event)
     
-    try:
-        # Extract parameters from event
-        page_number = event['page_number']
-        run_id = event['run_id']
-        database = event['database']
-        table = event['table']
-        bucket = event['bucket']
+    # Extract parameters from event
+    page_number = event['page_number']
+    run_id = event['run_id']
+    database = event['database']
+    table = event['table']
+    bucket = event['bucket']
         
         # Construct manifest location from run_id and bucket
         manifest_location = f"s3://{bucket}/{run_id}/manifest.json"
@@ -37,6 +36,11 @@ def lambda_handler(event, context):
         athena = boto3.client('athena')
         dynamodb = boto3.resource('dynamodb')
         
+        # Check workgroup configuration for managed results
+        wg_cfg = athena.get_work_group(WorkGroup="primary")["WorkGroup"]["Configuration"]
+        managed_config = wg_cfg.get("ManagedQueryResultsConfiguration", {})
+        managed = managed_config.get("Enabled", False) if isinstance(managed_config, dict) else False
+        
         # Get DynamoDB table name from environment
         import os
         dynamodb_table_name = os.environ.get('DYNAMODB_TABLE_NAME')
@@ -47,12 +51,17 @@ def lambda_handler(event, context):
         
         query_result_location = f"s3://{bucket}/athena-results/"
         
+        # Build query parameters conditionally
+        query_params = {
+            "QueryString": page_query,
+            "WorkGroup": "primary"
+        }
+        
+        if not managed:
+            query_params["ResultConfiguration"] = {"OutputLocation": query_result_location}
+        
         # Execute the page query
-        response = athena.start_query_execution(
-            QueryString=page_query,
-            ResultConfiguration={'OutputLocation': query_result_location},
-            WorkGroup='primary'
-        )
+        response = athena.start_query_execution(**query_params)
         
         execution_id = response['QueryExecutionId']
         
@@ -265,16 +274,5 @@ def lambda_handler(event, context):
                 'ttl_files': ttl_files,
                 'record_count': record_count,
                 'ttl_prefix': f"s3://{bucket}/{run_id}/neptune/"
-            }
-        }
-        
-    except Exception as e:
-        logger.error(f"Error generating N-Quads: {str(e)}")
-        return {
-            'statusCode': 500,
-            'body': {
-                'error': str(e),
-                'run_id': event.get('run_id', 'unknown'),
-                'page_number': event.get('page_number', 'unknown')
             }
         }
