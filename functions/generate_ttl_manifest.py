@@ -66,6 +66,19 @@ def lambda_handler(event, context):
         
         logger.info(f"Total records for run_id {run_id}: {total_count}")
         
+        # Short-circuit if no records to process
+        if total_count == 0:
+            logger.info(f"No records found for run_id {run_id}, skipping TTL generation")
+            return {
+                'statusCode': 200,
+                'body': {
+                    'run_id': run_id,
+                    'total_records': 0,
+                    'skip_processing': True,
+                    'message': 'No records to process'
+                }
+            }
+        
         # Calculate proper pagination
         total_pages = math.ceil(total_count / page_size)
         
