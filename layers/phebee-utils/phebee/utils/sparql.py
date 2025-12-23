@@ -27,6 +27,7 @@ import re
 import uuid
 import hashlib
 import time
+import os
 from collections import defaultdict
 from .hash import generate_termlink_hash
 from typing import List, Optional, Sequence
@@ -636,6 +637,11 @@ def get_term_links_with_counts(
     
     where_clause = " AND ".join(filters)
     
+    # Get database name from environment
+    database_name = os.environ.get('ICEBERG_DATABASE')
+    if not database_name:
+        raise ValueError("ICEBERG_DATABASE environment variable is required")
+    
     # Query Iceberg for evidence data grouped by term and qualifiers
     query = f"""
     SELECT 
@@ -643,7 +649,7 @@ def get_term_links_with_counts(
         qualifiers,
         termlink_id,
         COUNT(*) as evidence_count
-    FROM phebee.evidence
+    FROM {database_name}.evidence
     WHERE {where_clause}
     GROUP BY term_iri, qualifiers, termlink_id
     ORDER BY term_iri
