@@ -233,8 +233,8 @@ def get_evidence_for_phenopackets(
     where_clause = " AND ".join(filters)
     
     # Query for evidence with all needed phenopacket fields
-    database_name = os.environ.get('ICEBERG_DATABASE', 'phebee')
-    table_name = os.environ.get('ICEBERG_EVIDENCE_TABLE', 'evidence')
+    database_name = os.environ['ICEBERG_DATABASE']
+    table_name = os.environ['ICEBERG_EVIDENCE_TABLE']
     
     query = f"""
     SELECT 
@@ -320,8 +320,8 @@ def create_evidence_record(
         str: The generated evidence_id
     """
     # Get environment variables before any local imports
-    database_name = os.environ.get('ICEBERG_DATABASE', 'phebee')
-    table_name = os.environ.get('ICEBERG_EVIDENCE_TABLE', 'evidence')
+    database_name = os.environ['ICEBERG_DATABASE']
+    table_name = os.environ['ICEBERG_EVIDENCE_TABLE']
     
     # Generate evidence ID
     evidence_id = generate_evidence_id(
@@ -468,8 +468,8 @@ def get_evidence_record(evidence_id: str) -> Dict[str, Any] | None:
     """
     Get a single evidence record by ID from Iceberg.
     """
-    database_name = os.environ.get('ICEBERG_DATABASE', 'phebee')
-    table_name = os.environ.get('ICEBERG_EVIDENCE_TABLE', 'evidence')
+    database_name = os.environ['ICEBERG_DATABASE']
+    table_name = os.environ['ICEBERG_EVIDENCE_TABLE']
     
     query = f"""
     SELECT 
@@ -563,8 +563,8 @@ def delete_evidence_record(evidence_id: str) -> bool:
         return False
     
     # Execute DELETE query using Athena
-    database_name = os.environ.get('ICEBERG_DATABASE', 'phebee')
-    table_name = os.environ.get('ICEBERG_EVIDENCE_TABLE', 'evidence')
+    database_name = os.environ['ICEBERG_DATABASE']
+    table_name = os.environ['ICEBERG_EVIDENCE_TABLE']
     
     delete_query = f"""
     DELETE FROM {database_name}.{table_name}
@@ -635,8 +635,8 @@ def get_evidence_for_termlink(
     # This allows us to get all evidence for the termlink regardless of qualifiers
     qualifier_filter = ""
     
-    database_name = os.environ.get('ICEBERG_DATABASE', 'phebee')
-    table_name = os.environ.get('ICEBERG_EVIDENCE_TABLE', 'evidence')
+    database_name = os.environ['ICEBERG_DATABASE']
+    table_name = os.environ['ICEBERG_EVIDENCE_TABLE']
     
     query = f"""
     SELECT 
@@ -845,8 +845,8 @@ def get_subject_term_info(
         if qualifier_conditions:
             qualifier_filter = f"AND ({' OR '.join(qualifier_conditions)})"
     
-    database_name = os.environ.get('ICEBERG_DATABASE', 'phebee')
-    table_name = os.environ.get('ICEBERG_EVIDENCE_TABLE', 'evidence')
+    database_name = os.environ['ICEBERG_DATABASE']
+    table_name = os.environ['ICEBERG_EVIDENCE_TABLE']
     
     query = f"""
     SELECT 

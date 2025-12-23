@@ -623,6 +623,7 @@ Resources:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
           Region: !Sub ${AWS::Region}
           PheBeeDynamoTable: !Ref DynamoDBTable
+          ICEBERG_DATABASE: !Ref IcebergDatabase
           PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
       VpcConfig:
         SecurityGroupIds:
