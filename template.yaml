@@ -1165,6 +1165,7 @@ Resources:
                 - athena:GetQueryExecution
                 - athena:GetQueryResults
                 - athena:StopQueryExecution
+                - athena:GetWorkGroup
               Resource: "*"
             - Effect: Allow
               Action:
