@@ -156,9 +156,13 @@ def query_iceberg_evidence(query: str) -> List[Dict[str, Any]]:
     managed_config = wg_cfg.get("ManagedQueryResultsConfiguration", {})
     managed = managed_config.get("Enabled", False) if isinstance(managed_config, dict) else False
 
+    database_name = os.environ.get('ICEBERG_DATABASE')
+    if not database_name:
+        raise ValueError("ICEBERG_DATABASE environment variable is required")
+
     params = {
         "QueryString": query,
-        "QueryExecutionContext": {"Database": "phebee"},
+        "QueryExecutionContext": {"Database": database_name},
         "WorkGroup": "primary"
     }
 
@@ -429,9 +433,13 @@ def create_evidence_record(
         managed_config = wg_cfg.get("ManagedQueryResultsConfiguration", {})
         managed = managed_config.get("Enabled", False) if isinstance(managed_config, dict) else False
 
+        database_name = os.environ.get('ICEBERG_DATABASE')
+        if not database_name:
+            raise ValueError("ICEBERG_DATABASE environment variable is required")
+
         params = {
             "QueryString": insert_query,
-            "QueryExecutionContext": {"Database": "phebee"},
+            "QueryExecutionContext": {"Database": database_name},
             "WorkGroup": "primary"
         }
 
@@ -580,9 +588,13 @@ def delete_evidence_record(evidence_id: str) -> bool:
         managed_config = wg_cfg.get("ManagedQueryResultsConfiguration", {})
         managed = managed_config.get("Enabled", False) if isinstance(managed_config, dict) else False
 
+        database_name = os.environ.get('ICEBERG_DATABASE')
+        if not database_name:
+            raise ValueError("ICEBERG_DATABASE environment variable is required")
+
         params = {
             "QueryString": delete_query,
-            "QueryExecutionContext": {"Database": "phebee"},
+            "QueryExecutionContext": {"Database": database_name},
             "WorkGroup": "primary"
         }
 
