@@ -12,7 +12,7 @@ def lambda_handler(event, context):
     
     try:
         run_id = event.get('run_id')
-        ttl_prefix = event.get('ttl_prefix')  # s3://bucket/run_id/neptune/
+        ttl_prefix = event.get('ttl_prefix')  # s3://bucket/runs/run_id/neptune/
         load_type = event.get('load_type', 'all')  # 'projects', 'subjects', or 'all'
         
         if not run_id:

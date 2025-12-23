@@ -217,7 +217,7 @@ def lambda_handler(event, context):
     
     # Upload subjects TTL
     subjects_ttl_content = '\n'.join(subjects_ttl)
-    subjects_key = f"{run_id}/neptune/subjects/page_{page_number}.ttl"
+    subjects_key = f"runs/{run_id}/neptune/subjects/page_{page_number}.ttl"
     s3.put_object(
         Bucket=bucket,
         Key=subjects_key,
@@ -255,7 +255,7 @@ def lambda_handler(event, context):
         
         # Upload project TTL
         project_ttl_content = '\n'.join(project_ttl)
-        project_key = f"{run_id}/neptune/projects/{project_id}/page_{page_number}.ttl"
+        project_key = f"runs/{run_id}/neptune/projects/{project_id}/page_{page_number}.ttl"
         s3.put_object(
             Bucket=bucket,
             Key=project_key,
@@ -273,6 +273,6 @@ def lambda_handler(event, context):
             'page_number': page_number,
             'ttl_files': ttl_files,
             'record_count': record_count,
-            'ttl_prefix': f"s3://{bucket}/{run_id}/neptune/"
+            'ttl_prefix': f"s3://{bucket}/runs/{run_id}/neptune/"
         }
     }
