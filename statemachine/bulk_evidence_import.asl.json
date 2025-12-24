@@ -142,7 +142,7 @@
         "FunctionName": "${StartNeptuneBulkLoadFunction}",
         "Payload": {
           "run_id.$": "$.run_id",
-          "ttl_prefix.$": "States.Format('s3://${PheBeeBucketName}/{}/neptune/', $.run_id)",
+          "ttl_prefix.$": "States.Format('s3://${PheBeeBucketName}/runs/{}/neptune/', $.run_id)",
           "load_type": "projects"
         }
       },
@@ -195,7 +195,7 @@
         "FunctionName": "${StartNeptuneBulkLoadFunction}",
         "Payload": {
           "run_id.$": "$.run_id",
-          "ttl_prefix.$": "States.Format('s3://${PheBeeBucketName}/{}/neptune/', $.run_id)",
+          "ttl_prefix.$": "States.Format('s3://${PheBeeBucketName}/runs/{}/neptune/', $.run_id)",
           "load_type": "subjects"
         }
       },
