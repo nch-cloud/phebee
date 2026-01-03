@@ -16,7 +16,7 @@ def lambda_handler(event, context):
         database = event['database']
         table = event['table']
         bucket = event['bucket']
-        page_size = event.get('page_size', 10000)  # Records per page
+        page_size = event.get('page_size', 5000)  # Records per page (reduced for large imports)
         
         athena = boto3.client('athena')
         

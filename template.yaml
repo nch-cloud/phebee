@@ -1151,7 +1151,7 @@ Resources:
       FunctionName: !Sub ${AppName}-GenerateTTLFromIcebergFunction
       CodeUri: functions
       Handler: generate_ttl_from_iceberg.lambda_handler
-      MemorySize: 512
+      MemorySize: 1024
       Timeout: 900
       Layers:
         - !Ref PheBeeUtilsLayer
