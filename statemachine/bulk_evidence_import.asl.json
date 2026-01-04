@@ -100,11 +100,7 @@
             }
           }
         },
-        "Name.$": "States.Format('GenerateTTL-{}', $.run_id)",
-        "Tags": {
-          "run_id.$": "$.run_id",
-          "purpose": "ttl-generation"
-        }
+        "Name.$": "States.Format('GenerateTTL-{}', $.run_id)"
       },
       "ResultPath": "$.ttl_generation",
       "Next": "StartProjectLoad",
