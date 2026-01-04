@@ -12,9 +12,9 @@ from pyspark.sql.functions import broadcast
 from collections import defaultdict
 import uuid
 
-def get_subject_mappings(dynamodb_table_name, run_id):
+def get_subject_mappings(dynamodb_table_name, run_id, region):
     """Load subject mappings from DynamoDB and return as dict"""
-    dynamodb = boto3.resource('dynamodb')
+    dynamodb = boto3.resource('dynamodb', region_name=region)
     table = dynamodb.Table(dynamodb_table_name)
     
     # Get subject mappings for this run
@@ -35,12 +35,12 @@ def get_subject_mappings(dynamodb_table_name, run_id):
     
     return mapping_dict
 
-def write_ttl_partition(partition_iterator, broadcast_mappings, bucket, run_id):
+def write_ttl_partition(partition_iterator, broadcast_mappings, bucket, run_id, region):
     """Process a partition and write TTL files to S3"""
     import boto3
     from collections import defaultdict
     
-    s3 = boto3.client('s3')
+    s3 = boto3.client('s3', region_name=region)
     partition_id = str(uuid.uuid4())[:8]  # Short unique ID for this partition
     
     subjects_ttl = []
@@ -107,8 +107,8 @@ def write_ttl_partition(partition_iterator, broadcast_mappings, bucket, run_id):
     print(f"Partition {partition_id} processed {record_count} records")
 
 def main():
-    if len(sys.argv) != 6:
-        print("Usage: generate_ttl_from_iceberg_emr.py <run_id> <database> <table> <bucket> <dynamodb_table>")
+    if len(sys.argv) != 7:
+        print("Usage: generate_ttl_from_iceberg_emr.py <run_id> <database> <table> <bucket> <dynamodb_table> <region>")
         sys.exit(1)
     
     run_id = sys.argv[1]
@@ -116,6 +116,7 @@ def main():
     table = sys.argv[3]
     bucket = sys.argv[4]
     dynamodb_table = sys.argv[5]
+    region = sys.argv[6]
     
     print(f"Starting TTL generation for run_id: {run_id}")
     print(f"Reading from: {database}.{table}")
@@ -132,7 +133,7 @@ def main():
     try:
         # Load subject mappings from DynamoDB
         print("Loading subject mappings from DynamoDB...")
-        subject_mappings = get_subject_mappings(dynamodb_table, run_id)
+        subject_mappings = get_subject_mappings(dynamodb_table, run_id, region)
         print(f"Loaded {len(subject_mappings)} subject mappings")
         
         # Broadcast the mappings to all executors
@@ -153,7 +154,7 @@ def main():
         # Generate TTL files using foreachPartition
         print("Generating TTL files...")
         filtered_df.foreachPartition(
-            lambda partition: write_ttl_partition(partition, broadcast_mappings, bucket, run_id)
+            lambda partition: write_ttl_partition(partition, broadcast_mappings, bucket, run_id, region)
         )
         
         print(f"TTL generation completed for run_id: {run_id}")
@@ -167,7 +168,7 @@ def main():
         }
         
         # Write result to S3 for Step Function to pick up
-        s3 = boto3.client('s3')
+        s3 = boto3.client('s3', region_name=region)
         result_key = f"runs/{run_id}/ttl_generation_result.json"
         s3.put_object(
             Bucket=bucket,

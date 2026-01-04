@@ -1329,6 +1329,7 @@ Resources:
         EMRExecutionRoleArn: !GetAtt EMRExecutionRole.Arn
         PheBeeBucketName: !Ref PheBeeBucket
         DynamoDBTableName: !Ref DynamoDBTable
+        AWSRegion: !Ref AWS::Region
         IcebergDatabase: !Ref IcebergDatabase
         IcebergEvidenceTable: !Ref IcebergEvidenceTable
         NeptuneClusterEndpoint: !GetAtt PheBeeNeptuneCluster.Endpoint
