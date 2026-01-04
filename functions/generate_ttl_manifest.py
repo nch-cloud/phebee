@@ -79,23 +79,20 @@ def lambda_handler(event, context):
                 }
             }
         
-        # Calculate proper pagination
-        total_pages = math.ceil(total_count / page_size)
+        # Calculate pages based on bucket distribution (64 buckets max)
+        total_pages = min(64, total_count // 1000 + 1)  # At least 1000 records per page, max 64 pages
         
-        # Generate page manifests
+        # Generate page manifests using bucket-based distribution
         pages = []
         for page_num in range(total_pages):
-            # Athena doesn't support OFFSET, so we'll use row_number() for pagination
+            # Each page gets one bucket
+            bucket_num = page_num
+            
             page_query = f"""
-        WITH numbered_rows AS (
-            SELECT subject_id, term_iri, termlink_id, qualifiers,
-                   ROW_NUMBER() OVER (ORDER BY subject_id, term_iri) as row_num
-            FROM {database}.{table}
-            WHERE run_id = '{run_id}'
-        )
         SELECT subject_id, term_iri, termlink_id, qualifiers
-        FROM numbered_rows
-        WHERE row_num > {page_num * page_size} AND row_num <= {(page_num + 1) * page_size}
+        FROM {database}.{table}
+        WHERE run_id = '{run_id}'
+        AND bucket(64, subject_id) = {bucket_num}
         ORDER BY subject_id, term_iri
         """
             

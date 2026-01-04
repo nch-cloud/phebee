@@ -105,7 +105,7 @@
     "GenerateTTLFromPages": {
       "Type": "Map",
       "ItemsPath": "$.ttl_manifest.Payload.body.page_numbers",
-      "MaxConcurrency": 50,
+      "MaxConcurrency": 15,
       "ResultPath": null,
       "Next": "StartProjectLoad",
       "Catch": [{
