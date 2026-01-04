@@ -1328,6 +1328,7 @@ Resources:
         EMRServerlessApplicationId: !Ref EMRServerlessApplication
         EMRExecutionRoleArn: !GetAtt EMRExecutionRole.Arn
         PheBeeBucketName: !Ref PheBeeBucket
+        DynamoDBTableName: !Ref DynamoDBTable
         IcebergDatabase: !Ref IcebergDatabase
         IcebergEvidenceTable: !Ref IcebergEvidenceTable
         NeptuneClusterEndpoint: !GetAtt PheBeeNeptuneCluster.Endpoint

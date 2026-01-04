@@ -79,20 +79,18 @@ def lambda_handler(event, context):
                 }
             }
         
-        # Calculate pages based on bucket distribution (64 buckets max)
+        # Calculate pages based on hash distribution (64 buckets max)
         total_pages = min(64, total_count // 1000 + 1)  # At least 1000 records per page, max 64 pages
         
-        # Generate page manifests using bucket-based distribution
+        # Generate page manifests using hash-based distribution
         pages = []
         for page_num in range(total_pages):
-            # Each page gets one bucket
-            bucket_num = page_num
-            
+            # Each page gets records where hash(subject_id) mod 64 equals page_num
             page_query = f"""
         SELECT subject_id, term_iri, termlink_id, qualifiers
         FROM {database}.{table}
         WHERE run_id = '{run_id}'
-        AND bucket(64, subject_id) = {bucket_num}
+        AND MOD(xxhash64(subject_id), 64) = {page_num}
         ORDER BY subject_id, term_iri
         """
             
