@@ -92,8 +92,13 @@ def lambda_handler(event, context):
         
         # Create new mappings for missing pairs
         missing_pairs = project_subject_pairs - set(subject_mapping.keys())
+        existing_count = len(subject_mapping)
+        new_count = len(missing_pairs)
+        
+        print(f"Found {existing_count} existing subject mappings")
+        print(f"Creating {new_count} new subject mappings")
+        
         if missing_pairs:
-            print(f"Creating {len(missing_pairs)} new subject mappings")
             
             # Batch write new mappings
             with table.batch_writer() as batch:
@@ -142,7 +147,10 @@ def lambda_handler(event, context):
                 'run_id': run_id,
                 'input_path': input_path,
                 'mapping_file': mapping_file,
-                'subject_count': len(subject_mapping)
+                'total_subjects': len(subject_mapping),
+                'existing_subjects': existing_count,
+                'new_subjects': new_count,
+                'unique_project_subject_pairs': len(project_subject_pairs)
             }
         }
         
