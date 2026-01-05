@@ -52,16 +52,24 @@ def lambda_handler(event, context):
         
         # Extract unique project-subject pairs from all files
         project_subject_pairs = set()
+        total_records = 0
+        
         for key in jsonl_files:
             obj = s3.get_object(Bucket=bucket, Key=key)
             content = obj['Body'].read().decode('utf-8')
             
             for line in content.strip().split('\n'):
                 if line.strip():
+                    total_records += 1
                     record = json.loads(line)
                     project_subject_pairs.add((record['project_id'], record['project_subject_id']))
         
-        print(f"Found {len(project_subject_pairs)} unique subject pairs")
+        unique_pairs = len(project_subject_pairs)
+        duplicate_pairs = total_records - unique_pairs
+        
+        print(f"Processed {total_records} total records")
+        print(f"Found {unique_pairs} unique subject pairs")
+        print(f"Filtered out {duplicate_pairs} duplicate pairs")
         
         # Resolve subject mappings
         subject_mapping = {}
