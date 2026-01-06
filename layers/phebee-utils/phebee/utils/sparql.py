@@ -597,37 +597,6 @@ def split_predicate(pred: str):
     ).lower()
 
 
-def get_term_labels_batch(term_iris: List[str], hpo_version: str = None, mondo_version: str = None, batch_size: int = 100) -> Dict[str, str]:
-    """Get labels for multiple terms in batched queries to avoid size limits"""
-    if not term_iris:
-        return {}
-    
-    all_labels = {}
-    
-    # Process in batches to avoid query size limits
-    for i in range(0, len(term_iris), batch_size):
-        batch = term_iris[i:i + batch_size]
-        values_clause = " ".join([f"<{iri}>" for iri in batch])
-        
-        query = f"""
-        SELECT ?term ?label WHERE {{
-            VALUES ?term {{ {values_clause} }}
-            ?term rdfs:label ?label .
-            FILTER(lang(?label) = "" || lang(?label) = "en")
-        }}
-        """
-        
-        try:
-            results = execute_sparql_query(query)
-            batch_labels = {row['term']['value']: row['label']['value'] for row in results}
-            all_labels.update(batch_labels)
-        except Exception as e:
-            logger.warning(f"Failed to get labels for batch {i//batch_size + 1}: {e}")
-            continue
-    
-    return all_labels
-
-
 def get_term_links_with_counts(
     subject_id: str,
     encounter_id: str | None = None,
@@ -730,9 +699,9 @@ def get_term_links_with_counts(
         links = list(term_groups.values())
         
         # Add term label lookup using hpo_version/mondo_version
-        if (hpo_version or mondo_version) and links:
+        if hpo_version and mondo_version and links:
             unique_terms = list(set(group["term_iri"] for group in links))
-            term_labels = get_term_labels_batch(unique_terms, hpo_version, mondo_version)
+            term_labels = get_term_labels(unique_terms, hpo_version, mondo_version)
             
             # Update links with labels
             for link in links:
