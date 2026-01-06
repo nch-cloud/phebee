@@ -1810,6 +1810,7 @@ Resources:
         - Arn: !GetAtt UpdateHPOSFN.Arn
           Id: "UpdateHPO"
           RoleArn: !GetAtt UpdateOntologyInvokeRole.Arn
+          Input: '{"test": false}'
   
   UpdateMondoScheduleRule:
     Type: AWS::Events::Rule
@@ -1822,6 +1823,7 @@ Resources:
         - Arn: !GetAtt UpdateMondoSFN.Arn
           Id: "UpdateMondo"
           RoleArn: !GetAtt UpdateOntologyInvokeRole.Arn
+          Input: '{"test": false}'
 
   UpdateECOScheduleRule:
     Type: AWS::Events::Rule
@@ -1834,6 +1836,7 @@ Resources:
         - Arn: !GetAtt UpdateECOSFN.Arn
           Id: "UpdateECO"
           RoleArn: !GetAtt UpdateOntologyInvokeRole.Arn
+          Input: '{"test": false}'
 
 Outputs:
   UpdateHPOSFNArn:
