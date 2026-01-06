@@ -30,7 +30,7 @@ import time
 import os
 from collections import defaultdict
 from .hash import generate_termlink_hash
-from typing import List, Optional, Sequence
+from typing import List, Optional, Sequence, Dict
 try:
     from aws_lambda_powertools import Metrics, Logger, Tracer
     logger = Logger()
