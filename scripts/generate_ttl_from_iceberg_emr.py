@@ -79,9 +79,7 @@ def write_ttl_partition(partition_iterator, broadcast_mappings, bucket, run_id, 
     partition_id = str(uuid.uuid4())[:8]  # Short unique ID for this partition
     
     subjects_ttl = []
-    projects_ttl = defaultdict(list)
     declared_subjects = set()  # Track declared subjects to avoid duplicates
-    declared_projects = defaultdict(set)  # Track declared projects per project_id
     declared_termlinks = set()  # Track declared termlinks to avoid duplicates
     record_count = 0
     
@@ -136,33 +134,6 @@ def write_ttl_partition(partition_iterator, broadcast_mappings, bucket, run_id, 
                     # Log and skip any problematic qualifiers
                     print(f"Warning: Failed to process qualifier {qualifier}: {e}")
                     continue
-        
-        # Generate projects TTL
-        if row.subject_id in subject_mappings:
-            mapping = subject_mappings[row.subject_id]
-            project_id = mapping['project_id']
-            project_subject_id = mapping['project_subject_id']
-            
-            project_uri_base = f"http://ods.nationwidechildrens.org/phebee/projects/{project_id}"
-            project_uri = f"<{project_uri_base}>"
-            project_subject_id_iri = f"<{project_uri_base}/{project_subject_id}>"
-            
-            # Project type declaration (only once per project)
-            if project_id not in declared_projects:
-                projects_ttl[project_id].append(f"{project_uri} rdf:type phebee:Project .")
-                declared_projects[project_id] = set()
-            
-            # Project-subject relationships (only once per subject-project pair)
-            subject_project_key = f"{row.subject_id}#{project_subject_id}"
-            if subject_project_key not in declared_projects[project_id]:
-                # Escape special characters in project_subject_id for TTL
-                escaped_project_subject_id = project_subject_id.replace('"', '\\"').replace('\\', '\\\\')
-                
-                projects_ttl[project_id].append(f"{subject_uri} phebee:hasProjectSubjectId {project_subject_id_iri} .")
-                projects_ttl[project_id].append(f"{project_subject_id_iri} rdf:type phebee:ProjectSubjectId .")
-                projects_ttl[project_id].append(f"{project_subject_id_iri} phebee:hasProject {project_uri} .")
-                projects_ttl[project_id].append(f"{project_subject_id_iri} rdfs:label \"{escaped_project_subject_id}\" .")
-                declared_projects[project_id].add(subject_project_key)
     
     if record_count == 0:
         return  # Empty partition
@@ -185,26 +156,6 @@ def write_ttl_partition(partition_iterator, broadcast_mappings, bucket, run_id, 
             ContentType='text/turtle'
         )
         print(f"Wrote subjects TTL: s3://{bucket}/{subjects_key} ({len(subjects_ttl)} triples)")
-    
-    # Write projects TTL
-    for project_id, project_triples in projects_ttl.items():
-        if project_triples:
-            # Add TTL prefixes
-            ttl_prefixes = [
-                "@prefix phebee: <http://ods.nationwidechildrens.org/phebee#> .",
-                "@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .",
-                "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .",
-                ""
-            ]
-            project_content = '\n'.join(ttl_prefixes + project_triples)
-            project_key = f"runs/{run_id}/neptune/projects/{project_id}/partition_{partition_id}.ttl"
-            s3.put_object(
-                Bucket=bucket,
-                Key=project_key,
-                Body=project_content.encode('utf-8'),
-                ContentType='text/turtle'
-            )
-            print(f"Wrote project TTL: s3://{bucket}/{project_key} ({len(project_triples)} triples)")
     
     print(f"Partition {partition_id} processed {record_count} records")
 
@@ -291,6 +242,57 @@ def main():
         filtered_df.foreachPartition(
             lambda partition: write_ttl_partition(partition, broadcast_mappings, bucket, run_id, region)
         )
+        
+        # Generate subject-only TTL for all mapped subjects (driver-level, runs once)
+        print(f"Generating subject and project nodes for all {len(subject_mappings)} mapped subjects...")
+        all_subjects_ttl = [
+            "@prefix phebee: <http://ods.nationwidechildrens.org/phebee#> .",
+            "@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .",
+            "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .",
+            ""
+        ]
+        
+        declared_projects = set()
+        
+        for subject_id, mapping in subject_mappings.items():
+            project_id = mapping['project_id']
+            project_subject_id = mapping['project_subject_id']
+            
+            # Subject declaration
+            subject_uri = f"<http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}>"
+            all_subjects_ttl.append(f"{subject_uri} rdf:type phebee:Subject .")
+            
+            # Project relationships
+            project_uri_base = f"http://ods.nationwidechildrens.org/phebee/projects/{project_id}"
+            project_uri = f"<{project_uri_base}>"
+            project_subject_id_iri = f"<{project_uri_base}/{project_subject_id}>"
+            
+            # Project type declaration (only once per project)
+            if project_id not in declared_projects:
+                all_subjects_ttl.append(f"{project_uri} rdf:type phebee:Project .")
+                declared_projects.add(project_id)
+            
+            # Project-subject relationships
+            escaped_project_subject_id = project_subject_id.replace('"', '\\"').replace('\\', '\\\\')
+            all_subjects_ttl.append(f"{subject_uri} phebee:hasProjectSubjectId {project_subject_id_iri} .")
+            all_subjects_ttl.append(f"{project_subject_id_iri} rdf:type phebee:ProjectSubjectId .")
+            all_subjects_ttl.append(f"{project_subject_id_iri} phebee:hasProject {project_uri} .")
+            all_subjects_ttl.append(f"{project_subject_id_iri} rdfs:label \"{escaped_project_subject_id}\" .")
+        
+        # Write all-subjects TTL file to projects folder organized by project_id
+        s3 = boto3.client('s3', region_name=region)
+        subjects_content = '\n'.join(all_subjects_ttl)
+        
+        # Assuming all subjects are in the same project (mrn) - could be made more dynamic
+        project_id = "mrn"  # This should match the project_id from your data
+        subjects_key = f"runs/{run_id}/neptune/projects/{project_id}/all_subjects.ttl"
+        s3.put_object(
+            Bucket=bucket,
+            Key=subjects_key,
+            Body=subjects_content.encode('utf-8'),
+            ContentType='text/turtle'
+        )
+        print(f"Wrote all subjects TTL: s3://{bucket}/{subjects_key} ({len(subject_mappings)} subjects)")
         
         print(f"TTL generation completed for run_id: {run_id}")
         
