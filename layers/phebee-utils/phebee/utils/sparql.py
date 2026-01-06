@@ -700,10 +700,15 @@ def get_term_links_with_counts(
         
         # Add term label lookup using hpo_version/mondo_version
         logger.info(f"Label lookup params: hpo_version={hpo_version}, mondo_version={mondo_version}, links_count={len(links)}")
-        if hpo_version and mondo_version and links:
+        if (hpo_version or mondo_version) and links:
             unique_terms = list(set(group["term_iri"] for group in links))
             logger.info(f"Looking up labels for {len(unique_terms)} unique terms")
-            term_labels = get_term_labels(unique_terms, hpo_version, mondo_version)
+            
+            # Use available versions, default missing ones to empty string
+            hpo_ver = hpo_version or ""
+            mondo_ver = mondo_version or ""
+            
+            term_labels = get_term_labels(unique_terms, hpo_ver, mondo_ver)
             logger.info(f"Got {len(term_labels)} term labels")
             
             # Update links with labels
