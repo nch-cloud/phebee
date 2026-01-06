@@ -394,7 +394,11 @@ def create_evidence_record(
     text_annotation_value = "NULL"
     if record.get('text_annotation'):
         ta = record['text_annotation']
-        text_annotation_value = f"ROW({ta.get('span_start', 'NULL')}, {ta.get('span_end', 'NULL')}, '{ta.get('text_span', '')}', {ta.get('confidence_score', 'NULL')})"
+        metadata_json = ta.get('metadata', '{}')
+        if isinstance(metadata_json, dict):
+            import json
+            metadata_json = json.dumps(metadata_json)
+        text_annotation_value = f"ROW({ta.get('span_start', 'NULL')}, {ta.get('span_end', 'NULL')}, '{metadata_json.replace(\"'\", \"''\")}')\"
     
     qualifiers_value = "NULL"
     if record.get('qualifiers'):
@@ -712,10 +716,15 @@ def get_evidence_for_termlink(
                                         # Convert numeric fields to appropriate types
                                         if key in ['span_start', 'span_end'] and value.isdigit():
                                             result[key] = int(value)
-                                        elif key == 'confidence_score':
-                                            try:
-                                                result[key] = float(value)
-                                            except ValueError:
+                                        elif key == 'metadata':
+                                            # Parse JSON metadata if it's a string
+                                            if isinstance(value, str):
+                                                try:
+                                                    import json
+                                                    result[key] = json.loads(value)
+                                                except json.JSONDecodeError:
+                                                    result[key] = value
+                                            else:
                                                 result[key] = value
                                         else:
                                             result[key] = value

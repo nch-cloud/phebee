@@ -279,8 +279,7 @@ def extract_evidence_records(data: List[dict], subject_map: Dict[Tuple[str, str]
                 'text_annotation': {
                     'span_start': evidence.get('span_start'),
                     'span_end': evidence.get('span_end'),
-                    'text_span': None,
-                    'confidence_score': None
+                    'metadata': '{}'
                 },
                 'qualifiers': [
                     {'qualifier_type': k, 'qualifier_value': str(v)}
@@ -321,8 +320,7 @@ def write_to_iceberg(spark, evidence_records: List[dict], database: str, table: 
         StructField("text_annotation", StructType([
             StructField("span_start", IntegerType(), True),
             StructField("span_end", IntegerType(), True),
-            StructField("text_span", StringType(), True),
-            StructField("confidence_score", DoubleType(), True)
+            StructField("metadata", StringType(), True)
         ]), True),
         StructField("qualifiers", ArrayType(StructType([
             StructField("qualifier_type", StringType(), True),
@@ -478,8 +476,7 @@ def main():
          .withColumn("text_annotation", struct(
             col("span_start"),
             col("span_end"),
-            lit("").alias("text_span"),
-            lit(1.0).alias("confidence_score")
+            lit("{}").alias("metadata")
          )) \
          .withColumn("qualifiers", array(
             struct(
