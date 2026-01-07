@@ -394,11 +394,11 @@ def create_evidence_record(
     text_annotation_value = "NULL"
     if record.get('text_annotation'):
         ta = record['text_annotation']
-        metadata_json = ta.get('metadata', '{}')
-        if isinstance(metadata_json, dict):
+        annotation_metadata_json = ta.get('annotation_metadata', '{}')
+        if isinstance(annotation_metadata_json, dict):
             import json
-            metadata_json = json.dumps(metadata_json)
-        text_annotation_value = f"ROW({ta.get('span_start', 'NULL')}, {ta.get('span_end', 'NULL')}, '{metadata_json.replace(\"'\", \"''\")}')\"
+            annotation_metadata_json = json.dumps(annotation_metadata_json)
+        text_annotation_value = f"ROW({ta.get('span_start', 'NULL')}, {ta.get('span_end', 'NULL')}, '{annotation_metadata_json.replace(\"'\", \"''\")}')\"
     
     qualifiers_value = "NULL"
     if record.get('qualifiers'):
@@ -716,7 +716,7 @@ def get_evidence_for_termlink(
                                         # Convert numeric fields to appropriate types
                                         if key in ['span_start', 'span_end'] and value.isdigit():
                                             result[key] = int(value)
-                                        elif key == 'metadata':
+                                        elif key == 'annotation_metadata':
                                             # Parse JSON metadata if it's a string
                                             if isinstance(value, str):
                                                 try:

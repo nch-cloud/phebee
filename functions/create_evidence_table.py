@@ -75,7 +75,7 @@ def create_table(database: str, table: str, s3_location: str, query_results_s3: 
         text_annotation struct<
             span_start: int,
             span_end: int,
-            metadata: string
+            annotation_metadata: string
         >,
         qualifiers array<struct<
             qualifier_type: string,
