@@ -454,7 +454,7 @@ def get_subjects(
         PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
         PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
 
-        SELECT ?subjectIRI ?termlink ?term
+        SELECT ?subjectIRI ?termlink ?term ?qualifier
         WHERE {{
             VALUES ?subjectIRI {{ {subject_values} }}
             
@@ -462,6 +462,9 @@ def get_subjects(
                 ?subjectIRI phebee:hasTermLink ?termlink .
                 ?termlink rdf:type phebee:TermLink ;
                           phebee:hasTerm ?term .
+                OPTIONAL {{
+                    ?termlink phebee:hasQualifyingTerm ?qualifier .
+                }}
             }}
         }}
         ORDER BY str(?subjectIRI) str(?termlink)"""
@@ -475,13 +478,19 @@ def get_subjects(
             subject_iri = binding["subjectIRI"]["value"]
             termlink_iri = binding["termlink"]["value"]
             term_iri = binding["term"]["value"]
+            qualifier_iri = binding.get("qualifier", {}).get("value")
             
             if subject_iri in subjects_map:
+                # Initialize termlink if not exists
                 if termlink_iri not in subjects_map[subject_iri]["term_links"]:
                     subjects_map[subject_iri]["term_links"][termlink_iri] = {
                         "term_iri": term_iri,
                         "qualifiers": []
                     }
+                
+                # Add qualifier if present
+                if qualifier_iri and qualifier_iri not in subjects_map[subject_iri]["term_links"][termlink_iri]["qualifiers"]:
+                    subjects_map[subject_iri]["term_links"][termlink_iri]["qualifiers"].append(qualifier_iri)
     
     # Get ordered subject IRIs for consistent output
     subject_iris = [binding["subjectIRI"]["value"] for binding in subject_bindings]

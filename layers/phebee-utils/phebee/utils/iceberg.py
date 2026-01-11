@@ -148,29 +148,30 @@ def query_iceberg_evidence(query: str) -> List[Dict[str, Any]]:
     Returns:
         List of result rows as dictionaries
     """
+    logger.info(f"query_iceberg_evidence called with query: {query}")
     
-    athena_client = boto3.client('athena')
-    
-    # Check if primary workgroup is managed
-    wg_cfg = athena_client.get_work_group(WorkGroup="primary")["WorkGroup"]["Configuration"]
-    managed_config = wg_cfg.get("ManagedQueryResultsConfiguration", {})
-    managed = managed_config.get("Enabled", False) if isinstance(managed_config, dict) else False
-
-    database_name = os.environ.get('ICEBERG_DATABASE')
-    if not database_name:
-        raise ValueError("ICEBERG_DATABASE environment variable is required")
-
-    params = {
-        "QueryString": query,
-        "QueryExecutionContext": {"Database": database_name},
-        "WorkGroup": "primary"
-    }
-
-    if not managed:
-        bucket_name = os.environ.get('PHEBEE_BUCKET_NAME')
-        params["ResultConfiguration"] = {"OutputLocation": f"s3://{bucket_name}/athena-results/"}
-
     try:
+        athena_client = boto3.client('athena')
+        
+        # Check if primary workgroup is managed
+        wg_cfg = athena_client.get_work_group(WorkGroup="primary")["WorkGroup"]["Configuration"]
+        managed_config = wg_cfg.get("ManagedQueryResultsConfiguration", {})
+        managed = managed_config.get("Enabled", False) if isinstance(managed_config, dict) else False
+
+        database_name = os.environ.get('ICEBERG_DATABASE')
+        if not database_name:
+            raise ValueError("ICEBERG_DATABASE environment variable is required")
+
+        params = {
+            "QueryString": query,
+            "QueryExecutionContext": {"Database": database_name},
+            "WorkGroup": "primary"
+        }
+
+        if not managed:
+            bucket_name = os.environ.get('PHEBEE_BUCKET_NAME')
+            params["ResultConfiguration"] = {"OutputLocation": f"s3://{bucket_name}/athena-results/"}
+
         # Start query execution
         response = athena_client.start_query_execution(**params)
         
@@ -374,8 +375,9 @@ def create_evidence_record(
         },
         "text_annotation": {
             "span_start": span_start,
-            "span_end": span_end
-        } if span_start is not None or span_end is not None else None,
+            "span_end": span_end,
+            "annotation_metadata": "{}"
+        },
         "qualifiers": [
             {"qualifier_type": q, "qualifier_value": "true"} for q in (qualifiers or [])
         ] if qualifiers else None
@@ -395,10 +397,16 @@ def create_evidence_record(
     if record.get('text_annotation'):
         ta = record['text_annotation']
         annotation_metadata_json = ta.get('annotation_metadata', '{}')
-        if isinstance(annotation_metadata_json, dict):
-            import json
+        if isinstance(annotation_metadata_json, dict):            
             annotation_metadata_json = json.dumps(annotation_metadata_json)
-        text_annotation_value = f"ROW({ta.get('span_start', 'NULL')}, {ta.get('span_end', 'NULL')}, '{annotation_metadata_json.replace(\"'\", \"''\")}')\"
+        # Escape single quotes for SQL
+        escaped_metadata = annotation_metadata_json.replace("'", "''")
+        
+        # Handle NULL values properly for SQL
+        span_start_sql = ta.get('span_start') if ta.get('span_start') is not None else 'NULL'
+        span_end_sql = ta.get('span_end') if ta.get('span_end') is not None else 'NULL'
+        
+        text_annotation_value = f"ROW({span_start_sql}, {span_end_sql}, '{escaped_metadata}')"
     
     qualifiers_value = "NULL"
     if record.get('qualifiers'):
@@ -720,7 +728,6 @@ def get_evidence_for_termlink(
                                             # Parse JSON metadata if it's a string
                                             if isinstance(value, str):
                                                 try:
-                                                    import json
                                                     result[key] = json.loads(value)
                                                 except json.JSONDecodeError:
                                                     result[key] = value
@@ -777,9 +784,18 @@ def get_subject_term_info(
     Returns:
         Dict with term details and term_links array, or None if not found
     """
-    evidence_data = get_evidence_for_termlink(subject_id, term_iri, qualifiers)
+    logger.info(f"get_subject_term_info called with subject_id={subject_id}, term_iri={term_iri}, qualifiers={qualifiers}")
+    
+    try:
+        evidence_data = get_evidence_for_termlink(subject_id, term_iri, qualifiers)
+        logger.info(f"get_evidence_for_termlink returned {len(evidence_data) if evidence_data else 0} records")
+    except Exception as e:
+        logger.error(f"Exception in get_evidence_for_termlink: {e}", exc_info=True)
+        return None
     
     if not evidence_data:
+        logger.info("No evidence data found, returning None")
+        return None
         return None
     
     # Create deterministic termlink ID using only true qualifiers

@@ -132,9 +132,41 @@ def test_bulk_import_success_event(physical_resources, test_project_id):
         # Run bulk upload (this will trigger the Step Function)
         run_id, domain_load_id, prov_load_id = bulk_upload_run(test_data, physical_resources)
         
-        # Poll for Step Function completion and event firing
+        # Wait for Step Function to complete first
+        sfn_client = boto3.client("stepfunctions")
+        sfn_arn = physical_resources["BulkImportStateMachine"]
+        
+        print(f"Waiting for Step Function to complete for run_id: {run_id}")
+        for attempt in range(10):  # Wait up to 10 minutes for Step Function
+            time.sleep(60)  # Wait 1 minute between checks
+            
+            # Check Step Function status
+            executions = sfn_client.list_executions(
+                stateMachineArn=sfn_arn,
+                statusFilter="SUCCEEDED",
+                maxResults=10
+            )
+            
+            our_execution = next((e for e in executions["executions"] if run_id in e.get("name", "")), None)
+            if our_execution:
+                print(f"✓ Step Function completed successfully for run_id: {run_id}")
+                break
+        else:
+            # Check if it failed
+            executions = sfn_client.list_executions(
+                stateMachineArn=sfn_arn,
+                statusFilter="FAILED", 
+                maxResults=10
+            )
+            failed_execution = next((e for e in executions["executions"] if run_id in e.get("name", "")), None)
+            if failed_execution:
+                pytest.fail(f"Step Function failed for run_id: {run_id}")
+            else:
+                pytest.fail(f"Step Function did not complete within 10 minutes for run_id: {run_id}")
+        
+        # Now poll for the event (should arrive shortly after Step Function completion)
         messages = None
-        for attempt in range(5):  # Poll for up to 5 minutes
+        for attempt in range(3):  # Poll for up to 3 minutes after Step Function completion
             time.sleep(60)  # Wait 1 minute between polls
             
             # Check SQS queue for event

@@ -13,7 +13,41 @@ from pyspark.sql.functions import broadcast
 from collections import defaultdict
 import uuid
 
-def get_subject_mappings(dynamodb_table_name, run_id, region):
+def get_subject_mappings_from_s3(bucket, subjects_path, region):
+    """Load subject mappings from S3 file and return as dict"""
+    s3 = boto3.client('s3', region_name=region)
+    
+    print(f"Loading subject mappings from: s3://{bucket}/{subjects_path}")
+    
+    try:
+        # Parse S3 path to get bucket and key
+        if subjects_path.startswith('s3://'):
+            # Remove s3:// prefix and split bucket/key
+            path_parts = subjects_path[5:].split('/', 1)
+            bucket = path_parts[0]
+            key = path_parts[1]
+        else:
+            # Assume it's just the key part
+            key = subjects_path
+        
+        response = s3.get_object(Bucket=bucket, Key=key)
+        subjects_data = json.loads(response['Body'].read().decode('utf-8'))
+        
+        # Convert to mapping dict format
+        mapping_dict = {}
+        for subject in subjects_data:
+            subject_id = subject['subject_id']
+            mapping_dict[subject_id] = {
+                'project_id': subject['project_id'],
+                'project_subject_id': subject['project_subject_id']
+            }
+        
+        print(f"Loaded {len(mapping_dict)} subject mappings from S3")
+        return mapping_dict
+        
+    except Exception as e:
+        print(f"Error loading subject mappings from S3: {e}")
+        raise
     """Load subject mappings from DynamoDB and return as dict"""
     dynamodb = boto3.resource('dynamodb', region_name=region)
     table = dynamodb.Table(dynamodb_table_name)
@@ -161,14 +195,14 @@ def write_ttl_partition(partition_iterator, broadcast_mappings, bucket, run_id, 
 
 def main():
     if len(sys.argv) != 7:
-        print("Usage: generate_ttl_from_iceberg_emr.py <run_id> <database> <table> <bucket> <dynamodb_table> <region>")
+        print("Usage: generate_ttl_from_iceberg_emr.py <run_id> <database> <table> <bucket> <mapping_file> <region>")
         sys.exit(1)
     
     run_id = sys.argv[1]
     database = sys.argv[2]
     table = sys.argv[3]
     bucket = sys.argv[4]
-    dynamodb_table = sys.argv[5]
+    mapping_file = sys.argv[5]  # S3 path to subject_mapping.json from resolve step
     region = sys.argv[6]
     
     print(f"Starting TTL generation for run_id: {run_id}")
@@ -217,10 +251,17 @@ def main():
             except Exception as e:
                 print(f"Warning: Could not clean up {prefix}: {e}")
         
-        # Load subject mappings from DynamoDB
-        print("Loading subject mappings from DynamoDB...")
-        subject_mappings = get_subject_mappings(dynamodb_table, run_id, region)
+        # Load subject mappings from S3 (from resolve step)
+        print("Loading subject mappings from resolve step...")
+        subject_mappings = get_subject_mappings_from_s3(bucket, mapping_file, region)
         print(f"Loaded {len(subject_mappings)} subject mappings")
+        
+        # Debug: Show all subjects in mapping file
+        print("DEBUG: All subjects in mapping file:")
+        for subject_id, mapping in subject_mappings.items():
+            print(f"  {subject_id} -> {mapping['project_id']}/{mapping['project_subject_id']}")
+        print("DEBUG: End of mapping file subjects")
+        
         
         # Broadcast the mappings to all executors
         broadcast_mappings = spark.sparkContext.broadcast(subject_mappings)
@@ -245,6 +286,10 @@ def main():
         
         # Generate subject-only TTL for all mapped subjects (driver-level, runs once)
         print(f"Generating subject and project nodes for all {len(subject_mappings)} mapped subjects...")
+        print("DEBUG: Creating TTL for these subjects:")
+        for subject_id, mapping in subject_mappings.items():
+            print(f"  Creating TTL for {subject_id} ({mapping['project_subject_id']})")
+        
         all_subjects_ttl = [
             "@prefix phebee: <http://ods.nationwidechildrens.org/phebee#> .",
             "@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .",

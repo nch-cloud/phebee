@@ -240,7 +240,7 @@ def test_bulk_import_stepfunction(physical_resources, test_project_id):
         print(f"Execution output: {output}")
         
         # Check that TTL files were created (updated from N-Quads to TTL)
-        ttl_prefix = f"{run_id}/neptune/"
+        ttl_prefix = f"runs/{run_id}/neptune/"
         
         # List objects with the TTL prefix to find generated files
         response = s3_client.list_objects_v2(Bucket=s3_bucket, Prefix=ttl_prefix)
@@ -692,6 +692,18 @@ def test_ttl_generation_comprehensive(physical_resources, test_project_id):
             ],
             "row_num": 2,
             "batch_id": 0
+        },
+        {
+            "project_id": test_project_id,
+            "project_subject_id": "ttl-subject-003",
+            "term_iri": "http://purl.obolibrary.org/obo/HP_0001627",
+            "evidence": []
+        },
+        {
+            "project_id": test_project_id,
+            "project_subject_id": "ttl-subject-004", 
+            "term_iri": "http://purl.obolibrary.org/obo/HP_0002664",
+            "evidence": []
         }
     ]
     
@@ -750,7 +762,7 @@ def test_ttl_generation_comprehensive(physical_resources, test_project_id):
             time.sleep(30)
         
         # Validate TTL files
-        ttl_prefix = f"{run_id}/neptune/"
+        ttl_prefix = f"runs/{run_id}/neptune/"
         response = s3_client.list_objects_v2(Bucket=s3_bucket, Prefix=ttl_prefix)
         ttl_files = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.ttl')]
         
@@ -767,6 +779,17 @@ def test_ttl_generation_comprehensive(physical_resources, test_project_id):
             ttl_obj = s3_client.get_object(Bucket=s3_bucket, Key=ttl_file)
             ttl_content = ttl_obj['Body'].read().decode('utf-8')
             all_ttl_content += ttl_content + "\n"
+            
+            # Debug: Show content of each TTL file
+            print(f"\n--- Content of {ttl_file} ---")
+            lines = ttl_content.split('\n')
+            subject_lines = [line for line in lines if 'phebee:Subject' in line or 'phebee#Subject' in line or ':Subject' in line]
+            print(f"Subject declaration lines ({len(subject_lines)}):")
+            for line in subject_lines[:10]:  # Show first 10 subject lines
+                print(f"  {line}")
+            if len(subject_lines) > 10:
+                print(f"  ... and {len(subject_lines) - 10} more")
+            print(f"--- End of {ttl_file} ---\n")
         
         # Comprehensive TTL validation
         validate_ttl_structure(all_ttl_content, test_data)
@@ -776,8 +799,34 @@ def test_ttl_generation_comprehensive(physical_resources, test_project_id):
     finally:
         # Cleanup
         try:
+            # Delete input JSONL file
             s3_client.delete_object(Bucket=s3_bucket, Key=input_key)
-        except:
+            
+            # Delete all files created by this test run
+            cleanup_prefix = f"ttl-test-data/{run_id}/"
+            paginator = s3_client.get_paginator('list_objects_v2')
+            for page in paginator.paginate(Bucket=s3_bucket, Prefix=cleanup_prefix):
+                if 'Contents' in page:
+                    objects_to_delete = [{'Key': obj['Key']} for obj in page['Contents']]
+                    if objects_to_delete:
+                        s3_client.delete_objects(
+                            Bucket=s3_bucket,
+                            Delete={'Objects': objects_to_delete}
+                        )
+            
+            # Delete TTL output files
+            ttl_cleanup_prefix = f"runs/{run_id}/"
+            for page in paginator.paginate(Bucket=s3_bucket, Prefix=ttl_cleanup_prefix):
+                if 'Contents' in page:
+                    objects_to_delete = [{'Key': obj['Key']} for obj in page['Contents']]
+                    if objects_to_delete:
+                        s3_client.delete_objects(
+                            Bucket=s3_bucket,
+                            Delete={'Objects': objects_to_delete}
+                        )
+                        
+        except Exception as e:
+            print(f"Warning: Cleanup failed: {e}")
             pass
 
 
@@ -802,18 +851,33 @@ def validate_ttl_structure(ttl_content: str, test_data: list):
     subject_termlink_pairs = set()
     termlink_term_pairs = set()
     
+    print(f"\n--- Parsing TTL content ({len(lines)} lines) ---")
+    subject_declaration_lines = []
+    
     for line in lines:
         line = line.strip()
-        if 'phebee#Subject' in line or ':Subject' in line:
+        if 'phebee:Subject' in line or 'phebee#Subject' in line or ':Subject' in line:
+            subject_declaration_lines.append(line)
             # Extract subject URI from TTL format
             if '<' in line and '>' in line:
                 subject = line.split()[0]
                 subjects_in_ttl.add(subject)
-        elif 'phebee#TermLink' in line or ':TermLink' in line:
+                print(f"Found subject: {subject}")
+        elif 'phebee:TermLink' in line or 'phebee#TermLink' in line or ':TermLink' in line:
             if '<' in line and '>' in line:
                 termlink = line.split()[0]
                 termlinks_in_ttl.add(termlink)
-        elif 'phebee#hasTermLink' in line or ':hasTermLink' in line:
+    
+    print(f"Total subject declaration lines found: {len(subject_declaration_lines)}")
+    for line in subject_declaration_lines:
+        print(f"  {line}")
+    print(f"Total unique subjects parsed: {len(subjects_in_ttl)}")
+    print("--- End TTL parsing ---\n")
+    
+    # Continue parsing for other relationships
+    for line in lines:
+        line = line.strip()
+        if 'phebee#hasTermLink' in line or ':hasTermLink' in line:
             parts = line.split()
             if len(parts) >= 3:
                 subject = parts[0]
@@ -911,10 +975,21 @@ def validate_ttl_structure(ttl_content: str, test_data: list):
     assert termlinks_with_terms == termlinks_in_ttl, \
         "Not all termlinks have term connections"
     
-    # 9. Validate no orphaned entities
+    # 9. Validate subject counts and relationships
     subjects_referenced = set(subject for subject, _ in subject_termlink_pairs)
-    assert subjects_referenced == subjects_in_ttl, \
-        "Some subjects are declared but not connected to termlinks"
+    
+    print(f"Subjects with termlinks: {len(subjects_referenced)}")
+    print(f"Subjects declared in TTL: {len(subjects_in_ttl)}")
+    
+    # Should be 4 subjects total (complete cohort from test data)
+    assert len(subjects_in_ttl) == 4, f"Expected 4 subjects in TTL, got {len(subjects_in_ttl)}"
+    
+    # Should be 2 subjects with termlinks (those with evidence)
+    assert len(subjects_referenced) == 2, f"Expected 2 subjects with termlinks, got {len(subjects_referenced)}"
+    
+    # All subjects with termlinks should be declared in TTL
+    assert subjects_referenced.issubset(subjects_in_ttl), \
+        "Some subjects with termlinks are not declared in TTL"
     
     print(f"✅ Exact TTL validation passed:")
     print(f"  - Subjects: {len(subjects_in_ttl)}")
