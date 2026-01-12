@@ -328,16 +328,58 @@ def main():
         s3 = boto3.client('s3', region_name=region)
         subjects_content = '\n'.join(all_subjects_ttl)
         
-        # Assuming all subjects are in the same project (mrn) - could be made more dynamic
-        project_id = "mrn"  # This should match the project_id from your data
-        subjects_key = f"runs/{run_id}/neptune/projects/{project_id}/all_subjects.ttl"
-        s3.put_object(
-            Bucket=bucket,
-            Key=subjects_key,
-            Body=subjects_content.encode('utf-8'),
-            ContentType='text/turtle'
-        )
-        print(f"Wrote all subjects TTL: s3://{bucket}/{subjects_key} ({len(subject_mappings)} subjects)")
+        # Group subjects by project_id and write separate TTL files for each project
+        projects_by_id = {}
+        for subject_id, mapping in subject_mappings.items():
+            project_id = mapping['project_id']
+            if project_id not in projects_by_id:
+                projects_by_id[project_id] = []
+            projects_by_id[project_id].append((subject_id, mapping))
+        
+        # Write TTL file for each project
+        for project_id, project_subjects in projects_by_id.items():
+            project_ttl = [
+                "@prefix phebee: <http://ods.nationwidechildrens.org/phebee#> .",
+                "@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .",
+                "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .",
+                ""
+            ]
+            
+            # Add project declaration
+            project_uri = f"<http://ods.nationwidechildrens.org/phebee/projects/{project_id}>"
+            project_ttl.append(f"{project_uri} rdf:type phebee:Project .")
+            
+            # Add subjects for this project
+            for subject_id, mapping in project_subjects:
+                project_subject_id = mapping['project_subject_id']
+                
+                # Subject declaration
+                subject_uri = f"<http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}>"
+                project_ttl.append(f"{subject_uri} rdf:type phebee:Subject .")
+                
+                # Project relationships
+                project_uri_base = f"http://ods.nationwidechildrens.org/phebee/projects/{project_id}"
+                project_subject_id_iri = f"<{project_uri_base}/{project_subject_id}>"
+                
+                # Project-subject relationships
+                escaped_project_subject_id = project_subject_id.replace('"', '\\"').replace('\\', '\\\\')
+                project_ttl.append(f"{subject_uri} phebee:hasProjectSubjectId {project_subject_id_iri} .")
+                project_ttl.append(f"{project_subject_id_iri} rdf:type phebee:ProjectSubjectId .")
+                project_ttl.append(f"{project_subject_id_iri} phebee:hasProject {project_uri} .")
+                project_ttl.append(f"{project_subject_id_iri} rdfs:label \"{escaped_project_subject_id}\" .")
+            
+            # Write project-specific TTL file
+            project_content = '\n'.join(project_ttl)
+            subjects_key = f"runs/{run_id}/neptune/projects/{project_id}/all_subjects.ttl"
+            s3.put_object(
+                Bucket=bucket,
+                Key=subjects_key,
+                Body=project_content.encode('utf-8'),
+                ContentType='text/turtle'
+            )
+            print(f"Uploaded project TTL: {subjects_key}")
+        
+        print(f"Generated TTL files for {len(projects_by_id)} projects")
         
         print(f"TTL generation completed for run_id: {run_id}")
         

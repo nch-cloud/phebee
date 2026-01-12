@@ -123,12 +123,22 @@
         }
       },
       "ResultPath": "$.project_load",
-      "Next": "MonitorProjectLoad",
+      "Next": "CheckProjectLoadsExist",
       "Catch": [{
         "ErrorEquals": ["States.ALL"],
         "Next": "NotifyFailure",
         "ResultPath": "$.error"
       }]
+    },
+    
+    "CheckProjectLoadsExist": {
+      "Type": "Choice",
+      "Choices": [{
+        "Variable": "$.project_load.Payload.body.total_loads",
+        "NumericGreaterThan": 0,
+        "Next": "MonitorProjectLoad"
+      }],
+      "Default": "StartSubjectsLoad"
     },
     
     "MonitorProjectLoad": {
@@ -176,12 +186,22 @@
         }
       },
       "ResultPath": "$.subjects_load",
-      "Next": "MonitorSubjectsLoad",
+      "Next": "CheckSubjectLoadsExist",
       "Catch": [{
         "ErrorEquals": ["States.ALL"],
         "Next": "NotifyFailure",
         "ResultPath": "$.error"
       }]
+    },
+    
+    "CheckSubjectLoadsExist": {
+      "Type": "Choice",
+      "Choices": [{
+        "Variable": "$.subjects_load.Payload.body.total_loads",
+        "NumericGreaterThan": 0,
+        "Next": "MonitorSubjectsLoad"
+      }],
+      "Default": "NotifySuccess"
     },
     
     "MonitorSubjectsLoad": {
@@ -226,10 +246,8 @@
           "run_id.$": "$.run_id",
           "status": "SUCCESS",
           "emr_job_id.$": "$.emr_result.JobRunId",
-          "load_ids": [
-            "$.project_load.Payload.body.loads[0].load_id",
-            "$.subjects_load.Payload.body.loads[0].load_id"
-          ]
+          "project_loads.$": "$.project_load.Payload.body.total_loads",
+          "subject_loads.$": "$.subjects_load.Payload.body.total_loads"
         }
       },
       "End": true
