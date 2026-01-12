@@ -71,6 +71,18 @@ def lambda_handler(event, context):
         # Process each TTL directory
         for graph_name, source_dir in ttl_directories.items():
             
+            # Check if directory actually contains TTL files
+            bucket_name = source_dir.replace('s3://', '').split('/')[0]
+            dir_prefix = '/'.join(source_dir.replace('s3://', '').split('/')[1:])
+            
+            # List TTL files in this directory
+            ttl_response = s3.list_objects_v2(Bucket=bucket_name, Prefix=dir_prefix)
+            ttl_files = [obj for obj in ttl_response.get('Contents', []) if obj['Key'].endswith('.ttl')]
+            
+            if not ttl_files:
+                print(f"No TTL files found in {source_dir}, skipping load")
+                continue
+            
             # Determine named graph URI based on graph type
             if graph_name == 'subjects':
                 named_graph_uri = "http://ods.nationwidechildrens.org/phebee/subjects"
