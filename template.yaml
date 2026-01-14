@@ -1022,27 +1022,6 @@ Resources:
           - !Ref SubnetId1
           - !Ref SubnetId2
 
-  ResolveSubjectMappingsFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: !Sub ${AppName}-ResolveSubjectMappingsFunction
-      CodeUri: functions
-      Handler: resolve_subject_mappings.lambda_handler
-      MemorySize: 10240
-      Timeout: 900
-      Environment:
-        Variables:
-          PheBeeDynamoTable: !Ref DynamoDBTable
-      Layers:
-        - !Ref PheBeeUtilsLayer
-      Policies:
-        - S3ReadPolicy:
-            BucketName: !Ref PheBeeBucket
-        - S3WritePolicy:
-            BucketName: !Ref PheBeeBucket
-        - DynamoDBCrudPolicy:
-            TableName: !Ref DynamoDBTable
-
   ValidateBulkImportFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -1300,6 +1279,8 @@ Resources:
                   - dynamodb:GetItem
                   - dynamodb:Query
                   - dynamodb:Scan
+                  - dynamodb:PutItem
+                  - dynamodb:BatchWriteItem
                 Resource: !GetAtt DynamoDBTable.Arn
         - PolicyName: LakeFormationAccess
           PolicyDocument:
@@ -1324,7 +1305,6 @@ Resources:
       DefinitionUri: statemachine/bulk_evidence_import.asl.json
       DefinitionSubstitutions:
         ValidateBulkImportFunction: !GetAtt ValidateBulkImportFunction.Arn
-        ResolveSubjectMappingsFunction: !GetAtt ResolveSubjectMappingsFunction.Arn
         EMRServerlessApplicationId: !Ref EMRServerlessApplication
         EMRExecutionRoleArn: !GetAtt EMRExecutionRole.Arn
         PheBeeBucketName: !Ref PheBeeBucket
@@ -1362,7 +1342,6 @@ Resources:
                   - lambda:InvokeFunction
                 Resource:
                   - !GetAtt ValidateBulkImportFunction.Arn
-                  - !GetAtt ResolveSubjectMappingsFunction.Arn
                   - !GetAtt StartNeptuneBulkLoadFunction.Arn
                   - !GetAtt CheckNeptuneBulkLoadStatusFunction.Arn
                   - !GetAtt GenerateTTLManifestFunction.Arn

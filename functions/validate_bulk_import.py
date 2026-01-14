@@ -61,10 +61,4 @@ def lambda_handler(event, context):
         
     except Exception as e:
         logger.exception("Validation failed")
-        return {
-            'statusCode': 400,
-            'body': {
-                'error': str(e),
-                'validated': False
-            }
-        }
+        raise Exception(f"Validation failed: {str(e)}")

@@ -477,7 +477,7 @@ def test_bulk_import_validation_failure(physical_resources, test_project_id):
     execution_arn = response['executionArn']
     
     # Wait for execution to fail
-    timeout_seconds = 300  # 5 minutes should be enough for validation
+    timeout_seconds = 900  # 15 minutes for EMR job to fail
     start_time = time.time()
     
     while True:
