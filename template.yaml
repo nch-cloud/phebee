@@ -1382,41 +1382,6 @@ Resources:
                   - !Sub "arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/${AppName}-*"
                   - !Sub "arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/StepFunctionsGetEventsForEMRServerlessJobRule"
 
-  FinalizeBulkUploadFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: !Sub ${AppName}-FinalizeBulkUploadFunction
-      CodeUri: functions
-      Handler: finalize_bulk_upload.lambda_handler
-      MemorySize: 1024
-      Timeout: 300
-      Layers:
-        - !Ref PheBeeUtilsLayer
-      Environment:
-        Variables:
-          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
-          Region: !Sub ${AWS::Region}
-          PheBeeBucketName: !Ref PheBeeBucket
-          LoaderRoleArn: !GetAtt NeptuneLoaderRole.Arn
-          PheBeeDynamoTable: !Ref DynamoDBTable
-          BulkLoadMonitorSFNArn: !Ref BulkLoadMonitorSFN
-      VpcConfig:
-        SecurityGroupIds:
-          - !Ref PheBeeLambdaSecurityGroup
-        SubnetIds:
-          - !Ref SubnetId1
-          - !Ref SubnetId2
-      Policies:
-        - !Ref PheBeeNeptuneLoadPolicy     # start loader jobs
-        - !Ref PheBeeDynamoDBReadPolicy    # read run/batch status
-        - !Ref PheBeeDynamoDBWritePolicy   # mark run finalized / store loader IDs
-        - Statement:
-          - Effect: Allow
-            Action:
-              - states:StartExecution
-            Resource:
-              - !Ref BulkLoadMonitorSFN
-
   CheckBulkLoadStatusFunction:
     Type: AWS::Serverless::Function
     Properties:

@@ -9,12 +9,16 @@ from typing import Dict, List, Set, Tuple, Optional
 from urllib.parse import quote
 
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import *
-from pyspark.sql.types import *
-from pyspark import StorageLevel  # <-- added (for persist)
+from pyspark.sql.functions import (
+    col, lit, explode, concat_ws, coalesce, current_timestamp, to_date, 
+    struct, array, when, to_json, sha2, input_file_name, broadcast, 
+    raise_error, concat, udf
+)
+from pyspark.sql.types import (
+    StructType, StructField, StringType, IntegerType, ArrayType
+)
+from pyspark import StorageLevel
 import hashlib
-from pyspark.sql.functions import udf
-from pyspark.sql.types import StringType
 
 # Use Python UDF for termlink hash generation to ensure exact consistency with API
 # This guarantees identical hash results between bulk processing and runtime API calls
@@ -397,7 +401,6 @@ def main():
         df_with_subjects = df.join(mapping_df, ["project_id", "project_subject_id"], "left")
         
         # Explode evidence array to create one row per evidence item
-        from pyspark.sql.functions import explode, col, lit
         evidence_df = df_with_subjects.select(
             col("subject_id"),
             col("project_id"), 
@@ -410,7 +413,6 @@ def main():
         run_ts = datetime.utcnow().isoformat(timespec="seconds") + "Z"
 
         # Flatten evidence structure to match Iceberg schema
-        from pyspark.sql.functions import sha2, concat_ws, coalesce, lit as spark_lit, current_timestamp, to_date, struct, array, when, to_json
         flattened_df = evidence_df.select(
             "subject_id",
             "term_iri",
