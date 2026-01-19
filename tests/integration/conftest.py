@@ -348,16 +348,16 @@ def test_project_id(cloudformation_stack):
 
     yield body.get("project_id")
 
-    # Teardown - TEMPORARILY DISABLED FOR DEBUGGING
-    # delete_response = lambda_client.invoke(
-    #     FunctionName=f"{cloudformation_stack}-RemoveProjectFunction",
-    #     InvocationType="RequestResponse",
-    #     Payload=json.dumps({"body": json.dumps({"project_id": project_id})}),
-    # )
+    # Teardown
+    delete_response = lambda_client.invoke(
+        FunctionName=f"{cloudformation_stack}-RemoveProjectFunction",
+        InvocationType="RequestResponse",
+        Payload=json.dumps({"body": json.dumps({"project_id": project_id})}),
+    )
 
-    # result = json.loads(delete_response["Payload"].read().decode("utf-8"))
-    # if delete_response["StatusCode"] != 200:
-    #     print(f"WARNING: Teardown failed: {result}")
+    result = json.loads(delete_response["Payload"].read().decode("utf-8"))
+    if delete_response["StatusCode"] != 200:
+        print(f"WARNING: Teardown failed: {result}")
 
 
 @pytest.fixture

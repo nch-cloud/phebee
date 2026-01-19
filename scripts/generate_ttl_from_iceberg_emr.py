@@ -256,13 +256,6 @@ def main():
         subject_mappings = get_subject_mappings_from_s3(bucket, mapping_file, region)
         print(f"Loaded {len(subject_mappings)} subject mappings")
         
-        # Debug: Show all subjects in mapping file
-        print("DEBUG: All subjects in mapping file:")
-        for subject_id, mapping in subject_mappings.items():
-            print(f"  {subject_id} -> {mapping['project_id']}/{mapping['project_subject_id']}")
-        print("DEBUG: End of mapping file subjects")
-        
-        
         # Broadcast the mappings to all executors
         broadcast_mappings = spark.sparkContext.broadcast(subject_mappings)
         
@@ -286,9 +279,6 @@ def main():
         
         # Generate subject-only TTL for all mapped subjects (driver-level, runs once)
         print(f"Generating subject and project nodes for all {len(subject_mappings)} mapped subjects...")
-        print("DEBUG: Creating TTL for these subjects:")
-        for subject_id, mapping in subject_mappings.items():
-            print(f"  Creating TTL for {subject_id} ({mapping['project_subject_id']})")
         
         all_subjects_ttl = [
             "@prefix phebee: <http://ods.nationwidechildrens.org/phebee#> .",
