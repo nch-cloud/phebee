@@ -239,6 +239,10 @@ paths:
                   description: Include term links with negated, hypothetical, or family qualifiers when filtering by term_iri
                 include_terms:
                   type: boolean
+                include_child_terms:
+                  type: boolean
+                  default: true
+                  description: If true, expand term_iri to include descendant terms (e.g., HPO subclasses) when filtering subjects.
                 limit:
                   type: integer
                   minimum: 1
