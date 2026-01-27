@@ -370,6 +370,19 @@ paths:
                   items:
                     type: string
                   description: Evidence qualifiers (e.g., negated)
+                term_source:
+                  type: object
+                  description: Optional source information for the term
+                  properties:
+                    source:
+                      type: string
+                      description: "Source system (e.g., 'hpo', 'mondo')"
+                    version:
+                      type: string  
+                      description: "Version of the source (e.g., '2024-01-01')"
+                    iri:
+                      type: string
+                      description: "IRI of the source ontology"
       responses:
         "201":
           description: Evidence created successfully

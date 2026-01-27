@@ -506,3 +506,115 @@ def test_subject_reuse_across_runs(physical_resources, test_project_id):
     # Subject IDs should be the same (reused across runs)
     assert subject1 == subject2, f"Subject should be reused: {subject1} != {subject2}"
     assert f"{test_project_id}:{shared_subject_id}" in subject1
+
+
+@pytest.mark.integration
+def test_evidence_with_term_source(physical_resources, test_project_id):
+    """Test evidence creation and retrieval with term_source field."""
+    
+    run_id = str(uuid.uuid4())
+    subject_id = f"subj-{uuid.uuid4()}"
+    
+    # Create evidence record with term_source
+    evidence_data = {
+        "run_id": run_id,
+        "batch_id": "1",
+        "evidence_type": "clinical_note",
+        "subject_id": subject_id,
+        "term_iri": "http://purl.obolibrary.org/obo/HP_0001249",
+        "creator_id": "test-creator",
+        "creator_type": "human",
+        "term_source": {
+            "source": "hpo",
+            "version": "2024-01-01",
+            "iri": "http://purl.obolibrary.org/obo/hp.owl"
+        }
+    }
+    
+    evidence = invoke_lambda(physical_resources["CreateEvidenceFunction"], evidence_data)
+    
+    # Verify evidence creation response
+    assert "evidence_id" in evidence
+    assert evidence["subject_id"] == subject_id
+    assert evidence["term_iri"] == "http://purl.obolibrary.org/obo/HP_0001249"
+    
+    # Get the evidence record to verify term_source is stored
+    get_evidence_data = {"evidence_id": evidence["evidence_id"]}
+    retrieved_evidence = invoke_lambda(physical_resources["GetEvidenceFunction"], get_evidence_data)
+    
+    # Verify term_source is present and correct
+    assert "term_source" in retrieved_evidence
+    term_source = retrieved_evidence["term_source"]
+    assert term_source["source"] == "hpo"
+    assert term_source["version"] == "2024-01-01"
+    assert term_source["iri"] == "http://purl.obolibrary.org/obo/hp.owl"
+
+
+@pytest.mark.integration
+def test_evidence_without_term_source(physical_resources, test_project_id):
+    """Test evidence creation and retrieval without term_source field (optional)."""
+    
+    run_id = str(uuid.uuid4())
+    subject_id = f"subj-{uuid.uuid4()}"
+    
+    # Create evidence record without term_source
+    evidence_data = {
+        "run_id": run_id,
+        "batch_id": "1",
+        "evidence_type": "clinical_note",
+        "subject_id": subject_id,
+        "term_iri": "http://purl.obolibrary.org/obo/HP_0002297",
+        "creator_id": "test-creator",
+        "creator_type": "human"
+    }
+    
+    evidence = invoke_lambda(physical_resources["CreateEvidenceFunction"], evidence_data)
+    
+    # Verify evidence creation works without term_source
+    assert "evidence_id" in evidence
+    assert evidence["subject_id"] == subject_id
+    
+    # Get the evidence record to verify term_source is not present
+    get_evidence_data = {"evidence_id": evidence["evidence_id"]}
+    retrieved_evidence = invoke_lambda(physical_resources["GetEvidenceFunction"], get_evidence_data)
+    
+    # Verify term_source is not present (optional field)
+    assert "term_source" not in retrieved_evidence or retrieved_evidence.get("term_source") is None
+
+
+@pytest.mark.integration
+def test_evidence_partial_term_source(physical_resources, test_project_id):
+    """Test evidence with partial term_source data."""
+    
+    run_id = str(uuid.uuid4())
+    subject_id = f"subj-{uuid.uuid4()}"
+    
+    # Create evidence record with partial term_source (only source)
+    evidence_data = {
+        "run_id": run_id,
+        "batch_id": "1",
+        "evidence_type": "clinical_note",
+        "subject_id": subject_id,
+        "term_iri": "http://purl.obolibrary.org/obo/MONDO_0005148",
+        "creator_id": "test-creator",
+        "creator_type": "human",
+        "term_source": {
+            "source": "mondo"
+        }
+    }
+    
+    evidence = invoke_lambda(physical_resources["CreateEvidenceFunction"], evidence_data)
+    
+    # Verify evidence creation works with partial term_source
+    assert "evidence_id" in evidence
+    
+    # Get the evidence record to verify partial term_source is stored
+    get_evidence_data = {"evidence_id": evidence["evidence_id"]}
+    retrieved_evidence = invoke_lambda(physical_resources["GetEvidenceFunction"], get_evidence_data)
+    
+    # Verify term_source is present with only the provided field
+    assert "term_source" in retrieved_evidence
+    term_source = retrieved_evidence["term_source"]
+    assert term_source["source"] == "mondo"
+    assert term_source.get("version") is None or term_source.get("version") == ""
+    assert term_source.get("iri") is None or term_source.get("iri") == ""

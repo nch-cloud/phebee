@@ -148,3 +148,120 @@ def test_delete_nonexistent_evidence(api_base_url, sigv4_auth):
     )
     assert resp.status_code == 404
     assert "Evidence not found" in resp.json()["message"]
+
+
+def test_evidence_with_term_source(api_base_url, sigv4_auth):
+    """Test evidence creation and retrieval with term_source field"""
+    subject_id = f"test-subject-{uuid.uuid4()}"
+    payload = {
+        "subject_id": subject_id,
+        "term_iri": "http://purl.obolibrary.org/obo/HP_0001250",
+        "creator_id": "api-test-user",
+        "creator_type": "human",
+        "evidence_type": "manual_annotation",
+        "term_source": {
+            "source": "hpo",
+            "version": "2024-01-01",
+            "iri": "http://purl.obolibrary.org/obo/hp.owl"
+        }
+    }
+
+    # Create evidence with term_source
+    create_resp = requests.post(
+        f"{api_base_url}/evidence/create", json=payload, auth=sigv4_auth
+    )
+    assert create_resp.status_code == 201, (
+        f"Unexpected create status: {create_resp.status_code} - {create_resp.text}"
+    )
+
+    evidence_id = create_resp.json()["evidence_id"]
+
+    # Get evidence and verify term_source is present
+    get_resp = requests.post(
+        f"{api_base_url}/evidence",
+        json={"evidence_id": evidence_id},
+        auth=sigv4_auth,
+    )
+    assert get_resp.status_code == 200
+
+    body = get_resp.json()
+    assert "term_source" in body
+    term_source = body["term_source"]
+    assert term_source["source"] == "hpo"
+    assert term_source["version"] == "2024-01-01"
+    assert term_source["iri"] == "http://purl.obolibrary.org/obo/hp.owl"
+
+
+def test_evidence_without_term_source(api_base_url, sigv4_auth):
+    """Test evidence creation without term_source field (optional)"""
+    subject_id = f"test-subject-{uuid.uuid4()}"
+    payload = {
+        "subject_id": subject_id,
+        "term_iri": "http://purl.obolibrary.org/obo/HP_0002297",
+        "creator_id": "api-test-user",
+        "creator_type": "human",
+        "evidence_type": "manual_annotation"
+    }
+
+    # Create evidence without term_source
+    create_resp = requests.post(
+        f"{api_base_url}/evidence/create", json=payload, auth=sigv4_auth
+    )
+    assert create_resp.status_code == 201, (
+        f"Unexpected create status: {create_resp.status_code} - {create_resp.text}"
+    )
+
+    evidence_id = create_resp.json()["evidence_id"]
+
+    # Get evidence and verify term_source is not present
+    get_resp = requests.post(
+        f"{api_base_url}/evidence",
+        json={"evidence_id": evidence_id},
+        auth=sigv4_auth,
+    )
+    assert get_resp.status_code == 200
+
+    body = get_resp.json()
+    assert "term_source" not in body or body.get("term_source") is None
+
+
+def test_evidence_partial_term_source(api_base_url, sigv4_auth):
+    """Test evidence creation with partial term_source data"""
+    subject_id = f"test-subject-{uuid.uuid4()}"
+    payload = {
+        "subject_id": subject_id,
+        "term_iri": "http://purl.obolibrary.org/obo/MONDO_0005148",
+        "creator_id": "api-test-user",
+        "creator_type": "human",
+        "evidence_type": "manual_annotation",
+        "term_source": {
+            "source": "mondo"
+            # version and iri omitted
+        }
+    }
+
+    # Create evidence with partial term_source
+    create_resp = requests.post(
+        f"{api_base_url}/evidence/create", json=payload, auth=sigv4_auth
+    )
+    assert create_resp.status_code == 201, (
+        f"Unexpected create status: {create_resp.status_code} - {create_resp.text}"
+    )
+
+    evidence_id = create_resp.json()["evidence_id"]
+
+    # Get evidence and verify partial term_source is present
+    get_resp = requests.post(
+        f"{api_base_url}/evidence",
+        json={"evidence_id": evidence_id},
+        auth=sigv4_auth,
+    )
+    assert get_resp.status_code == 200
+
+    body = get_resp.json()
+    assert "term_source" in body
+    term_source = body["term_source"]
+    assert term_source["source"] == "mondo"
+    # version and iri should be None or empty
+    assert term_source.get("version") is None or term_source.get("version") == ""
+    assert term_source.get("iri") is None or term_source.get("iri") == ""
