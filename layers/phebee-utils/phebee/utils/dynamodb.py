@@ -20,7 +20,7 @@ def _get_table():
 def reset_dynamodb_table():
     """
     Deletes ALL items from the table (paged scan + batch_writer).
-    For dev/test only. PITR is enabled in template for safety.
+    For dev/test and use through reset lambda only. PITR is enabled in template for safety.
     """
     table = _get_table()
     

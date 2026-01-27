@@ -29,6 +29,7 @@ def lambda_handler(event, context):
         span_start = body.get("span_start")
         span_end = body.get("span_end")
         qualifiers = body.get("qualifiers", [])
+        term_source = body.get("term_source")
         
         # Clinical note context fields
         note_timestamp = body.get("note_timestamp")
@@ -75,7 +76,8 @@ def lambda_handler(event, context):
             note_timestamp=note_timestamp,
             provider_type=provider_type,
             author_specialty=author_specialty,
-            note_type=note_type
+            note_type=note_type,
+            term_source=term_source
         )
 
         # Return the complete evidence record

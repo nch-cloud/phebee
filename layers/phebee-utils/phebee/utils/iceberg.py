@@ -316,7 +316,8 @@ def create_evidence_record(
     note_timestamp: str = None,
     provider_type: str = None,
     author_specialty: str = None,
-    note_type: str = None
+    note_type: str = None,
+    term_source: Dict[str, str] = None
 ) -> str:
     """
     Create a single evidence record in Iceberg.
@@ -413,6 +414,14 @@ def create_evidence_record(
         qual_rows = [f"ROW('{q['qualifier_type']}', '{q['qualifier_value']}')" for q in record['qualifiers']]
         qualifiers_value = f"ARRAY[{', '.join(qual_rows)}]"
     
+    # Build term_source value
+    term_source_value = "NULL"
+    if term_source:
+        source = term_source.get('source', '')
+        version = term_source.get('version', '')
+        iri = term_source.get('iri', '')
+        term_source_value = f"ROW('{source}', '{version}', '{iri}')"
+    
     insert_query = f"""
     INSERT INTO {database_name}.{table_name} VALUES (
         '{evidence_id}',
@@ -431,7 +440,8 @@ def create_evidence_record(
         {note_context_value},
         {creator_value},
         {text_annotation_value},
-        {qualifiers_value}
+        {qualifiers_value},
+        {term_source_value}
     )
     """
     
@@ -505,7 +515,10 @@ def get_evidence_record(evidence_id: str) -> Dict[str, Any] | None:
         text_annotation.span_start as span_start,
         text_annotation.span_end as span_end,
         qualifiers,
-        created_timestamp
+        created_timestamp,
+        term_source.source as term_source_source,
+        term_source.version as term_source_version,
+        term_source.iri as term_source_iri
     FROM {database_name}.{table_name}
     WHERE evidence_id = '{evidence_id}'
     LIMIT 1
@@ -539,6 +552,14 @@ def get_evidence_record(evidence_id: str) -> Dict[str, Any] | None:
             record["text_annotation"] = {
                 "span_start": int(row['span_start']) if row.get('span_start') else None,
                 "span_end": int(row['span_end']) if row.get('span_end') else None
+            }
+        
+        # Add term_source if present
+        if row.get('term_source_source') or row.get('term_source_version') or row.get('term_source_iri'):
+            record["term_source"] = {
+                "source": row.get('term_source_source'),
+                "version": row.get('term_source_version'),
+                "iri": row.get('term_source_iri')
             }
         
         # Add qualifiers if present

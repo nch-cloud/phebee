@@ -30,7 +30,6 @@ def subjects_to_phenopackets(subject_data: list[dict], project_iri: str, hpo_ver
 
             evidence_list = []
             for evidence in term_link.get("evidence", []):
-                print(f"evidence: {evidence}")
                 ev = {}
                 if "type" in evidence or "evidence_type" in evidence:
                     ev["type"] = {

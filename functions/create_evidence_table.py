@@ -61,6 +61,11 @@ def create_table(database: str, table: str, s3_location: str, query_results_s3: 
         clinical_note_id string,
         termlink_id string,
         term_iri string,
+        term_source struct<
+            source: string,
+            version: string,
+            iri: string
+        >,
         note_context struct<
             note_type: string,
             note_date: timestamp,

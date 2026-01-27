@@ -239,6 +239,10 @@ paths:
                   description: Include term links with negated, hypothetical, or family qualifiers when filtering by term_iri
                 include_terms:
                   type: boolean
+                include_child_terms:
+                  type: boolean
+                  default: true
+                  description: If true, expand term_iri to include descendant terms (e.g., HPO subclasses) when filtering subjects.
                 limit:
                   type: integer
                   minimum: 1
@@ -366,6 +370,19 @@ paths:
                   items:
                     type: string
                   description: Evidence qualifiers (e.g., negated)
+                term_source:
+                  type: object
+                  description: Optional source information for the term
+                  properties:
+                    source:
+                      type: string
+                      description: "Source system (e.g., 'hpo', 'mondo')"
+                    version:
+                      type: string  
+                      description: "Version of the source (e.g., '2024-01-01')"
+                    iri:
+                      type: string
+                      description: "IRI of the source ontology"
       responses:
         "201":
           description: Evidence created successfully
