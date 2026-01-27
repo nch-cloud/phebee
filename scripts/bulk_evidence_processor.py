@@ -406,6 +406,7 @@ def main():
             col("project_id"), 
             col("project_subject_id"),
             col("term_iri"),
+            col("term_source"),  # Add term_source field
             explode("evidence").alias("evidence_item")
         )
 
@@ -416,6 +417,7 @@ def main():
         flattened_df = evidence_df.select(
             "subject_id",
             "term_iri",
+            "term_source",  # Add term_source field
             col("evidence_item.type").alias("evidence_type"),
             col("evidence_item.clinical_note_id").alias("clinical_note_id"),
             col("evidence_item.encounter_id").alias("encounter_id"),
@@ -500,7 +502,7 @@ def main():
             "evidence_id", "run_id", "batch_id", "evidence_type", "assertion_type",
             "created_timestamp", "created_date", "source_level", "subject_id",
             "encounter_id", "clinical_note_id", "termlink_id", "term_iri",
-            "note_context", "creator", "text_annotation", "qualifiers"
+            "note_context", "creator", "text_annotation", "qualifiers", "term_source"
          )
 
         # Safer for huge batches: avoid caching wide rows in memory; spill to disk instead.

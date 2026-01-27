@@ -1000,3 +1000,275 @@ def validate_ttl_structure(ttl_content: str, test_data: list):
     print(f"  - Qualifier assertions: {len(qualifier_assertions)}")
     
     return True
+
+
+@pytest.mark.integration
+def test_bulk_import_with_term_source(physical_resources, test_project_id):
+    """Test bulk import with term_source field"""
+    
+    # Get S3 bucket from physical resources
+    s3_bucket = physical_resources.get("PheBeeBucket")
+    if not s3_bucket:
+        pytest.skip("PheBeeBucket not found in physical resources")
+    
+    print(f"Using S3 bucket: {s3_bucket}")
+    
+    # Create test data with term_source
+    run_id = f"test-term-source-{uuid.uuid4().hex[:8]}"
+    
+    # Test data with term_source
+    test_data_with_source = [
+        {
+            "project_id": test_project_id,
+            "project_subject_id": "subject-ts-001",
+            "term_iri": "http://purl.obolibrary.org/obo/HP_0001250",
+            "term_source": {
+                "source": "hpo",
+                "version": "2024-01-01",
+                "iri": "http://purl.obolibrary.org/obo/hp.owl"
+            },
+            "evidence": [
+                {
+                    "type": "clinical_note",
+                    "clinical_note_id": "note-ts-123",
+                    "encounter_id": "encounter-ts-456",
+                    "evidence_creator_id": "test-system",
+                    "evidence_creator_type": "automated",
+                    "evidence_creator_name": "Test System",
+                    "note_timestamp": "2024-01-15",
+                    "note_type": "progress_note",
+                    "provider_type": "physician",
+                    "author_specialty": "cardiology",
+                    "span_start": 10,
+                    "span_end": 20,
+                    "contexts": {
+                        "negated": 0.0,
+                        "family": 0.0,
+                        "hypothetical": 0.0
+                    }
+                }
+            ],
+            "row_num": 1,
+            "batch_id": 0
+        }
+    ]
+    
+    # Test data without term_source (optional)
+    test_data_without_source = [
+        {
+            "project_id": test_project_id,
+            "project_subject_id": "subject-ts-002",
+            "term_iri": "http://purl.obolibrary.org/obo/MONDO_0005148",
+            "evidence": [
+                {
+                    "type": "clinical_note",
+                    "clinical_note_id": "note-ts-789",
+                    "encounter_id": "encounter-ts-012",
+                    "evidence_creator_id": "test-system",
+                    "evidence_creator_type": "automated",
+                    "evidence_creator_name": "Test System",
+                    "note_timestamp": "2024-01-16",
+                    "note_type": "discharge_summary",
+                    "provider_type": "nurse_practitioner",
+                    "author_specialty": "internal_medicine",
+                    "span_start": 30,
+                    "span_end": 40,
+                    "contexts": {
+                        "negated": 0.0,
+                        "family": 0.0,
+                        "hypothetical": 0.0
+                    }
+                }
+            ],
+            "row_num": 1,
+            "batch_id": 0
+        }
+    ]
+    
+    # Convert to JSONL format
+    jsonl_content_1 = "\n".join(json.dumps(record) for record in test_data_with_source)
+    jsonl_content_2 = "\n".join(json.dumps(record) for record in test_data_without_source)
+    
+    # Upload test data to S3
+    s3_client = boto3.client('s3')
+    
+    input_key_1 = f"test-data/{run_id}/jsonl/with_source.json"
+    s3_client.put_object(
+        Bucket=s3_bucket,
+        Key=input_key_1,
+        Body=jsonl_content_1.encode('utf-8'),
+        ContentType='application/x-ndjson'
+    )
+    
+    input_key_2 = f"test-data/{run_id}/jsonl/without_source.json"
+    s3_client.put_object(
+        Bucket=s3_bucket,
+        Key=input_key_2,
+        Body=jsonl_content_2.encode('utf-8'),
+        ContentType='application/x-ndjson'
+    )
+    
+    # Create subject mapping file
+    subject_mapping = [
+        {
+            "project_id": test_project_id,
+            "project_subject_id": "subject-ts-001",
+            "subject_id": str(uuid.uuid4())
+        },
+        {
+            "project_id": test_project_id,
+            "project_subject_id": "subject-ts-002", 
+            "subject_id": str(uuid.uuid4())
+        }
+    ]
+    
+    mapping_key = f"test-data/{run_id}/subject_mapping.json"
+    s3_client.put_object(
+        Bucket=s3_bucket,
+        Key=mapping_key,
+        Body=json.dumps(subject_mapping).encode('utf-8'),
+        ContentType='application/json'
+    )
+    
+    # Execute Step Function
+    stepfunctions_client = boto3.client('stepfunctions')
+    state_machine_arn = physical_resources["BulkImportStateMachine"]
+    
+    execution_input = {
+        "run_id": run_id,
+        "input_path": f"s3://{s3_bucket}/test-data/{run_id}/jsonl/",
+        "mapping_file": f"s3://{s3_bucket}/{mapping_key}",
+        "iceberg_database": "phebee",
+        "iceberg_table": "evidence",
+        "output_bucket": s3_bucket,
+        "neptune_cluster": physical_resources.get("NeptuneCluster", "test-cluster")
+    }
+    
+    print(f"Starting Step Function execution with input: {json.dumps(execution_input, indent=2)}")
+    
+    response = stepfunctions_client.start_execution(
+        stateMachineArn=state_machine_arn,
+        name=f"test-term-source-{int(time.time())}",
+        input=json.dumps(execution_input)
+    )
+    
+    execution_arn = response['executionArn']
+    print(f"Started execution: {execution_arn}")
+    
+    # Wait for completion
+    max_wait_time = 600  # 10 minutes
+    start_time = time.time()
+    
+    while time.time() - start_time < max_wait_time:
+        execution_response = stepfunctions_client.describe_execution(executionArn=execution_arn)
+        status = execution_response['status']
+        
+        print(f"Execution status: {status}")
+        
+        if status == 'SUCCEEDED':
+            break
+        elif status in ['FAILED', 'TIMED_OUT', 'ABORTED']:
+            pytest.fail(f"Step Function execution failed with status: {status}")
+        
+        time.sleep(10)
+    else:
+        pytest.fail("Step Function execution timed out")
+    
+    # Verify data in Iceberg table with term_source
+    athena_client = boto3.client('athena')
+    
+    # Query for evidence with term_source
+    query_with_source = f"""
+    SELECT 
+        evidence_id, run_id, subject_id, term_iri,
+        term_source.source as source,
+        term_source.version as version,
+        term_source.iri as source_iri
+    FROM phebee.evidence 
+    WHERE run_id = '{run_id}' 
+    AND term_iri = 'http://purl.obolibrary.org/obo/HP_0001250'
+    """
+    
+    query_response = athena_client.start_query_execution(
+        QueryString=query_with_source,
+        QueryExecutionContext={'Database': 'phebee'},
+        ResultConfiguration={'OutputLocation': f's3://{s3_bucket}/athena-results/'},
+        WorkGroup='primary'
+    )
+    
+    query_execution_id = query_response['QueryExecutionId']
+    
+    # Wait for query completion
+    while True:
+        query_status = athena_client.get_query_execution(QueryExecutionId=query_execution_id)
+        status = query_status['QueryExecution']['Status']['State']
+        
+        if status == 'SUCCEEDED':
+            break
+        elif status in ['FAILED', 'CANCELLED']:
+            pytest.fail(f"Athena query failed: {query_status}")
+        
+        time.sleep(2)
+    
+    # Get results
+    results = athena_client.get_query_results(QueryExecutionId=query_execution_id)
+    rows = results['ResultSet']['Rows'][1:]  # Skip header
+    
+    assert len(rows) == 1, f"Expected 1 row with term_source, got {len(rows)}"
+    
+    # Verify term_source data
+    row_data = [col.get('VarCharValue', '') for col in rows[0]['Data']]
+    evidence_id, found_run_id, subject_id, term_iri, source, version, source_iri = row_data
+    
+    assert found_run_id == run_id
+    assert term_iri == "http://purl.obolibrary.org/obo/HP_0001250"
+    assert source == "hpo"
+    assert version == "2024-01-01"
+    assert source_iri == "http://purl.obolibrary.org/obo/hp.owl"
+    
+    # Query for evidence without term_source
+    query_without_source = f"""
+    SELECT 
+        evidence_id, run_id, subject_id, term_iri,
+        term_source.source as source
+    FROM phebee.evidence 
+    WHERE run_id = '{run_id}' 
+    AND term_iri = 'http://purl.obolibrary.org/obo/MONDO_0005148'
+    """
+    
+    query_response = athena_client.start_query_execution(
+        QueryString=query_without_source,
+        QueryExecutionContext={'Database': 'phebee'},
+        ResultConfiguration={'OutputLocation': f's3://{s3_bucket}/athena-results/'},
+        WorkGroup='primary'
+    )
+    
+    query_execution_id = query_response['QueryExecutionId']
+    
+    # Wait for query completion
+    while True:
+        query_status = athena_client.get_query_execution(QueryExecutionId=query_execution_id)
+        status = query_status['QueryExecution']['Status']['State']
+        
+        if status == 'SUCCEEDED':
+            break
+        elif status in ['FAILED', 'CANCELLED']:
+            pytest.fail(f"Athena query failed: {query_status}")
+        
+        time.sleep(2)
+    
+    # Get results
+    results = athena_client.get_query_results(QueryExecutionId=query_execution_id)
+    rows = results['ResultSet']['Rows'][1:]  # Skip header
+    
+    assert len(rows) == 1, f"Expected 1 row without term_source, got {len(rows)}"
+    
+    # Verify term_source is null/empty
+    row_data = [col.get('VarCharValue', '') for col in rows[0]['Data']]
+    evidence_id, found_run_id, subject_id, term_iri, source = row_data
+    
+    assert found_run_id == run_id
+    assert term_iri == "http://purl.obolibrary.org/obo/MONDO_0005148"
+    assert source == "" or source is None  # Should be null/empty when not provided
+    
+    print(f"✓ Successfully verified term_source handling in bulk import")
