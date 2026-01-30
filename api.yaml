@@ -724,3 +724,11 @@ x-amazon-apigateway-cors:
   allowHeaders:
     - "*"
 x-amazon-apigateway-importexport-version: "1.0"
+
+components:
+  securitySchemes:
+    sigv4:
+      type: apiKey
+      name: Authorization
+      in: header
+      x-amazon-apigateway-authtype: awsSigv4
