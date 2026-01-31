@@ -1891,3 +1891,27 @@ Outputs:
     Value: !Ref PheBeeBus
     Export:
       Name: !Sub "${AppName}-PheBeeBus"
+
+  AthenaDatabase:
+    Description: Glue database name for Athena queries
+    Value: !Ref IcebergDatabase
+    Export:
+      Name: !Sub "${AppName}-AthenaDatabase"
+  
+  AthenaEvidenceTable:
+    Description: Evidence table name for Athena queries  
+    Value: !Ref IcebergEvidenceTable
+    Export:
+      Name: !Sub "${AppName}-AthenaEvidenceTable"
+      
+  AthenaResultsLocation:
+    Description: S3 location for Athena query results
+    Value: !Sub "s3://${PheBeeBucket}/athena-results/${AppName}/"
+    Export:
+      Name: !Sub "${AppName}-AthenaResultsLocation"
+      
+  AthenaWorkgroup:
+    Description: Athena workgroup (using default)
+    Value: "primary"
+    Export:
+      Name: !Sub "${AppName}-AthenaWorkgroup"

@@ -40,7 +40,9 @@ def generate_evidence_hash(
     term_iri: str,
     span_start: Optional[int] = None,
     span_end: Optional[int] = None,
-    qualifiers: Optional[List[str]] = None
+    qualifiers: Optional[List[str]] = None,
+    subject_id: Optional[str] = None,
+    creator_id: Optional[str] = None
 ) -> str:
     """
     Generate deterministic evidence ID from content.
@@ -52,17 +54,33 @@ def generate_evidence_hash(
         span_start: Text span start position
         span_end: Text span end position
         qualifiers: List of qualifier name:value pairs (e.g., ["negated:true", "family:false"])
+        subject_id: Subject identifier for uniqueness across subjects
+        creator_id: Creator identifier to distinguish automated vs manual evidence
         
     Returns:
         str: Deterministic evidence hash
     """
+    # Filter out false qualifiers for consistency with termlink hash
+    filtered_qualifiers = []
+    if qualifiers:
+        for qualifier in qualifiers:
+            if ":" in qualifier:
+                name, value = qualifier.split(":", 1)
+                if value.lower() not in ["false", "0"]:
+                    filtered_qualifiers.append(qualifier)
+            else:
+                # If no value specified, assume it's a positive qualifier
+                filtered_qualifiers.append(qualifier)
+    
     content_parts = [
-        clinical_note_id,
-        encounter_id,
+        clinical_note_id or "",
+        encounter_id or "",
         term_iri,
         str(span_start) if span_start is not None else "",
         str(span_end) if span_end is not None else "",
-        "|".join(sorted(qualifiers or []))
+        "|".join(sorted(filtered_qualifiers)),
+        subject_id or "",
+        creator_id or ""
     ]
     content = "|".join(content_parts)
     return hashlib.sha256(content.encode()).hexdigest()

@@ -55,7 +55,9 @@ def generate_evidence_hash(
     term_iri: str,
     span_start: int = None,
     span_end: int = None,
-    qualifiers: list = None
+    qualifiers: list = None,
+    subject_id: str = None,
+    creator_id: str = None
 ) -> str:
     """
     Generate deterministic evidence ID from content.
@@ -68,17 +70,33 @@ def generate_evidence_hash(
         span_start: Text span start position
         span_end: Text span end position
         qualifiers: List of qualifier name:value pairs (e.g., ["negated:true", "family:false"])
+        subject_id: Subject identifier for uniqueness across subjects
+        creator_id: Creator identifier to distinguish automated vs manual evidence
         
     Returns:
         str: Deterministic evidence hash
     """
+    # Filter out false qualifiers for consistency with termlink hash
+    filtered_qualifiers = []
+    if qualifiers:
+        for qualifier in qualifiers:
+            if ":" in qualifier:
+                name, value = qualifier.split(":", 1)
+                if value.lower() not in ["false", "0"]:
+                    filtered_qualifiers.append(qualifier)
+            else:
+                # If no value specified, assume it's a positive qualifier
+                filtered_qualifiers.append(qualifier)
+    
     content_parts = [
-        clinical_note_id,
-        encounter_id,
+        clinical_note_id or "",
+        encounter_id or "",
         term_iri,
         str(span_start) if span_start is not None else "",
         str(span_end) if span_end is not None else "",
-        "|".join(sorted(qualifiers or []))
+        "|".join(sorted(filtered_qualifiers)),
+        subject_id or "",
+        creator_id or ""
     ]
     content = "|".join(content_parts)
     return hashlib.sha256(content.encode()).hexdigest()
@@ -119,31 +137,41 @@ def create_termlink_hash_wrapper(subject_id, term_iri, family, hypothetical, neg
     return generate_termlink_hash(subject_iri, term_iri, qualifiers)
 
 
-def create_evidence_hash_wrapper(clinical_note_id, encounter_id, term_iri, span_start, span_end, negated, family, hypothetical):
+def create_evidence_hash_wrapper(subject_id, clinical_note_id, encounter_id, term_iri, span_start, span_end, negated, family, hypothetical, evidence_creator_id):
     """Wrapper for PySpark UDF to generate evidence hash"""
-    # Build qualifiers list with name:value pairs (only positive ones)
+    # Build qualifiers list with name:value pairs
     qualifiers = []
     
     def normalize_qualifier_value(value):
         if value in ["false", "0", 0, 0.0, False]:
-            return "false"
+            return None  # Exclude falsey values (consistent with termlink hash)
         elif value in ["true", "1", 1, 1.0, True]:
             return "true"
         else:
             return str(value)
     
-    # Add all qualifiers with their values (including false ones for evidence hash)
-    qualifiers.append(f"negated:{normalize_qualifier_value(negated)}")
-    qualifiers.append(f"family:{normalize_qualifier_value(family)}")
-    qualifiers.append(f"hypothetical:{normalize_qualifier_value(hypothetical)}")
+    # Include name:value for any non-falsey qualifier (consistent with termlink hash)
+    family_val = normalize_qualifier_value(family)
+    if family_val:
+        qualifiers.append(f"family:{family_val}")
+        
+    hypothetical_val = normalize_qualifier_value(hypothetical)
+    if hypothetical_val:
+        qualifiers.append(f"hypothetical:{hypothetical_val}")
+        
+    negated_val = normalize_qualifier_value(negated)
+    if negated_val:
+        qualifiers.append(f"negated:{negated_val}")
     
     return generate_evidence_hash(
-        clinical_note_id or "",
-        encounter_id or "",
+        clinical_note_id,
+        encounter_id,
         term_iri,
         int(span_start) if span_start is not None else None,
         int(span_end) if span_end is not None else None,
-        qualifiers
+        qualifiers,
+        subject_id,
+        evidence_creator_id
     )
 
 # Register UDFs
@@ -401,14 +429,22 @@ def main():
         df_with_subjects = df.join(mapping_df, ["project_id", "project_subject_id"], "left")
         
         # Explode evidence array to create one row per evidence item
-        evidence_df = df_with_subjects.select(
+        # Handle optional term_source field
+        select_cols = [
             col("subject_id"),
             col("project_id"), 
             col("project_subject_id"),
             col("term_iri"),
-            col("term_source"),  # Add term_source field
             explode("evidence").alias("evidence_item")
-        )
+        ]
+        
+        # Add term_source if it exists, otherwise use null
+        if "term_source" in df_with_subjects.columns:
+            select_cols.insert(-1, col("term_source"))
+        else:
+            select_cols.insert(-1, lit(None).alias("term_source"))
+            
+        evidence_df = df_with_subjects.select(*select_cols)
 
         # Create common timestamp for all rows in the batch
         run_ts = datetime.utcnow().isoformat(timespec="seconds") + "Z"
@@ -435,6 +471,7 @@ def main():
             col("evidence_item.contexts.hypothetical").alias("hypothetical")
         ).withColumn("run_id", lit(args.run_id)) \
          .withColumn("evidence_id", generate_evidence_hash_udf(
+            col("subject_id"),
             col("clinical_note_id"),
             col("encounter_id"), 
             col("term_iri"),
@@ -442,7 +479,8 @@ def main():
             col("span_end"),
             col("negated"),
             col("family"),
-            col("hypothetical")
+            col("hypothetical"),
+            col("evidence_creator_id")
          )) \
          .withColumn("batch_id", input_file_name()) \
          .withColumn("assertion_type", 

@@ -33,7 +33,7 @@ def extract_project_id_from_run(run_id, physical_resources):
     raise ValueError(f"Could not extract project_id from evidence file: {first_file_key}")
 
 
-@pytest.mark.performance
+@pytest.mark.perf
 def test_large_scale_performance(physical_resources, stack_outputs, num_subjects, num_terms, request):
     """Test performance with large numbers of subjects and evidence records using realistic HPO terms and qualifiers"""
     

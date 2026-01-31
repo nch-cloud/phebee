@@ -22,26 +22,6 @@ logger = logging.getLogger(__name__)
 PHEBEE_NS = Namespace(PHEBEE)
 OBO = Namespace("http://purl.obolibrary.org/obo/")
 
-def generate_evidence_id(
-    subject_id: str,
-    term_iri: str,
-    creator_name: str,
-    clinical_note_id: str = None,
-    span_start: int = None,
-    span_end: int = None,
-    qualifiers: List[str] = None
-) -> str:
-    """Generate deterministic evidence ID from content."""
-    # Use clinical_note_id as the primary identifier, fall back to creator_name if needed
-    note_id = clinical_note_id or creator_name
-    return generate_evidence_hash(
-        clinical_note_id=note_id,
-        encounter_id=subject_id,  # Using subject_id as encounter context
-        term_iri=term_iri,
-        span_start=span_start,
-        span_end=span_end,
-        qualifiers=qualifiers
-    )
 
 def extract_evidence_records(
     entries: List[Any],  # TermLinkInput objects
@@ -81,14 +61,15 @@ def extract_evidence_records(
                         qualifiers.append(qualifier)
             
             # Generate deterministic evidence ID
-            evidence_id = generate_evidence_id(
-                subject_id=subject_id,
-                term_iri=entry.term_iri,
-                creator_name=evidence.evidence_creator_name,
+            evidence_id = generate_evidence_hash(
                 clinical_note_id=evidence.clinical_note_id if evidence.type == "clinical_note" else None,
+                encounter_id=evidence.encounter_id if evidence.type == "clinical_note" else None,
+                term_iri=entry.term_iri,
                 span_start=evidence.span_start,
                 span_end=evidence.span_end,
-                qualifiers=qualifiers
+                qualifiers=qualifiers,
+                subject_id=subject_id,
+                creator_id=evidence.evidence_creator_id
             )
             
             # Determine source level and IDs
@@ -330,14 +311,15 @@ def create_evidence_record(
     table_name = os.environ['ICEBERG_EVIDENCE_TABLE']
     
     # Generate evidence ID
-    evidence_id = generate_evidence_id(
-        subject_id=subject_id,
-        term_iri=term_iri,
-        creator_name=creator_id,  # Use creator_id for uniqueness
+    evidence_id = generate_evidence_hash(
         clinical_note_id=clinical_note_id,
+        encounter_id=encounter_id,
+        term_iri=term_iri,
         span_start=span_start,
         span_end=span_end,
-        qualifiers=qualifiers or []
+        qualifiers=qualifiers or [],
+        subject_id=subject_id,
+        creator_id=creator_id
     )
     
     # Generate termlink ID using shared function
@@ -701,7 +683,8 @@ def get_evidence_for_termlink(
         note_context,
         creator,
         text_annotation,
-        qualifiers
+        qualifiers,
+        term_source
     FROM {database_name}.{table_name}
     WHERE subject_id = '{subject_id}' 
       AND term_iri = '{term_iri}'
@@ -776,7 +759,8 @@ def get_evidence_for_termlink(
                 "note_context": parse_struct_field(row.get('note_context')),
                 "creator": parse_struct_field(row.get('creator')),
                 "text_annotation": parse_struct_field(row.get('text_annotation')),
-                "qualifiers": row.get('qualifiers')  # Include qualifiers field
+                "qualifiers": row.get('qualifiers'),  # Include qualifiers field
+                "term_source": parse_struct_field(row.get('term_source'))  # Add term_source field
             }
             
             evidence.append(record)
