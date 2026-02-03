@@ -39,7 +39,7 @@ def test_create_new_subject(physical_resources, test_project_id):
     assert body["subject_created"] is True
     assert body["subject"]["projects"][project_id] == project_subject_id
 
-    # Verify Neptune graph creation
+    # Verify Neptune graph creation using project_subject_iri
     get_payload = {
         "project_subject_iri": project_subject_iri
     }
@@ -55,7 +55,29 @@ def test_create_new_subject(physical_resources, test_project_id):
     assert get_status_code == 200
     assert "subject_iri" in get_body
     assert "project_subject_iri" in get_body
+    assert "subject_id" in get_body  # Should now include subject_id
     assert get_body["project_subject_iri"] == project_subject_iri
+
+    # Test the new subject_id path
+    subject_id = get_body["subject_id"]
+    get_by_id_payload = {
+        "subject_id": subject_id
+    }
+
+    get_by_id_response = lambda_client.invoke(
+        FunctionName=get_fn,
+        Payload=json.dumps(get_by_id_payload).encode("utf-8"),
+        InvocationType="RequestResponse"
+    )
+
+    get_by_id_status_code, get_by_id_body = parse_lambda_response(get_by_id_response)
+    assert get_by_id_status_code == 200
+    assert "subject_iri" in get_by_id_body
+    assert "subject_id" in get_by_id_body
+    assert get_by_id_body["subject_id"] == subject_id
+    assert get_by_id_body["subject_iri"] == get_body["subject_iri"]
+    # Note: subject_id path won't have project_subject_iri since it doesn't know the project context
+    assert "project_subject_iri" not in get_by_id_body
 
     # Verify DynamoDB mapping creation
     dynamodb = boto3.resource('dynamodb')
