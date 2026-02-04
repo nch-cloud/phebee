@@ -190,7 +190,6 @@ Resources:
               - !GetAtt CreateTermLinkFunction.Arn
               - !GetAtt GetTermLinkFunction.Arn
               - !GetAtt RemoveTermLinkFunction.Arn
-              - !GetAtt QueryProvenanceFunction.Arn
           - Effect: Allow
             Action:
               - states:StartSyncExecution
@@ -784,27 +783,6 @@ Resources:
         - !Ref PheBeeS3WritePolicy
         - !Ref PheBeeNeptuneWritePolicy
         - !Ref PheBeeDynamoDBWritePolicy
-
-  QueryProvenanceFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: !Sub ${AppName}-QueryProvenanceFunction
-      CodeUri: functions/
-      Handler: query_provenance.lambda_handler
-      Layers:
-        - !Ref PheBeeUtilsLayer
-      Environment:
-        Variables:
-          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
-          Region: !Sub ${AWS::Region}
-      VpcConfig:
-        SecurityGroupIds:
-          - !Ref PheBeeNeptuneSecurityGroup
-        SubnetIds:
-          - !Ref SubnetId1
-          - !Ref SubnetId2
-      Policies:
-        - !Ref PheBeeNeptuneReadPolicy
 
   GetSubjectsPhenotypesFunction:
     Type: AWS::Serverless::Function
@@ -1852,11 +1830,6 @@ Outputs:
     Value: !GetAtt GetLoadStatusFunction.Arn
     Export:
       Name: !Sub "${AppName}-GetLoadStatusFunctionArn"
-
-  QueryProvenanceFunctionArn:
-    Value: !GetAtt QueryProvenanceFunction.Arn
-    Export:
-      Name: !Sub "${AppName}-QueryProvenanceFunctionArn"
 
   QueryEvidenceByRunFunctionArn:
     Value: !GetAtt QueryEvidenceByRunFunction.Arn

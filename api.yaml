@@ -87,7 +87,7 @@ paths:
               type: object
               required:
                 - project_id
-                - project_subject_iri
+                - project_subject_id
               properties:
                 project_id:
                   type: string
@@ -95,7 +95,7 @@ paths:
                   type: string
                 known_project_id:
                   type: string
-                known_project_subject_iri:
+                known_project_subject_id:
                   type: string
                 known_subject_iri:
                   type: string
@@ -124,11 +124,16 @@ paths:
           application/json:
             schema:
               type: object
-              required:
-                - project_subject_iri
               properties:
                 project_subject_iri:
                   type: string
+                  description: Project-scoped subject identifier (IRI format)
+                subject_id:
+                  type: string
+                  description: Internal subject UUID (alternative to project_subject_iri)
+              oneOf:
+                - required: [project_subject_iri]
+                - required: [subject_id]
       security:
         - sigv4: []
       x-amazon-apigateway-integration:
@@ -156,13 +161,15 @@ paths:
             schema:
               type: object
               required:
-                - subject_iri
+                - subject_id
                 - term_iri
               properties:
-                subject_iri:
+                subject_id:
                   type: string
+                  description: The subject UUID
                 term_iri:
                   type: string
+                  description: The ontology term IRI
                 qualifiers:
                   type: array
                   items:
@@ -619,101 +626,6 @@ paths:
           Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-RemoveTermLinkFunction/invocations
         connectionType: "INTERNET"
         timeoutInMillis: 30000
-
-  # --- Provenance-related endpoints ---
-  /provenance/query:
-    post:
-      summary: Query provenance information
-      description: |
-        Query provenance data including activities, entities, agents, and lineage information.
-        Supports various query types for comprehensive audit and tracking capabilities.
-      operationId: queryProvenance
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                query_type:
-                  type: string
-                  enum: ["activity", "entity", "agent", "lineage", "sparql"]
-                  description: Type of provenance query to execute
-                run_id:
-                  type: string
-                  description: Specific run ID to query (optional)
-                batch_id:
-                  type: string
-                  description: Specific batch ID to query (optional)
-                entity_iri:
-                  type: string
-                  description: Entity IRI for lineage queries (optional)
-                sparql_query:
-                  type: string
-                  description: Custom SPARQL query (required for sparql query_type)
-                limit:
-                  type: integer
-                  minimum: 1
-                  maximum: 1000
-                  default: 100
-                  description: Maximum number of results to return
-              required:
-                - query_type
-              examples:
-                activity_query:
-                  summary: Query activities for a specific run
-                  value:
-                    query_type: "activity"
-                    run_id: 1
-                    limit: 50
-                entity_query:
-                  summary: Query entities
-                  value:
-                    query_type: "entity"
-                    limit: 100
-                lineage_query:
-                  summary: Query entity lineage
-                  value:
-                    query_type: "lineage"
-                    entity_iri: "http://ods.nationwidechildrens.org/phebee/subjects/12345"
-                sparql_query:
-                  summary: Custom SPARQL query
-                  value:
-                    query_type: "sparql"
-                    sparql_query: "SELECT ?s ?p ?o WHERE { ?s ?p ?o } LIMIT 10"
-      responses:
-        "200":
-          description: Provenance query results
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  results:
-                    type: array
-                    description: Query results
-                  count:
-                    type: integer
-                    description: Number of results returned
-                  query_type:
-                    type: string
-                    description: Type of query executed
-        "400":
-          description: Invalid query parameters
-        "500":
-          description: Internal server error
-      security:
-        - sigv4: []
-      x-amazon-apigateway-integration:
-        credentials:
-          Fn::GetAtt: [PheBeeAPIRole, Arn]
-        payloadFormatVersion: "2.0"
-        type: "aws_proxy"
-        uri:
-          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-QueryProvenanceFunction/invocations
-        connectionType: "INTERNET"
-        timeoutInMillis: 30000
-
 x-amazon-apigateway-cors:
   allowMethods:
     - "*"
