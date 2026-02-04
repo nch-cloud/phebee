@@ -30,6 +30,7 @@ import time
 import os
 from collections import defaultdict
 from .hash import generate_termlink_hash
+from .iceberg import parse_athena_struct_array
 from typing import List, Optional, Sequence, Dict
 try:
     from aws_lambda_powertools import Metrics, Logger, Tracer
@@ -676,17 +677,22 @@ def get_term_links_with_counts(
             termlink_id = row['termlink_id']
             evidence_count = int(row['evidence_count'])
             
-            # Parse qualifiers array
+            # Parse qualifiers array - Athena struct format
             qualifiers = []
             try:
-                import json
-                qualifiers_list = json.loads(qualifiers_json) if qualifiers_json else []
-                # Extract qualifier types where value = '1' (active)
+                # Athena returns complex types in struct format
+                if qualifiers_json and qualifiers_json != 'null':
+                    qualifiers_list = parse_athena_struct_array(qualifiers_json)
+                else:
+                    qualifiers_list = []
+                
+                # Extract qualifier types where value = 'true' (active)
                 qualifiers = [
                     q['qualifier_type'] for q in qualifiers_list 
-                    if q.get('qualifier_value') == '1'
+                    if q.get('qualifier_value') == 'true'
                 ]
-            except:
+            except Exception as e:
+                logger.error(f"Error parsing qualifiers: {e}")
                 pass
             
             # Create group key from term + sorted qualifiers

@@ -19,6 +19,83 @@ from phebee.constants import PHEBEE
 
 logger = logging.getLogger(__name__)
 
+
+def parse_athena_struct_array(struct_str):
+    """
+    Parse Athena struct array format like [{qualifier_type=negated, qualifier_value=true}]
+    Returns list of dictionaries.
+    """
+    if not struct_str or struct_str == 'null':
+        return []
+    
+    # Remove outer brackets
+    if struct_str.startswith('[') and struct_str.endswith(']'):
+        inner = struct_str[1:-1].strip()
+    else:
+        inner = struct_str.strip()
+    
+    structs = []
+    if inner:
+        # Split by }, { to handle multiple structs
+        if '}, {' in inner:
+            struct_parts = inner.split('}, {')
+            struct_parts = [part.strip('{}') for part in struct_parts]
+        else:
+            # Single struct, remove outer braces
+            struct_parts = [inner.strip('{}')]
+        
+        for part in struct_parts:
+            if not part.strip():
+                continue
+            
+            # Parse key=value pairs
+            struct_dict = {}
+            # Split on comma, but be careful of commas within values
+            pairs = []
+            current_pair = ""
+            paren_depth = 0
+            
+            for char in part:
+                if char == ',' and paren_depth == 0:
+                    pairs.append(current_pair.strip())
+                    current_pair = ""
+                else:
+                    if char in '({[':
+                        paren_depth += 1
+                    elif char in ')}]':
+                        paren_depth -= 1
+                    current_pair += char
+            
+            if current_pair.strip():
+                pairs.append(current_pair.strip())
+            
+            for pair in pairs:
+                if '=' in pair:
+                    key, value = pair.split('=', 1)
+                    struct_dict[key.strip()] = value.strip()
+            
+            if struct_dict:
+                structs.append(struct_dict)
+    
+    return structs
+
+
+def parse_qualifiers_field(qualifiers_str):
+    """
+    Parse qualifiers field from Athena struct format.
+    Returns list of active qualifier types.
+    """
+    if not qualifiers_str or qualifiers_str == 'null':
+        return []
+    
+    qualifiers_list = parse_athena_struct_array(qualifiers_str)
+    
+    # Extract active qualifiers
+    return [
+        q['qualifier_type'] for q in qualifiers_list 
+        if q.get('qualifier_value') in ['true', '1', 1, 1.0, True]
+    ]
+
 PHEBEE_NS = Namespace(PHEBEE)
 OBO = Namespace("http://purl.obolibrary.org/obo/")
 
@@ -249,7 +326,7 @@ def get_evidence_for_phenopackets(
             # Parse qualifiers to determine if excluded
             excluded = False
             try:
-                qualifiers_list = json.loads(row.get('qualifiers', '[]')) if row.get('qualifiers') else []
+                qualifiers_list = parse_athena_struct_array(row.get('qualifiers', '[]')) if row.get('qualifiers') else []
                 # Check for negated qualifier
                 for q in qualifiers_list:
                     if q.get('qualifier_type') == 'negated' and q.get('qualifier_value') in ['true', '1', 1, 1.0, True]:
@@ -551,18 +628,11 @@ def get_evidence_record(evidence_id: str) -> Dict[str, Any] | None:
             if qualifiers_str and qualifiers_str != '[]':
                 # Parse format like [{qualifier_type=negated, qualifier_value=true}]
                 qualifiers_dict = {}
-                try:
-                    # Try to parse as JSON first
-                    qualifiers_list = json.loads(qualifiers_str)
-                    for q in qualifiers_list:
-                        if isinstance(q, dict) and 'qualifier_type' in q and 'qualifier_value' in q:
-                            qualifiers_dict[q['qualifier_type']] = q['qualifier_value']
-                except (json.JSONDecodeError, ValueError):
-                    # Fall back to regex parsing for struct format
-                    import re
-                    matches = re.findall(r'\{qualifier_type=([^,]+), qualifier_value=([^}]+)\}', qualifiers_str)
-                    for qualifier_type, qualifier_value in matches:
-                        qualifiers_dict[qualifier_type.strip()] = qualifier_value.strip()
+                # Use shared parser for Athena struct format
+                qualifiers_list = parse_athena_struct_array(qualifiers_str)
+                for q in qualifiers_list:
+                    if isinstance(q, dict) and 'qualifier_type' in q and 'qualifier_value' in q:
+                        qualifiers_dict[q['qualifier_type']] = q['qualifier_value']
                 
                 record["qualifiers"] = qualifiers_dict
         
@@ -861,9 +931,30 @@ def get_subject_term_info(
         "source_type": evidence_data[0].get('evidence_type', 'http://purl.obolibrary.org/obo/ECO_0006162') if evidence_data else None
     }]
     
+    # Extract short qualifier names from the evidence data
+    active_qualifiers = []
+    if evidence_data and evidence_data[0].get('qualifiers'):
+        qualifiers_from_evidence = evidence_data[0]['qualifiers']
+        if isinstance(qualifiers_from_evidence, str):
+            # Parse if it's a string (might be JSON or struct format)
+            active_qualifiers = parse_qualifiers_field(qualifiers_from_evidence)
+        elif isinstance(qualifiers_from_evidence, list):
+            # Extract active qualifiers from list format
+            for q in qualifiers_from_evidence:
+                if isinstance(q, dict) and q.get('qualifier_value') in ['true', '1', 1, 1.0, True]:
+                    qualifier_type = q.get('qualifier_type', '')
+                    # Extract short name from full IRI if needed
+                    # NOTE: This assumes all qualifiers are in the same namespace and can be 
+                    # shortened by taking the last path segment. If we need to support 
+                    # qualifiers from multiple namespaces in the future, this logic should
+                    # be moved to a dedicated function that handles namespace mapping.
+                    if qualifier_type.startswith('http://'):
+                        qualifier_type = qualifier_type.split('/')[-1]
+                    active_qualifiers.append(qualifier_type)
+    
     return {
         "term_iri": term_iri,
-        "qualifiers": sorted(qualifiers or []),
+        "qualifiers": sorted(active_qualifiers),  # Return short names of active qualifiers
         "evidence_count": len(evidence_data),
         "term_links": term_links
     }
@@ -939,11 +1030,7 @@ def get_subject_term_info(
             # Parse qualifiers
             if row.get('qualifiers'):
                 try:
-                    qualifiers_list = json.loads(row['qualifiers'])
-                    record["qualifiers"] = [
-                        q['qualifier_type'] for q in qualifiers_list 
-                        if q.get('qualifier_value') in ['true', '1', 1, 1.0, True]
-                    ]
+                    record["qualifiers"] = parse_qualifiers_field(row['qualifiers'])
                 except:
                     record["qualifiers"] = []
             

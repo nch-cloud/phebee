@@ -138,3 +138,84 @@ def test_link_existing_subject(physical_resources, test_project_id):
     assert second_body["subject_created"] is False
     assert second_body["subject"]["iri"] == subject_iri
     assert second_body["subject"]["projects"][project_id] == project_subject_id2
+
+
+def test_get_subject_with_qualifiers(physical_resources, test_project_id):
+    """Test that get_subject returns qualifiers correctly"""
+    lambda_client = get_client("lambda")
+    create_subject_fn = physical_resources["CreateSubjectFunction"]
+    create_evidence_fn = physical_resources["CreateEvidenceFunction"]
+    get_subject_fn = physical_resources["GetSubjectFunction"]
+
+    project_id = test_project_id
+    project_subject_id = f"test-qual-{uuid.uuid4().hex[:6]}"
+
+    # Create subject
+    subject_payload = {
+        "project_id": project_id,
+        "project_subject_id": project_subject_id
+    }
+
+    subject_response = lambda_client.invoke(
+        FunctionName=create_subject_fn,
+        Payload=json.dumps({"body": json.dumps(subject_payload)}).encode("utf-8"),
+        InvocationType="RequestResponse"
+    )
+
+    subject_status_code, subject_body = parse_lambda_response(subject_response)
+    assert subject_status_code == 200
+    subject_id = subject_body["subject"]["iri"].split("/")[-1]
+
+    # Create evidence with qualifiers (negated=true, family=false, hypothetical=false)
+    evidence_payload = {
+        "subject_id": subject_id,
+        "term_iri": "http://purl.obolibrary.org/obo/HP_0001627",
+        "creator_id": "test-qualifier-creator",
+        "evidence_type": "clinical_note",
+        "clinical_note_id": f"note-{uuid.uuid4()}",
+        "encounter_id": f"encounter-{uuid.uuid4()}",
+        "span_start": 10,
+        "span_end": 20,
+        "qualifiers": ["negated"]  # This should result in negated=true
+    }
+
+    evidence_response = lambda_client.invoke(
+        FunctionName=create_evidence_fn,
+        Payload=json.dumps(evidence_payload).encode("utf-8"),
+        InvocationType="RequestResponse"
+    )
+
+    evidence_status_code, evidence_body = parse_lambda_response(evidence_response)
+    assert evidence_status_code == 201
+
+    # Wait a moment for the evidence to be available in Iceberg
+    import time
+    time.sleep(2)
+
+    # Get subject and verify qualifiers are returned
+    get_payload = {
+        "subject_id": subject_id
+    }
+
+    get_response = lambda_client.invoke(
+        FunctionName=get_subject_fn,
+        Payload=json.dumps(get_payload).encode("utf-8"),
+        InvocationType="RequestResponse"
+    )
+
+    get_status_code, get_body = parse_lambda_response(get_response)
+    assert get_status_code == 200
+    assert "terms" in get_body
+    
+    # Find the term we created evidence for
+    target_term = None
+    for term in get_body["terms"]:
+        if term["term_iri"] == "http://purl.obolibrary.org/obo/HP_0001627":
+            target_term = term
+            break
+    
+    assert target_term is not None, "Should find the term we created evidence for"
+    assert "qualifiers" in target_term
+    assert len(target_term["qualifiers"]) > 0, f"Should have qualifiers, got: {target_term}"
+    assert "negated" in target_term["qualifiers"], f"Should include 'negated' qualifier, got: {target_term['qualifiers']}"
+    assert target_term["evidence_count"] > 0, "Should have evidence count"
