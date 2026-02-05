@@ -702,7 +702,7 @@ def get_term_links_with_counts(
             if group_key not in term_groups:
                 term_groups[group_key] = {
                     "term_iri": term_iri,
-                    "term_label": None,  # TODO: Add term label lookup
+                    "term_label": None,  # Populated downstream if ontology version provided
                     "qualifiers": qualifiers,
                     "evidence_count": 0
                 }
