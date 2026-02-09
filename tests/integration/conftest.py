@@ -30,9 +30,9 @@ from requests_aws4auth import AWS4Auth
 
 from phebee.utils.aws import get_client
 
-from step_function_utils import start_step_function, wait_for_step_function_completion
-from s3_utils import delete_s3_prefix
-from constants import PROJECT_CONFIGS
+from .step_function_utils import start_step_function, wait_for_step_function_completion
+from .s3_utils import delete_s3_prefix
+from .constants import PROJECT_CONFIGS
 
 
 def pytest_addoption(parser):

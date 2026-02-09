@@ -258,3 +258,8 @@ tests/integration/data/phenopackets/sample_phenopackets/*
 samconfig.yaml
 samconfig.yaml.bak
 
+# Performance test benchmark datasets (can be very large: 200MB to 20GB+)
+phebee_import_benchmarks/
+**/phebee_import_benchmark_*/
+**/phebee_benchmark_*/
+benchmark_data/

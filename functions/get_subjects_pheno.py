@@ -38,12 +38,25 @@ def lambda_handler(event, context):
     mondo_version = get_current_term_source_version("mondo")
 
     project_subject_ids = body.get("project_subject_ids")
-    
+
     # Qualifier filtering parameter
     include_qualified = body.get("include_qualified", False)
-    
+
     # Term hierarchy parameter
     include_child_terms = body.get("include_child_terms", True)
+
+    # Validate against root/universal terms that would match all subjects
+    # These queries are inefficient and should use unfiltered project query instead
+    ROOT_TERMS = {
+        "http://purl.obolibrary.org/obo/HP_0000001",  # All (root of HPO)
+        "http://purl.obolibrary.org/obo/HP_0000118",  # Phenotypic abnormality (matches nearly all)
+    }
+
+    if term_iri and include_child_terms and term_iri in ROOT_TERMS:
+        raise ValueError(
+            f"Query term '{term_iri}' with include_child_terms=true would match all subjects. "
+            f"Use an unfiltered query (omit term_iri) or set include_child_terms=false instead."
+        )
     
     # Pagination parameters
     limit = body.get("limit", 1000)
