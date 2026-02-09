@@ -90,6 +90,10 @@ def check_ontology_cache_populated(cloudformation_stack, source_name, version):
     """
     Verify that the DynamoDB cache table was populated with ontology hierarchy paths.
 
+    Verifies both row types from dual-write strategy:
+    - TERM_PATH# rows (shared PK for descendant queries)
+    - TERM# rows (unique PK for direct term lookups)
+
     Args:
         cloudformation_stack: CloudFormation stack info
         source_name: Ontology source (e.g., "hpo")
@@ -101,72 +105,122 @@ def check_ontology_cache_populated(cloudformation_stack, source_name, version):
     dynamodb = boto3.resource("dynamodb")
     table = dynamodb.Table(cache_table_name)
 
-    # Scan for TERM_PATH# entries for this ontology/version
-    # Use a limit to avoid scanning the entire table
-    response = table.scan(
-        FilterExpression="begins_with(PK, :pk_prefix)",
-        ExpressionAttributeValues={
-            ":pk_prefix": f"TERM_PATH#{source_name}|{version}|"
-        },
-        Limit=1000  # Sample check - HPO has ~18K terms with multiple inheritance
-    )
-
-    items = response.get("Items", [])
-
     print(f"\nCache table verification:")
     print(f"  Table: {cache_table_name}")
     print(f"  Source: {source_name} version {version}")
-    print(f"  Sample size: {len(items)} paths")
+
+    # -------------------------------------------------------------------------
+    # Part 1: Verify TERM_PATH# rows (shared PK for descendant queries)
+    # -------------------------------------------------------------------------
+    shared_pk = f"TERM_PATH#{source_name}|{version}"
+    print(f"\n  Checking TERM_PATH# rows (PK={shared_pk})...")
+
+    shared_response = table.query(
+        KeyConditionExpression="PK = :pk",
+        ExpressionAttributeValues={
+            ":pk": shared_pk
+        },
+        Limit=1000
+    )
+
+    shared_items = shared_response.get("Items", [])
+    print(f"    Found {len(shared_items)} items with shared PK")
 
     # Verify we have paths in the cache
-    assert len(items) > 0, f"No TERM_PATH entries found for {source_name}|{version} in cache table"
+    assert len(shared_items) > 0, f"No TERM_PATH# entries found for {source_name}|{version}"
+    assert len(shared_items) >= 100, f"Expected at least 100 paths in shared PK rows, found {len(shared_items)}"
 
-    # For HPO, we expect thousands of paths (each term can have multiple paths due to multiple inheritance)
-    # Let's check we have at least 100 paths in our sample
-    assert len(items) >= 100, f"Expected at least 100 paths in sample, found {len(items)}"
+    # Verify structure of a sample shared PK entry
+    shared_sample = shared_items[0]
+    print(f"    Sample TERM_PATH# entry:")
+    print(f"      PK: {shared_sample['PK']}")
+    print(f"      SK: {shared_sample['SK']}")
+    print(f"      term_id: {shared_sample.get('term_id')}")
+    print(f"      label: {shared_sample.get('label', '(none)')}")
+    print(f"      path_length: {shared_sample.get('path_length')}")
 
-    # Verify structure of a sample path entry
-    sample_item = items[0]
-    print(f"\n  Sample cache entry:")
-    print(f"    PK: {sample_item['PK']}")
-    print(f"    SK: {sample_item['SK']}")
-    print(f"    term_id: {sample_item.get('term_id')}")
-    print(f"    path_length: {sample_item.get('path_length')}")
-
-    # Verify required fields
-    assert "PK" in sample_item, "Cache entry missing PK"
-    assert "SK" in sample_item, "Cache entry missing SK"
-    assert "term_id" in sample_item, "Cache entry missing term_id"
-    assert "ontology" in sample_item, "Cache entry missing ontology"
-    assert "version" in sample_item, "Cache entry missing version"
-    assert "path_length" in sample_item, "Cache entry missing path_length"
-
-    # Verify PK format: TERM_PATH#hpo|version|term_id
-    assert sample_item["PK"].startswith(f"TERM_PATH#{source_name}|{version}|"), \
-        f"Invalid PK format: {sample_item['PK']}"
+    # Verify required fields for shared PK rows
+    assert shared_sample["PK"] == shared_pk, f"Shared PK should be '{shared_pk}', found: {shared_sample['PK']}"
+    assert "SK" in shared_sample, "Cache entry missing SK"
+    assert "term_id" in shared_sample, "Shared PK row missing term_id"
+    assert "ontology" in shared_sample, "Cache entry missing ontology"
+    assert "version" in shared_sample, "Cache entry missing version"
+    assert "path_length" in shared_sample, "Cache entry missing path_length"
+    assert "label" in shared_sample, "Cache entry missing label field"
+    assert isinstance(shared_sample["label"], str), "Label should be a string"
+    assert len(shared_sample["label"]) > 0, "Label should not be empty"
 
     # Verify SK format: pipe-delimited term IDs (ancestor path)
-    assert "|" in sample_item["SK"] or sample_item["path_length"] == 1, \
-        f"Invalid SK format (expected pipe-delimited path): {sample_item['SK']}"
+    assert "|" in shared_sample["SK"] or shared_sample["path_length"] == 1, \
+        f"Invalid SK format (expected pipe-delimited path): {shared_sample['SK']}"
 
-    # Verify SK ends with the term_id from PK (path should end at the term itself)
-    assert sample_item["SK"].endswith(sample_item["term_id"]), \
-        f"SK path should end with term_id. SK={sample_item['SK']}, term_id={sample_item['term_id']}"
+    # Verify SK ends with the term_id (path should end at the term itself)
+    assert shared_sample["SK"].endswith(shared_sample["term_id"]), \
+        f"SK path should end with term_id. SK={shared_sample['SK']}, term_id={shared_sample['term_id']}"
 
     # Verify path_length matches number of terms in SK
-    path_terms = sample_item["SK"].split("|")
-    assert len(path_terms) == sample_item["path_length"], \
-        f"path_length mismatch: SK has {len(path_terms)} terms, path_length={sample_item['path_length']}"
+    path_terms = shared_sample["SK"].split("|")
+    assert len(path_terms) == shared_sample["path_length"], \
+        f"path_length mismatch: SK has {len(path_terms)} terms, path_length={shared_sample['path_length']}"
 
-    # Validate specific known term paths for HPO
+    # -------------------------------------------------------------------------
+    # Part 2: Verify TERM# rows (unique PK for direct term lookups)
+    # -------------------------------------------------------------------------
+    # Pick a term from the shared PK results to verify it has a corresponding TERM# row
+    test_term_id = shared_sample["term_id"]
+    direct_pk = f"TERM#{source_name}|{version}|{test_term_id}"
+    print(f"\n  Checking TERM# rows (PK={direct_pk})...")
+
+    direct_response = table.query(
+        KeyConditionExpression="PK = :pk",
+        ExpressionAttributeValues={
+            ":pk": direct_pk
+        }
+    )
+
+    direct_items = direct_response.get("Items", [])
+    print(f"    Found {len(direct_items)} path(s) for term {test_term_id}")
+
+    # Verify we have at least one path for this term
+    assert len(direct_items) > 0, f"No TERM# entries found for {test_term_id}"
+
+    # Verify structure of direct lookup entry
+    direct_sample = direct_items[0]
+    print(f"    Sample TERM# entry:")
+    print(f"      PK: {direct_sample['PK']}")
+    print(f"      SK: {direct_sample['SK']}")
+    print(f"      label: {direct_sample.get('label', '(none)')}")
+    print(f"      path_length: {direct_sample.get('path_length')}")
+
+    # Verify required fields for direct PK rows
+    assert direct_sample["PK"] == direct_pk, f"Direct PK should be '{direct_pk}', found: {direct_sample['PK']}"
+    assert "SK" in direct_sample, "Direct row missing SK"
+    assert "ontology" in direct_sample, "Direct row missing ontology"
+    assert "version" in direct_sample, "Direct row missing version"
+    assert "path_length" in direct_sample, "Direct row missing path_length"
+    assert "label" in direct_sample, "Direct row missing label field"
+    assert isinstance(direct_sample["label"], str), "Label should be a string"
+    assert len(direct_sample["label"]) > 0, "Label should not be empty"
+
+    # Verify SK format matches between both row types
+    assert direct_sample["SK"] == shared_sample["SK"] or \
+           any(item["SK"] == direct_sample["SK"] for item in shared_items), \
+           "Direct row SK should match at least one shared row SK for the same term"
+
+    print(f"\n  ✓ Both row types (TERM_PATH# and TERM#) verified successfully")
+
+    # -------------------------------------------------------------------------
+    # Part 3: Validate specific known term paths for HPO
+    # -------------------------------------------------------------------------
     if source_name == "hpo":
         print(f"\n  Validating known HPO term paths:")
 
         # Test 1: Root term (HP_0000001 - "All")
+        root_direct_pk = f"TERM#{source_name}|{version}|HP_0000001"
         root_response = table.query(
             KeyConditionExpression="PK = :pk",
             ExpressionAttributeValues={
-                ":pk": f"TERM_PATH#{source_name}|{version}|HP_0000001"
+                ":pk": root_direct_pk
             },
             Limit=5
         )
@@ -178,11 +232,19 @@ def check_ontology_cache_populated(cloudformation_stack, source_name, version):
         assert "HP_0000001" in root_paths, \
             f"Expected root term path 'HP_0000001' in cache, found: {root_paths}"
 
+        # Verify root term has label
+        root_item = root_items[0]
+        assert "label" in root_item, "Root term should have label"
+        print(f"      Label: {root_item['label']}")
+        assert root_item["label"] == "All", \
+            f"HP_0000001 should have label 'All', found: {root_item['label']}"
+
         # Test 2: Phenotypic abnormality (HP_0000118 - child of root)
+        pheno_direct_pk = f"TERM#{source_name}|{version}|HP_0000118"
         pheno_response = table.query(
             KeyConditionExpression="PK = :pk",
             ExpressionAttributeValues={
-                ":pk": f"TERM_PATH#{source_name}|{version}|HP_0000118"
+                ":pk": pheno_direct_pk
             }
         )
         pheno_items = pheno_response.get("Items", [])
@@ -196,11 +258,19 @@ def check_ontology_cache_populated(cloudformation_stack, source_name, version):
         assert any(expected_path in path for path in pheno_paths), \
             f"Expected path containing '{expected_path}', found: {pheno_paths}"
 
+        # Verify label
+        pheno_item = pheno_items[0]
+        assert "label" in pheno_item, "HP_0000118 should have label"
+        print(f"      Label: {pheno_item['label']}")
+        assert pheno_item["label"] == "Phenotypic abnormality", \
+            f"HP_0000118 should have label 'Phenotypic abnormality', found: {pheno_item['label']}"
+
         # Test 3: Abnormal heart morphology (HP_0001627 - the cardiovascular term from perf issue)
+        cardiac_direct_pk = f"TERM#{source_name}|{version}|HP_0001627"
         cardiac_response = table.query(
             KeyConditionExpression="PK = :pk",
             ExpressionAttributeValues={
-                ":pk": f"TERM_PATH#{source_name}|{version}|HP_0001627"
+                ":pk": cardiac_direct_pk
             }
         )
         cardiac_items = cardiac_response.get("Items", [])
@@ -208,6 +278,13 @@ def check_ontology_cache_populated(cloudformation_stack, source_name, version):
         if len(cardiac_items) > 0:  # May not exist in test HPO versions
             cardiac_paths = [item["SK"] for item in cardiac_items]
             print(f"    HP_0001627 (Abnormal heart morphology): {len(cardiac_paths)} path(s)")
+
+            # Verify label
+            cardiac_item = cardiac_items[0]
+            assert "label" in cardiac_item, "HP_0001627 should have label"
+            print(f"      Label: {cardiac_item['label']}")
+            assert cardiac_item["label"] == "Abnormal heart morphology", \
+                f"HP_0001627 should have label 'Abnormal heart morphology', found: {cardiac_item['label']}"
 
             # Verify all paths start with root
             for path in cardiac_paths:

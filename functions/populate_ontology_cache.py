@@ -15,7 +15,7 @@ import json
 import boto3
 import logging
 import time
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Set, Tuple, Optional
 from collections import defaultdict, deque
 from botocore.exceptions import ClientError
 
@@ -24,6 +24,7 @@ import sys
 sys.path.insert(0, '/opt')  # Lambda layer path
 from phebee.utils.dynamodb_cache import (
     build_term_path_pk,
+    build_term_direct_pk,
     build_ancestor_path_sk,
     _get_cache_table
 )
@@ -67,9 +68,9 @@ def lambda_handler(event, context):
     obo_content = _download_from_s3(obo_path)
     print(f"Downloaded OBO file: {len(obo_content)} bytes")
 
-    # Parse OBO file to extract hierarchy
-    ontology_graph = _parse_obo(obo_content)
-    print(f"Parsed ontology: {len(ontology_graph)} terms")
+    # Parse OBO file to extract hierarchy and labels
+    ontology_graph, term_labels = _parse_obo(obo_content)
+    print(f"Parsed ontology: {len(ontology_graph)} terms with parents, {len(term_labels)} terms with labels")
 
     # Find root term(s)
     roots = _find_roots(ontology_graph)
@@ -81,7 +82,7 @@ def lambda_handler(event, context):
     print(f"Computed paths: {len(all_paths)} terms, {total_paths} total paths")
 
     # Write paths to DynamoDB cache
-    paths_written = _write_paths_to_cache(all_paths, source, version)
+    paths_written = _write_paths_to_cache(all_paths, term_labels, source, version)
     print(f"Wrote {paths_written} path entries to cache")
 
     return {
@@ -142,15 +143,17 @@ def _download_from_s3(s3_path: str, max_retries: int = 3) -> str:
                 raise
 
 
-def _parse_obo(obo_content: str) -> Dict[str, List[str]]:
+def _parse_obo(obo_content: str) -> Tuple[Dict[str, List[str]], Dict[str, str]]:
     """
-    Parse OBO file to extract is_a relationships.
+    Parse OBO file to extract is_a relationships and term labels.
 
     Args:
         obo_content: Raw OBO file content
 
     Returns:
-        Dict mapping term_id -> list of parent term_ids
+        Tuple of (graph, labels):
+            - graph: Dict mapping term_id -> list of parent term_ids
+            - labels: Dict mapping term_id -> human-readable label
 
     Raises:
         ValueError: If OBO file is invalid or empty
@@ -173,6 +176,7 @@ def _parse_obo(obo_content: str) -> Dict[str, List[str]]:
         logger.warning("OBO file missing 'format-version' header - may be invalid format")
 
     graph = defaultdict(list)
+    labels = {}
     current_term = None
     terms_found = 0
 
@@ -187,18 +191,22 @@ def _parse_obo(obo_content: str) -> Dict[str, List[str]]:
             term_id = line[4:].strip()
             term_id = term_id.replace(":", "_")
             current_term = term_id
+        elif line.startswith("name: ") and current_term:
+            # Extract human-readable label
+            label = line[6:].strip()
+            labels[current_term] = label
         elif line.startswith("is_a: ") and current_term:
             # Extract parent ID (format: "is_a: HP:0001626 ! comment")
             parent_part = line[6:].split("!")[0].strip()
             parent_id = parent_part.replace(":", "_")
             graph[current_term].append(parent_id)
 
-    logger.info(f"Parsed {terms_found} [Term] stanzas, {len(graph)} terms with parents")
+    logger.info(f"Parsed {terms_found} [Term] stanzas, {len(graph)} terms with parents, {len(labels)} terms with labels")
 
     if len(graph) == 0:
         raise ValueError(f"No terms with parent relationships found in OBO file")
 
-    return dict(graph)
+    return dict(graph), labels
 
 
 def _find_roots(graph: Dict[str, List[str]]) -> List[str]:
@@ -271,18 +279,35 @@ def _compute_all_paths(
 
 def _write_paths_to_cache(
     all_paths: Dict[str, List[List[str]]],
+    labels: Dict[str, str],
     source: str,
     version: str
 ) -> int:
     """
-    Write all paths to DynamoDB cache table.
+    Write all paths to DynamoDB cache table using dual-write strategy.
 
-    Each path becomes one DynamoDB item:
-        PK = "TERM_PATH#hpo|2026-01-08|HP_0001627"
+    Each path is written as TWO DynamoDB items:
+
+    1. Shared PK for descendant queries:
+        PK = "TERM_PATH#hpo|2026-01-08"
         SK = "HP_0000001|HP_0000118|HP_0001627"
+        term_id = "HP_0001627"
+        label = "Abnormal heart morphology"
+
+    2. Unique PK for direct term lookups:
+        PK = "TERM#hpo|2026-01-08|HP_0001627"
+        SK = "HP_0000001|HP_0000118|HP_0001627"
+        label = "Abnormal heart morphology"
+        path_length = 3
+
+    Args:
+        all_paths: Dict mapping term_id to list of ancestor paths
+        labels: Dict mapping term_id to human-readable label
+        source: Ontology source (e.g., "hpo")
+        version: Ontology version (e.g., "2026-01-08")
 
     Returns:
-        Number of items written
+        Number of items written (includes both row types)
     """
     table = _get_cache_table()
     items_written = 0
@@ -290,19 +315,45 @@ def _write_paths_to_cache(
     # Batch write in chunks of 25 (DynamoDB limit)
     batch_items = []
 
+    # Build shared PK once (used by all paths for descendant queries)
+    shared_pk = build_term_path_pk(source, version)
+
     for term_id, paths in all_paths.items():
+        # Get label for this term (may be None if not in OBO file)
+        label = labels.get(term_id)
+
+        # Build unique PK once per term (used for direct lookups)
+        direct_pk = build_term_direct_pk(source, version, term_id)
+
         for path in paths:
-            pk = build_term_path_pk(source, version, term_id)
             sk = build_ancestor_path_sk(path)
 
-            batch_items.append({
-                "PK": pk,
+            # Row Type 1: Shared PK for descendant queries
+            shared_item = {
+                "PK": shared_pk,
                 "SK": sk,
                 "term_id": term_id,
                 "ontology": source,
                 "version": version,
                 "path_length": len(path)
-            })
+            }
+            if label:
+                shared_item["label"] = label
+
+            batch_items.append(shared_item)
+
+            # Row Type 2: Unique PK for direct term lookups
+            direct_item = {
+                "PK": direct_pk,
+                "SK": sk,
+                "ontology": source,
+                "version": version,
+                "path_length": len(path)
+            }
+            if label:
+                direct_item["label"] = label
+
+            batch_items.append(direct_item)
 
             # Write batch when we hit 25 items
             if len(batch_items) >= 25:

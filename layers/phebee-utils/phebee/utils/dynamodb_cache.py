@@ -54,24 +54,63 @@ def _get_cache_table():
 # HPO Ontology Path Management
 # -----------------------------------------------------------------------------
 #
-# Design Decision: Pipe-delimited ancestor paths in SK
-#   - SK format: "HP_0000001|HP_0000118|HP_0001627" (path from root to term)
-#   - Enables efficient hierarchy queries with DynamoDB begins_with operator
-#   - Compact storage (~50 bytes per path vs ~500 bytes for full IRIs)
-#   - Handles multiple inheritance: one DynamoDB item per path
+# Design: Dual-write strategy for efficient query patterns
 #
-# Key Schema for Ontology Path Cache:
-#   PK = "TERM_PATH#hpo|2026-01-08|HP_0001627"  (ontology|version|term)
-#   SK = "HP_0000001|HP_0000118|HP_0001627"      (full ancestor path)
+# Row Type 1 - Descendant queries (shared PK):
+#   PK = "TERM_PATH#hpo|2026-01-08"                    (shared by all terms)
+#   SK = "HP_0000001|HP_0000118|HP_0001627"            (full ancestor path)
+#   term_id = "HP_0001627"
+#   label = "Abnormal heart morphology"
+#   - Enables begins_with on SK to find all descendants of a term
+#   - Example: "Find all terms under HP_0000118" → begins_with("HP_0000118|")
+#
+# Row Type 2 - Direct term lookups (unique PK):
+#   PK = "TERM#hpo|2026-01-08|HP_0001627"              (unique per term)
+#   SK = "HP_0000001|HP_0000118|HP_0001627"            (full ancestor path)
+#   label = "Abnormal heart morphology"
+#   path_length = 3
+#   - Enables efficient lookup of all paths for a specific term (no FilterExpression)
+#   - Enables efficient label lookup for a specific term
+#   - Query by PK returns all paths for the term (handles multiple inheritance)
+#
+# Trade-offs:
+#   - 2x storage (one item per path × 2 row types)
+#   - 2x write operations
+#   - Zero FilterExpression overhead for all three query patterns
 #
 # Populated by: PopulateOntologyCacheFunction (runs during ontology update)
 # Used by: Query lambdas to resolve term hierarchies for cohort queries
 # -----------------------------------------------------------------------------
 
 
-def build_term_path_pk(ontology: str, version: str, term_id: str) -> str:
+def build_term_path_pk(ontology: str, version: str) -> str:
     """
-    Build partition key for ontology term path lookup.
+    Build shared partition key for descendant queries.
+
+    This PK is shared by ALL terms in the ontology version, enabling
+    begins_with queries on SK to find descendants.
+
+    Args:
+        ontology: Ontology identifier (e.g., "hpo", "mondo")
+        version: Ontology version (e.g., "2026-01-08", "v2024-10-01")
+
+    Returns:
+        Partition key string: "TERM_PATH#hpo|2026-01-08"
+
+    Example:
+        >>> build_term_path_pk("hpo", "2026-01-08")
+        "TERM_PATH#hpo|2026-01-08"
+    """
+    return f"TERM_PATH#{ontology}|{version}"
+
+
+def build_term_direct_pk(ontology: str, version: str, term_id: str) -> str:
+    """
+    Build unique partition key for direct term lookups.
+
+    This PK is unique per term, enabling efficient queries for:
+    - All ancestor paths for a specific term (no FilterExpression)
+    - Label lookup for a specific term
 
     Args:
         ontology: Ontology identifier (e.g., "hpo", "mondo")
@@ -79,13 +118,13 @@ def build_term_path_pk(ontology: str, version: str, term_id: str) -> str:
         term_id: Term identifier without namespace (e.g., "HP_0001627")
 
     Returns:
-        Partition key string: "TERM_PATH#hpo|2026-01-08|HP_0001627"
+        Partition key string: "TERM#hpo|2026-01-08|HP_0001627"
 
     Example:
-        >>> build_term_path_pk("hpo", "2026-01-08", "HP_0001627")
-        "TERM_PATH#hpo|2026-01-08|HP_0001627"
+        >>> build_term_direct_pk("hpo", "2026-01-08", "HP_0001627")
+        "TERM#hpo|2026-01-08|HP_0001627"
     """
-    return f"TERM_PATH#{ontology}|{version}|{term_id}"
+    return f"TERM#{ontology}|{version}|{term_id}"
 
 
 def build_ancestor_path_sk(ancestor_ids: List[str]) -> str:
@@ -125,6 +164,121 @@ def parse_term_id_from_iri(term_iri: str) -> str:
         "HP_0001627"
     """
     return term_iri.split("/")[-1]
+
+
+def get_term_ancestor_paths(ontology: str, version: str, term_id: str, table=None) -> List[List[str]]:
+    """
+    Get all ancestor paths for a specific term from the cache.
+
+    Uses the TERM# (direct lookup) PK for efficient retrieval without FilterExpression.
+    Returns all paths due to multiple inheritance (one term can have multiple parent paths).
+
+    Args:
+        ontology: Ontology identifier (e.g., "hpo", "mondo")
+        version: Ontology version (e.g., "2026-01-08")
+        term_id: Term identifier without namespace (e.g., "HP_0001627")
+        table: Optional DynamoDB Table resource (for testing)
+
+    Returns:
+        List of paths, where each path is a list of term IDs from root to term.
+        Returns empty list if term not found in cache.
+
+    Example:
+        >>> paths = get_term_ancestor_paths("hpo", "2026-01-08", "HP_0001627")
+        >>> print(paths)
+        [
+            ["HP_0000001", "HP_0000118", "HP_0001627"],
+            ["HP_0000001", "HP_0001626", "HP_0001627"]
+        ]
+
+    Raises:
+        ValueError: If cache table is not configured (when table not provided)
+        ClientError: If DynamoDB query fails
+    """
+    if table is None:
+        table = _get_cache_table()
+
+    pk = build_term_direct_pk(ontology, version, term_id)
+
+    try:
+        response = table.query(
+            KeyConditionExpression="PK = :pk",
+            ExpressionAttributeValues={
+                ":pk": pk
+            }
+        )
+
+        items = response.get("Items", [])
+
+        # Convert SK strings to lists of term IDs
+        paths = []
+        for item in items:
+            sk = item.get("SK", "")
+            if sk:
+                # SK format: "HP_0000001|HP_0000118|HP_0001627"
+                path = sk.split("|")
+                paths.append(path)
+
+        logger.info(f"Found {len(paths)} ancestor path(s) for {term_id}")
+        return paths
+
+    except Exception as e:
+        logger.error(f"Failed to get ancestor paths for {term_id}: {str(e)}")
+        raise
+
+
+def get_term_label(ontology: str, version: str, term_id: str, table=None) -> Optional[str]:
+    """
+    Get the human-readable label for a specific term from the cache.
+
+    Uses the TERM# (direct lookup) PK for efficient retrieval without FilterExpression.
+    Returns the label from the first path entry (all paths for a term have the same label).
+
+    Args:
+        ontology: Ontology identifier (e.g., "hpo", "mondo")
+        version: Ontology version (e.g., "2026-01-08")
+        term_id: Term identifier without namespace (e.g., "HP_0001627")
+        table: Optional DynamoDB Table resource (for testing)
+
+    Returns:
+        Human-readable label string, or None if term not found or has no label.
+
+    Example:
+        >>> label = get_term_label("hpo", "2026-01-08", "HP_0001627")
+        >>> print(label)
+        "Abnormal heart morphology"
+
+    Raises:
+        ValueError: If cache table is not configured (when table not provided)
+        ClientError: If DynamoDB query fails
+    """
+    if table is None:
+        table = _get_cache_table()
+
+    pk = build_term_direct_pk(ontology, version, term_id)
+
+    try:
+        response = table.query(
+            KeyConditionExpression="PK = :pk",
+            ExpressionAttributeValues={
+                ":pk": pk
+            },
+            Limit=1  # Only need one item to get the label
+        )
+
+        items = response.get("Items", [])
+
+        if items:
+            label = items[0].get("label")
+            logger.info(f"Found label for {term_id}: {label}")
+            return label
+        else:
+            logger.warning(f"No cache entry found for {term_id}")
+            return None
+
+    except Exception as e:
+        logger.error(f"Failed to get label for {term_id}: {str(e)}")
+        raise
 
 
 def reset_dynamodb_cache_table():
@@ -185,21 +339,27 @@ def reset_dynamodb_cache_table():
 # Implementation Status
 # -----------------------------------------------------------------------------
 #
-# IMPLEMENTED (Phase 1):
-#   - DynamoDB cache table infrastructure (template.yaml)
-#   - Ontology path cache population (populate_ontology_cache.py)
-#   - Key building functions (above)
-#   - IAM policies and Lambda configurations
+# IMPLEMENTED:
+#   Phase 1 - Infrastructure & Population:
+#     - DynamoDB cache table infrastructure (template.yaml)
+#     - Ontology path cache population (populate_ontology_cache.py)
+#     - Dual-write strategy (TERM_PATH# and TERM# row types)
+#     - Key building functions (build_term_path_pk, build_term_direct_pk)
+#     - IAM policies and Lambda configurations
+#
+#   Phase 2 - Read Functions:
+#     - get_term_ancestor_paths() - Lookup all ancestor paths for a term
+#     - get_term_label() - Lookup human-readable label for a term
 #
 # NOT YET IMPLEMENTED (Future phases):
-#   - get_term_ancestor_path() - Lookup cached path for a term
+#   - get_descendant_terms() - Find all terms descended from a parent term
 #   - query_subjects_by_term() - Main cohort query using cache
 #   - write_term_link() - Write subject-term links to cache during import
 #   - Cache invalidation/versioning strategy
 #   - SPARQL fallback when cache is unavailable
 #
 # Next Steps:
-#   1. Implement query functions to READ from cache (Phase 2)
+#   1. Implement get_descendant_terms() using TERM_PATH# shared PK (Phase 2)
 #   2. Update bulk import pipeline to WRITE to cache (Phase 3)
 #   3. Update query lambdas to use cache instead of Neptune (Phase 4)
 # -----------------------------------------------------------------------------
