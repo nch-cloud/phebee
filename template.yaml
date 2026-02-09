@@ -261,6 +261,40 @@ Resources:
             Resource:
               - !GetAtt DynamoDBTable.Arn
 
+  PheBeeDynamoDBCacheReadPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:Scan
+              - dynamodb:Query
+              - dynamodb:DescribeTable
+              - dynamodb:GetItem
+              - dynamodb:BatchGetItem
+              - dynamodb:TransactGetItems
+            Resource:
+              - !GetAtt DynamoDBCacheTable.Arn
+
+  PheBeeDynamoDBCacheWritePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+              - dynamodb:DeleteItem
+              - dynamodb:BatchWriteItem
+              - dynamodb:TransactWriteItems
+              - dynamodb:ConditionCheckItem
+            Resource:
+              - !GetAtt DynamoDBCacheTable.Arn
+
   PheBeeNeptuneReadPolicy:
     Type: AWS::IAM::ManagedPolicy
     Properties:
@@ -525,6 +559,8 @@ Resources:
       Policies:
         - !Ref PheBeeDynamoDBWritePolicy
         - !Ref PheBeeDynamoDBReadPolicy
+        - !Ref PheBeeDynamoDBCacheWritePolicy
+        - !Ref PheBeeDynamoDBCacheReadPolicy
         - !Ref PheBeeS3WritePolicy
         - Statement:
           - Effect: Allow
@@ -548,6 +584,8 @@ Resources:
       Policies:
         - !Ref PheBeeDynamoDBReadPolicy
         - !Ref PheBeeDynamoDBWritePolicy
+        - !Ref PheBeeDynamoDBCacheReadPolicy
+        - !Ref PheBeeDynamoDBCacheWritePolicy
 
   StartLoadFunction:
     Type: AWS::Serverless::Function
@@ -607,6 +645,7 @@ Resources:
           PheBeeDynamoTable: !Ref DynamoDBTable
       Policies:
         - !Ref PheBeeDynamoDBReadPolicy
+        - !Ref PheBeeDynamoDBCacheReadPolicy
 
   GetSubjectFunction:
     Type: AWS::Serverless::Function
@@ -633,6 +672,7 @@ Resources:
       Policies:
         - !Ref PheBeeNeptuneReadPolicy
         - !Ref PheBeeDynamoDBReadPolicy
+        - !Ref PheBeeDynamoDBCacheReadPolicy
         - !Ref PheBeeIcebergPolicy
 
   GetSubjectTermInfoFunction:
@@ -783,6 +823,7 @@ Resources:
         - !Ref PheBeeS3WritePolicy
         - !Ref PheBeeNeptuneWritePolicy
         - !Ref PheBeeDynamoDBWritePolicy
+        - !Ref PheBeeDynamoDBCacheWritePolicy
 
   GetSubjectsPhenotypesFunction:
     Type: AWS::Serverless::Function
@@ -810,6 +851,7 @@ Resources:
       Policies:
         - !Ref PheBeeNeptuneReadPolicy
         - !Ref PheBeeDynamoDBReadPolicy
+        - !Ref PheBeeDynamoDBCacheReadPolicy
         - !Ref PheBeeS3WritePolicy
 
   ResetDatabaseFunction:
@@ -839,6 +881,8 @@ Resources:
         - !Ref PheBeeNeptuneReadPolicy
         - !Ref PheBeeDynamoDBWritePolicy
         - !Ref PheBeeDynamoDBReadPolicy
+        - !Ref PheBeeDynamoDBCacheWritePolicy
+        - !Ref PheBeeDynamoDBCacheReadPolicy
 
   CreateEvidenceFunction:
     Type: AWS::Serverless::Function
@@ -1116,6 +1160,8 @@ Resources:
         Variables:
           DYNAMODB_TABLE_NAME: !Ref DynamoDBTable
       Policies:
+        - !Ref PheBeeDynamoDBReadPolicy
+        - !Ref PheBeeDynamoDBCacheReadPolicy
         - Statement:
             - Effect: Allow
               Action:
@@ -1131,11 +1177,6 @@ Resources:
                 - glue:GetDatabase
                 - glue:GetPartitions
               Resource: "*"
-            - Effect: Allow
-              Action:
-                - dynamodb:Query
-                - dynamodb:GetItem
-              Resource: !GetAtt DynamoDBTable.Arn
             - Effect: Allow
               Action:
                 - s3:GetBucketLocation
@@ -1207,6 +1248,11 @@ Resources:
             Principal:
               Service: emr-serverless.amazonaws.com
             Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref PheBeeDynamoDBReadPolicy
+        - !Ref PheBeeDynamoDBWritePolicy
+        - !Ref PheBeeDynamoDBCacheReadPolicy
+        - !Ref PheBeeDynamoDBCacheWritePolicy
       Policies:
         - PolicyName: S3Access
           PolicyDocument:
@@ -1247,19 +1293,6 @@ Resources:
                   - glue:BatchCreatePartition
                   - glue:BatchUpdatePartition
                 Resource: "*"
-        - PolicyName: DynamoDBAccess
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - dynamodb:BatchGetItem
-                  - dynamodb:GetItem
-                  - dynamodb:Query
-                  - dynamodb:Scan
-                  - dynamodb:PutItem
-                  - dynamodb:BatchWriteItem
-                Resource: !GetAtt DynamoDBTable.Arn
         - PolicyName: LakeFormationAccess
           PolicyDocument:
             Version: '2012-10-17'
@@ -1593,6 +1626,23 @@ Resources:
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: true
 
+  DynamoDBCacheTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
   #################
   # Iceberg Tables
   #################
@@ -1841,6 +1891,18 @@ Outputs:
     Value: !Ref DynamoDBTable
     Export:
       Name: !Sub ${AppName}-DynamoDBTableName
+
+  DynamoDBCacheTableName:
+    Description: Table name of the PheBee DynamoDB query cache table
+    Value: !Ref DynamoDBCacheTable
+    Export:
+      Name: !Sub ${AppName}-DynamoDBCacheTableName
+
+  DynamoDBCacheTableArn:
+    Description: ARN of the PheBee DynamoDB query cache table
+    Value: !GetAtt DynamoDBCacheTable.Arn
+    Export:
+      Name: !Sub ${AppName}-DynamoDBCacheTableArn
 
   Region:
     Value: !Sub ${AWS::Region}
