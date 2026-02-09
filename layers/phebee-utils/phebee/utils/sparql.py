@@ -55,6 +55,7 @@ from collections import defaultdict
 from phebee.constants import SPARQL_SEPARATOR, PHEBEE
 from .neptune import execute_query, execute_update
 from .aws import get_current_timestamp
+from .dynamodb_cache import get_term_labels_from_cache
 
 
 def node_exists(iri: str) -> bool:
@@ -232,16 +233,29 @@ def camel_to_snake(name: str) -> str:
     return re.sub("([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
 
 
-def get_term_labels(term_iris: list[str], hpo_version: str, mondo_version: str) -> dict:
-    """Get labels for a list of term IRIs efficiently."""
+def get_term_labels_from_neptune(term_iris: list[str], hpo_version: str, mondo_version: str) -> dict:
+    """
+    Get labels for a list of term IRIs from Neptune SPARQL (legacy fallback).
+
+    This function queries Neptune directly for term labels. Prefer using
+    get_term_labels_from_cache() for better performance.
+
+    Args:
+        term_iris: List of term IRIs
+        hpo_version: HPO version string
+        mondo_version: MONDO version string
+
+    Returns:
+        Dict mapping term IRI to label string
+    """
     if not term_iris:
         return {}
-    
+
     term_values = " ".join(f"<{iri}>" for iri in term_iris)
-    
+
     query = f"""
     PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
-    
+
     SELECT ?term ?label
     FROM <http://ods.nationwidechildrens.org/phebee/hpo~{hpo_version}>
     FROM <http://ods.nationwidechildrens.org/phebee/mondo~{mondo_version}>
@@ -250,9 +264,9 @@ def get_term_labels(term_iris: list[str], hpo_version: str, mondo_version: str) 
         ?term rdfs:label ?label .
     }}
     """
-    
+
     result = execute_query(query)
-    return {b["term"]["value"]: b["label"]["value"] 
+    return {b["term"]["value"]: b["label"]["value"]
             for b in result["results"]["bindings"]}
 
 
@@ -514,8 +528,8 @@ def get_subjects(
     for subject in paginated_subjects_map.values():
         for term_link in subject["term_links"].values():
             unique_terms.add(term_link["term_iri"])
-    
-    term_labels = get_term_labels(list(unique_terms), hpo_version, mondo_version) if unique_terms else {}
+
+    term_labels = get_term_labels_from_cache(list(unique_terms), hpo_version, mondo_version) if unique_terms else {}
     
     # Convert to final format
     subjects = []
@@ -718,12 +732,12 @@ def get_term_links_with_counts(
         if (hpo_version or mondo_version) and links:
             unique_terms = list(set(group["term_iri"] for group in links))
             logger.info(f"Looking up labels for {len(unique_terms)} unique terms")
-            
+
             # Use available versions, default missing ones to empty string
             hpo_ver = hpo_version or ""
             mondo_ver = mondo_version or ""
-            
-            term_labels = get_term_labels(unique_terms, hpo_ver, mondo_ver)
+
+            term_labels = get_term_labels_from_cache(unique_terms, hpo_ver, mondo_ver)
             logger.info(f"Got {len(term_labels)} term labels")
             
             # Update links with labels
