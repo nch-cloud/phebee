@@ -587,6 +587,23 @@ Resources:
         - !Ref PheBeeDynamoDBCacheReadPolicy
         - !Ref PheBeeDynamoDBCacheWritePolicy
 
+  PopulateOntologyCacheFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AppName}-PopulateOntologyCacheFunction
+      CodeUri: functions
+      Handler: populate_ontology_cache.lambda_handler
+      MemorySize: 1024
+      Timeout: 300
+      Layers:
+        - !Ref PheBeeUtilsLayer
+      Environment:
+        Variables:
+          PheBeeDynamoCacheTable: !Ref DynamoDBCacheTable
+      Policies:
+        - !Ref PheBeeDynamoDBCacheWritePolicy
+        - !Ref PheBeeS3ReadPolicy
+
   StartLoadFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -643,6 +660,7 @@ Resources:
       Environment:
         Variables:
           PheBeeDynamoTable: !Ref DynamoDBTable
+          PheBeeDynamoCacheTable: !Ref DynamoDBCacheTable
       Policies:
         - !Ref PheBeeDynamoDBReadPolicy
         - !Ref PheBeeDynamoDBCacheReadPolicy
@@ -661,6 +679,7 @@ Resources:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
           Region: !Sub ${AWS::Region}
           PheBeeDynamoTable: !Ref DynamoDBTable
+          PheBeeDynamoCacheTable: !Ref DynamoDBCacheTable
           ICEBERG_DATABASE: !Ref IcebergDatabase
           PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
       VpcConfig:
@@ -842,6 +861,7 @@ Resources:
           PheBeeBus: !Ref PheBeeBus
           PheBeeBucketName: !Ref PheBeeBucket
           PheBeeDynamoTable: !Ref DynamoDBTable
+          PheBeeDynamoCacheTable: !Ref DynamoDBCacheTable
       VpcConfig:
         SecurityGroupIds:
           - !Ref PheBeeLambdaSecurityGroup
@@ -861,7 +881,7 @@ Resources:
       CodeUri: functions
       Handler: reset_database.lambda_handler
       MemorySize: 512
-      Timeout: 300
+      Timeout: 900
       Layers:
         - !Ref PheBeeUtilsLayer
       Environment:
@@ -869,6 +889,7 @@ Resources:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
           NeptuneClusterIdentifier: !Ref PheBeeNeptuneCluster
           PheBeeDynamoTable: !Ref DynamoDBTable
+          PheBeeDynamoCacheTable: !Ref DynamoDBCacheTable
           Region: !Sub ${AWS::Region}
       VpcConfig:
         SecurityGroupIds:
@@ -1489,6 +1510,7 @@ Resources:
         InstallRDFXMLSFNArn: !Ref InstallRDFXMLSFN
         DownloadGithubReleaseFunctionArn: !Ref DownloadGithubReleaseFunction
         UpdateInstallTimestampFunctionArn: !Ref UpdateInstallTimestampFunction
+        PopulateOntologyCacheFunctionArn: !Ref PopulateOntologyCacheFunction
         PheBeeBus: !Ref PheBeeBus
       Type: STANDARD
       Policies:
@@ -1500,6 +1522,7 @@ Resources:
             Resource:
               - !GetAtt DownloadGithubReleaseFunction.Arn
               - !GetAtt UpdateInstallTimestampFunction.Arn
+              - !GetAtt PopulateOntologyCacheFunction.Arn
           - Effect: Allow
             Action: states:StartExecution
             Resource:
@@ -1519,6 +1542,7 @@ Resources:
         InstallRDFXMLSFNArn: !Ref InstallRDFXMLSFN
         DownloadGithubReleaseFunctionArn: !Ref DownloadGithubReleaseFunction
         UpdateInstallTimestampFunctionArn: !Ref UpdateInstallTimestampFunction
+        PopulateOntologyCacheFunctionArn: !Ref PopulateOntologyCacheFunction
         PheBeeBus: !Ref PheBeeBus
       Type: STANDARD
       Policies:
@@ -1530,6 +1554,7 @@ Resources:
             Resource:
               - !GetAtt DownloadGithubReleaseFunction.Arn
               - !GetAtt UpdateInstallTimestampFunction.Arn
+              - !GetAtt PopulateOntologyCacheFunction.Arn
           - Effect: Allow
             Action: states:StartExecution
             Resource:
@@ -1549,6 +1574,7 @@ Resources:
         InstallRDFXMLSFNArn: !Ref InstallRDFXMLSFN
         DownloadGithubReleaseFunctionArn: !Ref DownloadGithubReleaseFunction
         UpdateInstallTimestampFunctionArn: !Ref UpdateInstallTimestampFunction
+        PopulateOntologyCacheFunctionArn: !Ref PopulateOntologyCacheFunction
         PheBeeBus: !Ref PheBeeBus
       Type: STANDARD
       Policies:
@@ -1560,6 +1586,7 @@ Resources:
             Resource:
               - !GetAtt DownloadGithubReleaseFunction.Arn
               - !GetAtt UpdateInstallTimestampFunction.Arn
+              - !GetAtt PopulateOntologyCacheFunction.Arn
           - Effect: Allow
             Action: states:StartExecution
             Resource:

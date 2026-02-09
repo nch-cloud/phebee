@@ -67,8 +67,23 @@ def get_load_status(load_job_id: str):
     return json.loads(response)
 
 
-def reset_neptune_database():
-    print("Resetting database...")
+def initiate_neptune_reset():
+    """
+    Initiate Neptune database reset without waiting for completion.
+
+    This function triggers the Neptune reset operation which runs asynchronously.
+    The cluster will restart in the background, taking 5-7 minutes typically.
+
+    Returns:
+        None
+
+    Raises:
+        Exception: If reset initiation or execution fails
+
+    Note:
+        Call wait_for_neptune_ready() after this to confirm reset completion.
+    """
+    print("Initiating Neptune database reset...")
 
     response = make_signed_request(
         "POST", "system", {"action": "initiateDatabaseReset"}
@@ -91,11 +106,46 @@ def reset_neptune_database():
     if json.loads(response)["status"] != "200 OK":
         raise Exception("Failed to perform database reset.")
 
+    print("Neptune reset initiated successfully (cluster restarting in background)")
+
+
+def wait_for_neptune_ready():
+    """
+    Wait for Neptune cluster and SPARQL endpoint to become available.
+
+    This function polls Neptune status until both the cluster reaches "available"
+    state and the SPARQL endpoint responds to queries. Typically takes 5-7 minutes
+    after a database reset.
+
+    Raises:
+        TimeoutError: If cluster doesn't become available within retry limits
+        Exception: If SPARQL endpoint doesn't respond within retry limits
+
+    Note:
+        Uses exponential backoff with max 20 retries for cluster (up to ~18 min)
+        and 12 retries for SPARQL endpoint (up to ~10 min).
+    """
     wait_for_cluster_availability()
     logger.info("Cluster is available.")
 
     wait_for_sparql_availability()
     logger.info("SPARQL endpoint is available.")
+
+
+def reset_neptune_database():
+    """
+    Reset Neptune database and wait for completion (legacy function).
+
+    This function combines initiate_neptune_reset() and wait_for_neptune_ready()
+    for backwards compatibility. Prefer using the separated functions for better
+    control over the reset process.
+
+    Raises:
+        Exception: If reset fails
+        TimeoutError: If cluster doesn't become available
+    """
+    initiate_neptune_reset()
+    wait_for_neptune_ready()
 
 
 def wait_for_cluster_availability():

@@ -38,6 +38,7 @@
         "Type": "Pass",
         "Parameters": {
           "filtered_assets.$": "$.hpo.Payload.assets.[?(@.asset_name == 'hp.owl')]",
+          "filtered_obo_assets.$": "$.hpo.Payload.assets.[?(@.asset_name == 'hp.obo')]",
           "hpo_version.$": "$.hpo.Payload.version"
         },
         "Next": "Install HPO"
@@ -66,6 +67,20 @@
           }
         },
         "ResultPath": "$.update_timestamp",
+        "Next": "Load HPO Hierarchy to Cache"
+      },
+      "Load HPO Hierarchy to Cache": {
+        "Type": "Task",
+        "Resource": "arn:aws:states:::lambda:invoke",
+        "Parameters": {
+          "FunctionName": "${PopulateOntologyCacheFunctionArn}",
+          "Payload": {
+            "source": "hpo",
+            "version.$": "$.hpo_version",
+            "obo_asset_path.$": "$.filtered_obo_assets.[0].asset_path"
+          }
+        },
+        "ResultPath": "$.cache_population",
         "Next": "Fire Update Event"
       },
       "Fire Update Event": {
