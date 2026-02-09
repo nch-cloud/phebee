@@ -281,6 +281,73 @@ def get_term_label(ontology: str, version: str, term_id: str, table=None) -> Opt
         raise
 
 
+def get_term_labels_from_cache(
+    term_iris: list[str],
+    hpo_version: str,
+    mondo_version: str,
+    table=None
+) -> dict:
+    """
+    Get labels for a list of term IRIs from the cache (batch operation).
+
+    Drop-in replacement for SPARQL-based get_term_labels() function.
+    Uses DynamoDB cache instead of Neptune SPARQL queries.
+
+    Args:
+        term_iris: List of term IRIs (e.g., ["http://purl.obolibrary.org/obo/HP_0001627"])
+        hpo_version: HPO version string (e.g., "2026-01-08")
+        mondo_version: MONDO version string (e.g., "v2024-10-01")
+        table: Optional DynamoDB Table resource (for testing)
+
+    Returns:
+        Dict mapping term IRI to label string. Terms not found in cache are omitted.
+
+    Example:
+        >>> labels = get_term_labels_from_cache(
+        ...     ["http://purl.obolibrary.org/obo/HP_0001627"],
+        ...     "2026-01-08",
+        ...     "v2024-10-01"
+        ... )
+        >>> print(labels)
+        {"http://purl.obolibrary.org/obo/HP_0001627": "Abnormal heart morphology"}
+
+    Raises:
+        ValueError: If cache table is not configured (when table not provided)
+        ClientError: If DynamoDB query fails
+    """
+    if not term_iris:
+        return {}
+
+    if table is None:
+        table = _get_cache_table()
+
+    result = {}
+
+    for term_iri in term_iris:
+        # Parse term ID from IRI
+        term_id = parse_term_id_from_iri(term_iri)
+
+        # Determine ontology from term_id prefix
+        if term_id.startswith("HP_"):
+            ontology = "hpo"
+            version = hpo_version
+        elif term_id.startswith("MONDO_"):
+            ontology = "mondo"
+            version = mondo_version
+        else:
+            logger.warning(f"Unknown ontology prefix for term: {term_id}")
+            continue
+
+        # Look up label from cache
+        label = get_term_label(ontology, version, term_id, table=table)
+
+        if label:
+            result[term_iri] = label
+
+    logger.info(f"Retrieved {len(result)} labels from cache for {len(term_iris)} terms")
+    return result
+
+
 def reset_dynamodb_cache_table():
     """
     Deletes ALL items from the cache table (paged scan + batch_writer).
@@ -350,6 +417,7 @@ def reset_dynamodb_cache_table():
 #   Phase 2 - Read Functions:
 #     - get_term_ancestor_paths() - Lookup all ancestor paths for a term
 #     - get_term_label() - Lookup human-readable label for a term
+#     - get_term_labels_from_cache() - Batch label lookup (drop-in SPARQL replacement)
 #
 # NOT YET IMPLEMENTED (Future phases):
 #   - get_descendant_terms() - Find all terms descended from a parent term
