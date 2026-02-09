@@ -30,9 +30,9 @@ def decode_response_body(response):
 def test_get_subjects_with_hierarchy(physical_resources, test_project_id):
     """Test that querying a parent term returns subjects with child terms via API."""
     
-    # Use HPO hierarchy: HP_0000118 (Phenotypic abnormality) -> HP_0000152 (Abnormality of head or neck)
-    parent_term = "http://purl.obolibrary.org/obo/HP_0000118"  # Phenotypic abnormality
-    child_term = "http://purl.obolibrary.org/obo/HP_0000152"   # Abnormality of head or neck
+    # Use HPO hierarchy: HP_0000152 (Abnormality of head or neck) -> HP_0000234 (Abnormality of the head)
+    parent_term = "http://purl.obolibrary.org/obo/HP_0000152"  # Abnormality of head or neck
+    child_term = "http://purl.obolibrary.org/obo/HP_0000234"   # Abnormality of the head
     
     # Create test subjects via API
     parent_subject_response = invoke_lambda(physical_resources["CreateSubjectFunction"], {
@@ -132,8 +132,26 @@ def test_get_subjects_with_hierarchy(physical_resources, test_project_id):
         # Hierarchy test - parent term query MUST find both subjects
         assert found_parent, f"Should find the parent subject {parent_subject_iri}"
         assert found_child, f"Hierarchy FAILED: Parent term query should find child subject {child_subject_iri} due to hierarchy, but only found: {subject_iris}"
-        
+
         print(f"✅ Hierarchy test PASSED - Parent term found both parent and child subjects via hierarchy")
+
+        # Verify term labels are populated from cache
+        for subject in subjects:
+            if "term_links" in subject:
+                for term_link in subject["term_links"]:
+                    assert "term_label" in term_link, f"term_label missing from term_link: {term_link}"
+                    assert isinstance(term_link["term_label"], str), f"term_label should be string, found {type(term_link['term_label'])}"
+                    assert len(term_link["term_label"]) > 0, f"term_label should not be empty"
+
+                    # Verify expected labels for our test terms
+                    if term_link["term_iri"] == parent_term:
+                        assert term_link["term_label"] == "Abnormality of head or neck", \
+                            f"Expected label 'Abnormality of head or neck', found '{term_link['term_label']}'"
+                    elif term_link["term_iri"] == child_term:
+                        assert term_link["term_label"] == "Abnormality of the head", \
+                            f"Expected label 'Abnormality of the head', found '{term_link['term_label']}'"
+
+        print("✅ Term labels verified - All terms have labels from cache")
     else:
         pytest.fail(f"No 'body' field in response: {hierarchy_body}")
     
@@ -160,7 +178,14 @@ def test_get_subjects_with_hierarchy(physical_resources, test_project_id):
         
         # Should find the child subject when querying the child term directly
         assert child_subject_iri in child_subject_iris, f"Should find child subject {child_subject_iri} when querying child term {child_term}"
-        
+
+        # Verify labels exist for child term query
+        for subject in child_subjects:
+            if "term_links" in subject:
+                for term_link in subject["term_links"]:
+                    assert "term_label" in term_link, "term_label missing from child query term_link"
+                    assert len(term_link["term_label"]) > 0, "term_label should not be empty"
+
         print("✅ Child term query test passed - Found child subject when querying child term directly")
     else:
         pytest.fail(f"No 'body' field in child term response: {child_body}")
@@ -191,7 +216,14 @@ def test_get_subjects_with_hierarchy(physical_resources, test_project_id):
         assert parent_subject_iri in exact_only_subject_iris, f"Should find parent subject {parent_subject_iri} when querying parent term exactly"
         assert child_subject_iri not in exact_only_subject_iris, f"Should NOT find child subject {child_subject_iri} when include_child_terms=False"
         assert len(exact_only_subjects) == 1, f"Should find exactly 1 subject when include_child_terms=False, but found {len(exact_only_subjects)}"
-        
+
+        # Verify labels exist for exact match query
+        for subject in exact_only_subjects:
+            if "term_links" in subject:
+                for term_link in subject["term_links"]:
+                    assert "term_label" in term_link, "term_label missing from exact match query term_link"
+                    assert len(term_link["term_label"]) > 0, "term_label should not be empty"
+
         print("✅ Exact matching test passed - Parent term with include_child_terms=False found only parent subject")
     else:
         pytest.fail(f"No 'body' field in exact only response: {exact_only_body}")
