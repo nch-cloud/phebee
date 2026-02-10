@@ -4,6 +4,7 @@ Unit tests for DynamoDB cache functions.
 Tests the cache query functions using mocked DynamoDB responses.
 """
 
+import os
 import pytest
 from unittest.mock import Mock, patch, MagicMock
 from phebee.utils.dynamodb_cache import (
@@ -13,7 +14,10 @@ from phebee.utils.dynamodb_cache import (
     parse_term_id_from_iri,
     get_term_ancestor_paths,
     get_term_label,
-    get_term_labels_from_cache
+    get_term_labels_from_cache,
+    build_project_data_pk,
+    build_project_data_sk,
+    write_subject_term_links_batch
 )
 
 
@@ -468,3 +472,362 @@ class TestGetTermLabelsFromCache:
         # Verify - unknown term should be skipped
         assert len(result) == 0
         mock_table.query.assert_not_called()
+
+
+class TestProjectDataKeyBuilders:
+    """Test partition and sort key builders for project data (subject-term links)."""
+
+    def test_build_project_data_pk(self):
+        """Test building partition key from project_id."""
+        pk = build_project_data_pk("project-123")
+        assert pk == "PROJECT#project-123"
+
+    def test_build_project_data_pk_uuid(self):
+        """Test building partition key with UUID project ID."""
+        pk = build_project_data_pk("550e8400-e29b-41d4-a716-446655440000")
+        assert pk == "PROJECT#550e8400-e29b-41d4-a716-446655440000"
+
+    def test_build_project_data_sk_single_ancestor(self):
+        """Test building sort key with single ancestor in path."""
+        sk = build_project_data_sk(["HP_0000001"], "subject-abc")
+        assert sk == "HP_0000001||subject-abc"
+
+    def test_build_project_data_sk_multi_ancestor(self):
+        """Test building sort key with multiple ancestors in path."""
+        sk = build_project_data_sk(["HP_0000001", "HP_0000118", "HP_0001627"], "subject-abc")
+        assert sk == "HP_0000001|HP_0000118|HP_0001627||subject-abc"
+
+    def test_build_project_data_sk_empty_path(self):
+        """Test building sort key with empty ancestor path (root term)."""
+        sk = build_project_data_sk([], "subject-abc")
+        assert sk == "||subject-abc"
+
+    def test_build_project_data_sk_uuid_subject(self):
+        """Test building sort key with UUID subject ID."""
+        sk = build_project_data_sk(
+            ["HP_0000001", "HP_0000118"],
+            "550e8400-e29b-41d4-a716-446655440000"
+        )
+        assert sk == "HP_0000001|HP_0000118||550e8400-e29b-41d4-a716-446655440000"
+
+
+class TestWriteSubjectTermLinksBatch:
+    """Test batch writing subject-term links to cache."""
+
+    @patch('phebee.utils.dynamodb_cache._get_cache_table')
+    def test_write_empty_list(self, mock_get_table):
+        """Test writing empty list of links."""
+        count = write_subject_term_links_batch([])
+        assert count == 0
+        mock_get_table.assert_not_called()
+
+    @patch('phebee.utils.dynamodb_cache._get_cache_table')
+    def test_write_single_link_single_path(self, mock_get_table):
+        """Test writing single link with single ancestor path."""
+        # Mock table
+        mock_table = MagicMock()
+        mock_get_table.return_value = mock_table
+
+        # Create test link
+        links = [{
+            "project_id": "project-123",
+            "subject_id": "subject-abc",
+            "term_id": "HP_0001627",
+            "term_iri": "http://purl.obolibrary.org/obo/HP_0001627",
+            "term_label": "Abnormal heart morphology",
+            "ancestor_paths": [["HP_0000001", "HP_0000118", "HP_0001627"]],
+            "qualifiers": {"negated": "false", "family": "false"},
+            "termlink_id": "termlink-hash-123"
+        }]
+
+        # Call function
+        count = write_subject_term_links_batch(links)
+
+        # Verify count
+        assert count == 1
+
+        # Verify batch_write_item was called
+        mock_table.batch_writer.assert_called_once()
+
+        # Get the context manager
+        mock_batch_writer = mock_table.batch_writer.return_value.__enter__.return_value
+
+        # Verify put_item was called with correct structure
+        mock_batch_writer.put_item.assert_called_once()
+        call_args = mock_batch_writer.put_item.call_args[1]
+        item = call_args["Item"]
+
+        assert item["PK"] == "PROJECT#project-123"
+        assert item["SK"] == "HP_0000001|HP_0000118|HP_0001627||subject-abc"
+        assert item["termlink_id"] == "termlink-hash-123"
+        assert item["term_iri"] == "http://purl.obolibrary.org/obo/HP_0001627"
+        assert item["term_label"] == "Abnormal heart morphology"
+        assert item["qualifiers"] == {"negated": "false", "family": "false"}
+
+    @patch('phebee.utils.dynamodb_cache._get_cache_table')
+    def test_write_single_link_multiple_paths(self, mock_get_table):
+        """Test writing single link with multiple inheritance (multiple ancestor paths)."""
+        # Mock table
+        mock_table = MagicMock()
+        mock_get_table.return_value = mock_table
+
+        # Create test link with multiple paths
+        links = [{
+            "project_id": "project-123",
+            "subject_id": "subject-abc",
+            "term_id": "HP_0001627",
+            "term_iri": "http://purl.obolibrary.org/obo/HP_0001627",
+            "term_label": "Abnormal heart morphology",
+            "ancestor_paths": [
+                ["HP_0000001", "HP_0000118", "HP_0001627"],
+                ["HP_0000001", "HP_0001626", "HP_0001627"]
+            ],
+            "qualifiers": {"negated": "false"},
+            "termlink_id": "termlink-hash-123"
+        }]
+
+        # Call function
+        count = write_subject_term_links_batch(links)
+
+        # Verify count - should be 2 (one per path)
+        assert count == 2
+
+        # Verify batch_write_item was called
+        mock_table.batch_writer.assert_called_once()
+
+        # Get the context manager
+        mock_batch_writer = mock_table.batch_writer.return_value.__enter__.return_value
+
+        # Verify put_item was called twice (once per path)
+        assert mock_batch_writer.put_item.call_count == 2
+
+        # Check both calls had correct sort keys
+        call_args_list = mock_batch_writer.put_item.call_args_list
+        items = [call[1]["Item"] for call in call_args_list]
+
+        # Both should have same PK and termlink_id
+        assert all(item["PK"] == "PROJECT#project-123" for item in items)
+        assert all(item["termlink_id"] == "termlink-hash-123" for item in items)
+
+        # But different sort keys (one per ancestor path)
+        sort_keys = [item["SK"] for item in items]
+        assert "HP_0000001|HP_0000118|HP_0001627||subject-abc" in sort_keys
+        assert "HP_0000001|HP_0001626|HP_0001627||subject-abc" in sort_keys
+
+    @patch('phebee.utils.dynamodb_cache._get_cache_table')
+    def test_write_multiple_links(self, mock_get_table):
+        """Test writing multiple links in a batch."""
+        # Mock table
+        mock_table = MagicMock()
+        mock_get_table.return_value = mock_table
+
+        # Create test links
+        links = [
+            {
+                "project_id": "project-123",
+                "subject_id": "subject-abc",
+                "term_id": "HP_0001627",
+                "term_iri": "http://purl.obolibrary.org/obo/HP_0001627",
+                "term_label": "Abnormal heart morphology",
+                "ancestor_paths": [["HP_0000001", "HP_0000118", "HP_0001627"]],
+                "qualifiers": {"negated": "false"},
+                "termlink_id": "termlink-hash-1"
+            },
+            {
+                "project_id": "project-123",
+                "subject_id": "subject-xyz",
+                "term_id": "HP_0000234",
+                "term_iri": "http://purl.obolibrary.org/obo/HP_0000234",
+                "term_label": "Abnormality of the head",
+                "ancestor_paths": [["HP_0000001", "HP_0000152", "HP_0000234"]],
+                "qualifiers": {"negated": "false"},
+                "termlink_id": "termlink-hash-2"
+            }
+        ]
+
+        # Call function
+        count = write_subject_term_links_batch(links)
+
+        # Verify count
+        assert count == 2
+
+        # Verify batch_write_item was called
+        mock_table.batch_writer.assert_called_once()
+
+        # Get the context manager
+        mock_batch_writer = mock_table.batch_writer.return_value.__enter__.return_value
+
+        # Verify put_item was called twice
+        assert mock_batch_writer.put_item.call_count == 2
+
+    @patch('phebee.utils.dynamodb_cache._get_cache_table')
+    def test_write_with_empty_qualifiers(self, mock_get_table):
+        """Test writing link with empty qualifiers dict."""
+        # Mock table
+        mock_table = MagicMock()
+        mock_get_table.return_value = mock_table
+
+        # Create test link with empty qualifiers
+        links = [{
+            "project_id": "project-123",
+            "subject_id": "subject-abc",
+            "term_id": "HP_0001627",
+            "term_iri": "http://purl.obolibrary.org/obo/HP_0001627",
+            "term_label": "Abnormal heart morphology",
+            "ancestor_paths": [["HP_0000001", "HP_0000118", "HP_0001627"]],
+            "qualifiers": {},
+            "termlink_id": "termlink-hash-123"
+        }]
+
+        # Call function
+        count = write_subject_term_links_batch(links)
+
+        # Verify count
+        assert count == 1
+
+        # Verify qualifiers were written as empty dict
+        mock_batch_writer = mock_table.batch_writer.return_value.__enter__.return_value
+        call_args = mock_batch_writer.put_item.call_args[1]
+        assert call_args["Item"]["qualifiers"] == {}
+
+    @patch('phebee.utils.dynamodb_cache._get_cache_table')
+    def test_write_large_batch(self, mock_get_table):
+        """Test writing more than 25 links (DynamoDB batch limit)."""
+        # Mock table
+        mock_table = MagicMock()
+        mock_get_table.return_value = mock_table
+
+        # Create 30 test links
+        links = []
+        for i in range(30):
+            links.append({
+                "project_id": "project-123",
+                "subject_id": f"subject-{i}",
+                "term_id": "HP_0001627",
+                "term_iri": "http://purl.obolibrary.org/obo/HP_0001627",
+                "term_label": "Abnormal heart morphology",
+                "ancestor_paths": [["HP_0000001", "HP_0000118", "HP_0001627"]],
+                "qualifiers": {"negated": "false"},
+                "termlink_id": f"termlink-hash-{i}"
+            })
+
+        # Call function
+        count = write_subject_term_links_batch(links)
+
+        # Verify count
+        assert count == 30
+
+        # Verify batch_write_item was called multiple times due to 25-item limit
+        # Should be called at least twice (25 + 5)
+        assert mock_table.batch_writer.call_count >= 2
+
+
+class TestGetProjectsForSubject:
+    """Test querying all projects that contain a subject."""
+
+    @patch.dict(os.environ, {'DYNAMODB_TABLE_NAME': 'test-table'})
+    @patch('boto3.resource')
+    def test_get_projects_single_project(self, mock_boto_resource):
+        """Test getting projects for subject that belongs to one project."""
+        from phebee.utils.sparql import get_projects_for_subject
+
+        # Mock DynamoDB table
+        mock_dynamodb = MagicMock()
+        mock_table = MagicMock()
+        mock_boto_resource.return_value = mock_dynamodb
+        mock_dynamodb.Table.return_value = mock_table
+
+        # Mock query response - subject in one project
+        subject_iri = "http://ods.nationwidechildrens.org/phebee/subjects/subject-abc-123"
+        mock_table.query.return_value = {
+            "Items": [
+                {
+                    "PK": f"SUBJECT#{subject_iri}",
+                    "SK": "PROJECT#project-1#SUBJECT#subj-001"
+                }
+            ]
+        }
+
+        # Call function
+        project_ids = get_projects_for_subject("subject-abc-123")
+
+        # Verify query was called correctly
+        mock_table.query.assert_called_once()
+        call_kwargs = mock_table.query.call_args[1]
+        assert call_kwargs["KeyConditionExpression"] == "PK = :pk"
+        assert call_kwargs["ExpressionAttributeValues"] == {":pk": f"SUBJECT#{subject_iri}"}
+
+        # Verify result
+        assert project_ids == ["project-1"]
+
+    @patch.dict(os.environ, {'DYNAMODB_TABLE_NAME': 'test-table'})
+    @patch('boto3.resource')
+    def test_get_projects_multiple_projects(self, mock_boto_resource):
+        """Test getting projects for subject that belongs to multiple projects."""
+        from phebee.utils.sparql import get_projects_for_subject
+
+        # Mock DynamoDB table
+        mock_dynamodb = MagicMock()
+        mock_table = MagicMock()
+        mock_boto_resource.return_value = mock_dynamodb
+        mock_dynamodb.Table.return_value = mock_table
+
+        # Mock query response - subject in three projects
+        subject_iri = "http://ods.nationwidechildrens.org/phebee/subjects/subject-abc-123"
+        mock_table.query.return_value = {
+            "Items": [
+                {
+                    "PK": f"SUBJECT#{subject_iri}",
+                    "SK": "PROJECT#project-1#SUBJECT#subj-001"
+                },
+                {
+                    "PK": f"SUBJECT#{subject_iri}",
+                    "SK": "PROJECT#project-2#SUBJECT#subj-042"
+                },
+                {
+                    "PK": f"SUBJECT#{subject_iri}",
+                    "SK": "PROJECT#project-3#SUBJECT#subj-999"
+                }
+            ]
+        }
+
+        # Call function
+        project_ids = get_projects_for_subject("subject-abc-123")
+
+        # Verify result contains all three projects
+        assert len(project_ids) == 3
+        assert "project-1" in project_ids
+        assert "project-2" in project_ids
+        assert "project-3" in project_ids
+
+    @patch.dict(os.environ, {'DYNAMODB_TABLE_NAME': 'test-table'})
+    @patch('boto3.resource')
+    def test_get_projects_no_projects(self, mock_boto_resource):
+        """Test getting projects for subject that doesn't belong to any project."""
+        from phebee.utils.sparql import get_projects_for_subject
+
+        # Mock DynamoDB table
+        mock_dynamodb = MagicMock()
+        mock_table = MagicMock()
+        mock_boto_resource.return_value = mock_dynamodb
+        mock_dynamodb.Table.return_value = mock_table
+
+        # Mock query response - no items
+        mock_table.query.return_value = {"Items": []}
+
+        # Call function
+        project_ids = get_projects_for_subject("subject-orphan")
+
+        # Verify result is empty
+        assert project_ids == []
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_get_projects_no_table_name_env(self):
+        """Test function returns empty list when DYNAMODB_TABLE_NAME not set."""
+        from phebee.utils.sparql import get_projects_for_subject
+
+        # Call function without DYNAMODB_TABLE_NAME env var
+        project_ids = get_projects_for_subject("subject-abc")
+
+        # Should return empty list and log warning
+        assert project_ids == []

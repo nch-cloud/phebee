@@ -348,6 +348,202 @@ def get_term_labels_from_cache(
     return result
 
 
+# -----------------------------------------------------------------------------
+# Project Data (Subject-Term Links) Management
+# -----------------------------------------------------------------------------
+#
+# Design: Cache subject-term links for efficient cohort queries
+#
+# Cache entry structure:
+#   PK = project_id                                    # String
+#   SK = ancestor_path||subject_id                     # String (double-pipe separator)
+#   termlink_id = "abc123..."                          # String (deterministic hash for dedup)
+#   term_iri = "http://purl.obolibrary.org/obo/HP_0001627"
+#   term_label = "Abnormal heart morphology"           # String
+#   qualifiers = {                                     # Map<String, String>
+#       "negated": "false",
+#       "family": "false",
+#       "hypothetical": "false"
+#   }
+#
+# Multiple inheritance handling:
+#   Terms with multiple ancestor paths get multiple cache entries with same termlink_id
+#   Example:
+#     PK="proj_X", SK="HP_0000001|HP_0000118|HP_0001627||subject_123", termlink_id="abc123"
+#     PK="proj_X", SK="HP_0000001|HP_0001626|HP_0001627||subject_123", termlink_id="abc123"
+#
+# Query pattern:
+#   query(
+#       KeyConditionExpression="PK = :project AND begins_with(SK, :path)",
+#       FilterExpression="qualifiers.negated = :false"
+#   )
+#
+# Benefits:
+#   - Efficient hierarchy queries via begins_with() on SK
+#   - Flexible qualifier filtering via FilterExpression (applies only to matched rows)
+#   - Deduplication via termlink_id in application code
+#   - Project isolation via PK
+#
+# Populated by: generate_ttl_from_iceberg_emr.py during bulk import
+# Used by: Query lambdas for cache-based cohort queries (Phase 4)
+# -----------------------------------------------------------------------------
+
+
+def build_project_data_pk(project_id: str) -> str:
+    """
+    Build partition key for project data (subject-term links).
+
+    Args:
+        project_id: Project identifier (e.g., "my_project_123")
+
+    Returns:
+        Partition key string: "PROJECT#my_project_123"
+
+    Example:
+        >>> build_project_data_pk("my_project_123")
+        "PROJECT#my_project_123"
+    """
+    return f"PROJECT#{project_id}"
+
+
+def build_project_data_sk(ancestor_path: List[str], subject_id: str) -> str:
+    """
+    Build sort key for project data: ancestor_path||subject_id.
+
+    Uses double-pipe (||) as separator between path and subject_id to enable
+    prefix matching on hierarchy while keeping subject_id separate.
+
+    Args:
+        ancestor_path: List of term IDs from root to current term
+                      e.g., ["HP_0000001", "HP_0000118", "HP_0001627"]
+        subject_id: Subject UUID (e.g., "12345678-1234-1234-1234-123456789012")
+
+    Returns:
+        Sort key string: "HP_0000001|HP_0000118|HP_0001627||subject_id"
+
+    Example:
+        >>> build_project_data_sk(["HP_0000001", "HP_0000118", "HP_0001627"], "subject_123")
+        "HP_0000001|HP_0000118|HP_0001627||subject_123"
+    """
+    path_str = "|".join(ancestor_path)
+    return f"{path_str}||{subject_id}"
+
+
+def write_subject_term_links_batch(links: List[dict], table=None) -> int:
+    """
+    Batch write subject-term links to cache.
+
+    Each link entry with multiple ancestor paths will generate multiple cache items
+    (one per path) to support hierarchy queries. All items for the same termlink
+    share the same termlink_id for deduplication.
+
+    Args:
+        links: List of dicts with keys:
+            - project_id (str): Project identifier
+            - subject_id (str): Subject UUID
+            - term_id (str): Term ID without namespace (e.g., "HP_0001627")
+            - term_iri (str): Full term IRI
+            - term_label (str): Human-readable term label
+            - ancestor_paths (List[List[str]]): All ancestor paths for the term
+                                               e.g., [["HP_0000001", "HP_0000118", "HP_0001627"]]
+            - qualifiers (dict): Qualifier key-value pairs as strings
+                                e.g., {"negated": "false", "family": "false"}
+            - termlink_id (str): Deterministic hash for deduplication
+        table: Optional DynamoDB Table resource (for testing)
+
+    Returns:
+        Number of items written to cache
+
+    Raises:
+        ValueError: If cache table is not configured (when table not provided)
+        ClientError: If DynamoDB batch write fails
+
+    Example:
+        >>> links = [{
+        ...     "project_id": "proj_123",
+        ...     "subject_id": "subj_456",
+        ...     "term_id": "HP_0001627",
+        ...     "term_iri": "http://purl.obolibrary.org/obo/HP_0001627",
+        ...     "term_label": "Abnormal heart morphology",
+        ...     "ancestor_paths": [["HP_0000001", "HP_0000118", "HP_0001627"]],
+        ...     "qualifiers": {"negated": "false", "family": "false"},
+        ...     "termlink_id": "abc123"
+        ... }]
+        >>> count = write_subject_term_links_batch(links)
+    """
+    if not links:
+        return 0
+
+    if table is None:
+        table = _get_cache_table()
+
+    items_written = 0
+    batch_items = []
+
+    for link in links:
+        project_id = link["project_id"]
+        subject_id = link["subject_id"]
+        term_iri = link["term_iri"]
+        term_label = link.get("term_label", "")
+        ancestor_paths = link["ancestor_paths"]
+        qualifiers = link.get("qualifiers", {})
+        termlink_id = link["termlink_id"]
+
+        # Build PK once per link
+        pk = build_project_data_pk(project_id)
+
+        # Write one cache entry per ancestor path (for multiple inheritance)
+        for ancestor_path in ancestor_paths:
+            sk = build_project_data_sk(ancestor_path, subject_id)
+
+            item = {
+                "PK": pk,
+                "SK": sk,
+                "termlink_id": termlink_id,
+                "term_iri": term_iri,
+                "term_label": term_label,
+                "qualifiers": qualifiers
+            }
+
+            batch_items.append(item)
+
+            # Write batch when we hit 25 items (DynamoDB limit)
+            if len(batch_items) >= 25:
+                _write_batch_cache_items(table, batch_items)
+                items_written += len(batch_items)
+                batch_items = []
+
+    # Write remaining items
+    if batch_items:
+        _write_batch_cache_items(table, batch_items)
+        items_written += len(batch_items)
+
+    logger.info(f"Wrote {items_written} subject-term link items to cache")
+    return items_written
+
+
+def _write_batch_cache_items(table, items: List[dict]):
+    """
+    Write a batch of cache items to DynamoDB.
+
+    Args:
+        table: DynamoDB Table resource
+        items: List of item dicts to write
+
+    Raises:
+        ClientError: If DynamoDB batch write fails
+    """
+    try:
+        logger.info(f"Writing batch of {len(items)} items to cache table")
+        with table.batch_writer() as batch:
+            for item in items:
+                batch.put_item(Item=item)
+        logger.info(f"Successfully wrote {len(items)} items")
+    except Exception as e:
+        logger.error(f"Failed to write batch of {len(items)} items: {str(e)}")
+        raise
+
+
 def reset_dynamodb_cache_table():
     """
     Deletes ALL items from the cache table (paged scan + batch_writer).

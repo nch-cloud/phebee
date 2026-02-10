@@ -727,6 +727,8 @@ Resources:
           Region: !Sub ${AWS::Region}
           PheBeeBus: !Ref PheBeeBus
           PheBeeDynamoTable: !Ref DynamoDBTable
+          DYNAMODB_TABLE_NAME: !Ref DynamoDBTable
+          PheBeeDynamoCacheTable: !Ref DynamoDBCacheTable
       VpcConfig:
         SecurityGroupIds:
           - !Ref PheBeeLambdaSecurityGroup
@@ -739,6 +741,8 @@ Resources:
         - !Ref PheBeePutEventsPolicy
         - DynamoDBCrudPolicy:
             TableName: !Ref DynamoDBTable
+        - !Ref PheBeeDynamoDBCacheReadPolicy
+        - !Ref PheBeeDynamoDBCacheWritePolicy
 
   RemoveSubjectFunction:
     Type: AWS::Serverless::Function
@@ -753,6 +757,9 @@ Resources:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
           Region: !Sub ${AWS::Region}
+          PheBeeDynamoTable: !Ref DynamoDBTable
+          DYNAMODB_TABLE_NAME: !Ref DynamoDBTable
+          PheBeeDynamoCacheTable: !Ref DynamoDBCacheTable
       VpcConfig:
         SecurityGroupIds:
           - !Ref PheBeeLambdaSecurityGroup
@@ -762,6 +769,10 @@ Resources:
       Policies:
         - !Ref PheBeeNeptuneReadPolicy
         - !Ref PheBeeNeptuneDeletePolicy
+        - !Ref PheBeeDynamoDBReadPolicy
+        - !Ref PheBeeDynamoDBWritePolicy
+        - !Ref PheBeeDynamoDBCacheReadPolicy
+        - !Ref PheBeeDynamoDBCacheWritePolicy
 
   CreateProjectFunction:
     Type: AWS::Serverless::Function
@@ -992,6 +1003,9 @@ Resources:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
           Region: !Sub ${AWS::Region}
+          PheBeeDynamoTable: !Ref DynamoDBTable
+          DYNAMODB_TABLE_NAME: !Ref DynamoDBTable
+          PheBeeDynamoCacheTable: !Ref DynamoDBCacheTable
       VpcConfig:
         SecurityGroupIds:
           - !Ref PheBeeLambdaSecurityGroup
@@ -1001,6 +1015,9 @@ Resources:
       Policies:
         - !Ref PheBeeNeptuneReadPolicy
         - !Ref PheBeeNeptuneWritePolicy
+        - !Ref PheBeeDynamoDBReadPolicy
+        - !Ref PheBeeDynamoDBCacheReadPolicy
+        - !Ref PheBeeDynamoDBCacheWritePolicy
 
   GetTermLinkFunction:
     Type: AWS::Serverless::Function
@@ -1041,6 +1058,9 @@ Resources:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
           Region: !Sub ${AWS::Region}
+          PheBeeDynamoTable: !Ref DynamoDBTable
+          DYNAMODB_TABLE_NAME: !Ref DynamoDBTable
+          PheBeeDynamoCacheTable: !Ref DynamoDBCacheTable
       VpcConfig:
         SecurityGroupIds:
           - !Ref PheBeeLambdaSecurityGroup
@@ -1050,6 +1070,9 @@ Resources:
       Policies:
         - !Ref PheBeeNeptuneReadPolicy
         - !Ref PheBeeNeptuneDeletePolicy
+        - !Ref PheBeeDynamoDBReadPolicy
+        - !Ref PheBeeDynamoDBCacheReadPolicy
+        - !Ref PheBeeDynamoDBCacheWritePolicy
 
   PrepareSubjectTermLinksPayloadFunction:
     Type: AWS::Serverless::Function
@@ -1341,6 +1364,7 @@ Resources:
         EMRExecutionRoleArn: !GetAtt EMRExecutionRole.Arn
         PheBeeBucketName: !Ref PheBeeBucket
         DynamoDBTableName: !Ref DynamoDBTable
+        DynamoDBCacheTableName: !Ref DynamoDBCacheTable
         AWSRegion: !Ref AWS::Region
         IcebergDatabase: !Ref IcebergDatabase
         IcebergEvidenceTable: !Ref IcebergEvidenceTable
@@ -1351,7 +1375,6 @@ Resources:
         GenerateTTLFromIcebergFunction: !GetAtt GenerateTTLFromIcebergFunction.Arn
         NotifyBulkImportCompleteFunction: !GetAtt NotifyBulkImportCompleteFunction.Arn
         NotifyBulkImportFailureFunction: !GetAtt NotifyBulkImportFailureFunction.Arn
-        DynamoDBTableName: !Ref DynamoDBTable
 
   BulkImportStateMachineRole:
     Type: AWS::IAM::Role

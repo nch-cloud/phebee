@@ -110,14 +110,17 @@ def main():
                 for project_id, project_subject_id in missing_pairs:
                     subject_id = str(uuid.uuid4())
                     subject_mapping[(project_id, project_subject_id)] = subject_id
-                    
+
+                    # Construct full IRI (matching Lambda behavior)
+                    subject_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"
+
                     # Write both directions (EXACT Lambda logic)
                     batch.put_item(Item={
                         'PK': f'PROJECT#{project_id}',
                         'SK': f'SUBJECT#{project_subject_id}',
                         'subject_id': subject_id
                     })
-                    
+
                     batch.put_item(Item={
                         'PK': f'SUBJECT#{subject_id}',
                         'SK': f'PROJECT#{project_id}#SUBJECT#{project_subject_id}'

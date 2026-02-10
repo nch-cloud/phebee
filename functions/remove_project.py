@@ -16,6 +16,13 @@ def lambda_handler(event, context):
 
     project_id = body.get("project_id")
 
+    # TODO - Cache cleanup not implemented. Need to decide on orphaned subject handling:
+    # - Should subjects that only exist in this project be deleted entirely?
+    # - Should cache entries (PK=PROJECT#{project_id}) be deleted?
+    # - Should subject-project mappings be deleted for this project?
+    # - What about subjects that exist in multiple projects?
+    # This requires a design decision on cascade behavior before implementation.
+
     sparql = f"""
         PREFIX phebee: <{PHEBEE}>
         PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>

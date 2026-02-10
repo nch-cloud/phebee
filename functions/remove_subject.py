@@ -33,6 +33,10 @@ def lambda_handler(event, context):
         execute_update(f"DELETE WHERE {{ <{iri}> ?p ?o . }}")
         execute_update(f"DELETE WHERE {{ ?s ?p <{iri}> . }}")
 
+    # Delete cache entries and DynamoDB mappings
+    from phebee.utils.sparql import delete_subject_from_cache_and_mappings
+    delete_subject_from_cache_and_mappings(subject["subject_iri"])
+
     return {
         "statusCode": 200,
         "body": json.dumps({"message": f"Subject removed: {subject['subject_iri']}"}),

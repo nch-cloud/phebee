@@ -4,6 +4,7 @@ import time
 import pytest
 import boto3
 from general_utils import parse_iso8601
+from phebee.utils.dynamodb_cache import build_project_data_pk
 
 pytestmark = [pytest.mark.integration]
 
@@ -442,7 +443,15 @@ def test_bulk_import_stepfunction(physical_resources, test_project_id):
         
         # Verify Iceberg table has evidence data
         verify_iceberg_evidence(run_id)
-        
+
+        # Verify DynamoDB cache was populated
+        cache_table_name = physical_resources.get("DynamoDBCacheTable")
+        if cache_table_name:
+            print(f"Verifying cache data in table: {cache_table_name}")
+            verify_cache_data(test_project_id, cache_table_name)
+        else:
+            print("Warning: DynamoDBCacheTable not found in physical resources, skipping cache validation")
+
         print("Bulk import test completed successfully")
         
     finally:
@@ -585,6 +594,131 @@ def verify_iceberg_evidence(run_id):
     print(f"Verified {len(rows)} evidence records in Iceberg table")
     print(f"Found subjects: {found_subjects}")
     print(f"Found terms: {found_terms}")
+
+
+def verify_cache_data(test_project_id, cache_table_name):
+    """Verify subject-term links were written to DynamoDB cache"""
+
+    dynamodb = boto3.resource('dynamodb')
+    table = dynamodb.Table(cache_table_name)
+
+    # Query all cache entries for this project
+    pk = build_project_data_pk(test_project_id)
+    response = table.query(
+        KeyConditionExpression="PK = :pk",
+        ExpressionAttributeValues={":pk": pk}
+    )
+
+    items = response["Items"]
+    print(f"Cache validation - Found {len(items)} cache entries for project {test_project_id}")
+
+    if len(items) == 0:
+        pytest.fail("No cache entries found for test project")
+
+    # Validate structure of all items
+    for item in items:
+        assert "PK" in item, "Cache item missing PK"
+        assert "SK" in item, "Cache item missing SK"
+        assert "termlink_id" in item, "Cache item missing termlink_id"
+        assert "term_iri" in item, "Cache item missing term_iri"
+        assert "term_label" in item, "Cache item missing term_label"
+        assert "qualifiers" in item, "Cache item missing qualifiers"
+        assert item["PK"] == f"PROJECT#{test_project_id}", f"Expected PK=PROJECT#{test_project_id}, got {item['PK']}"
+
+        # Validate SK format: ancestor_path||subject_id
+        assert "||" in item["SK"], f"SK should contain || separator, got: {item['SK']}"
+        parts = item["SK"].split("||")
+        assert len(parts) == 2, f"SK should have format 'path||subject', got: {item['SK']}"
+
+        # Validate ancestor path contains HPO terms
+        ancestor_path = parts[0]
+        assert "|" in ancestor_path or ancestor_path.startswith("HP_"), \
+            f"Ancestor path should contain HPO terms, got: {ancestor_path}"
+
+    # Test hierarchy queries - find all entries under HP_0000001 (All)
+    response = table.query(
+        KeyConditionExpression="PK = :pk AND begins_with(SK, :path)",
+        ExpressionAttributeValues={
+            ":pk": pk,
+            ":path": "HP_0000001"
+        }
+    )
+
+    hierarchy_items = response["Items"]
+    print(f"Cache validation - Found {len(hierarchy_items)} entries under HP_0000001 (hierarchy query)")
+
+    # All items should be under HP_0000001 (root of HPO)
+    assert len(hierarchy_items) > 0, "Hierarchy query should find entries under HP_0000001"
+    assert len(hierarchy_items) <= len(items), "Hierarchy query returned more items than total"
+
+    # Test qualifier filtering - find entries with negated=false
+    response = table.query(
+        KeyConditionExpression="PK = :pk",
+        FilterExpression="qualifiers.negated = :negated",
+        ExpressionAttributeValues={
+            ":pk": pk,
+            ":negated": "false"
+        }
+    )
+
+    negated_false_items = response["Items"]
+    print(f"Cache validation - Found {len(negated_false_items)} entries with negated=false")
+
+    assert len(negated_false_items) > 0, "Should find some entries with negated=false"
+
+    # Verify all returned items actually have negated=false
+    for item in negated_false_items:
+        qualifiers = item.get("qualifiers", {})
+        assert qualifiers.get("negated") == "false", \
+            f"Expected negated=false, got {qualifiers.get('negated')}"
+
+    # Test combined hierarchy + qualifier filtering
+    response = table.query(
+        KeyConditionExpression="PK = :pk AND begins_with(SK, :path)",
+        FilterExpression="#qualifiers.#family = :family",
+        ExpressionAttributeNames={
+            "#qualifiers": "qualifiers",
+            "#family": "family"
+        },
+        ExpressionAttributeValues={
+            ":pk": pk,
+            ":path": "HP_0000001",
+            ":family": "false"
+        }
+    )
+
+    combined_items = response["Items"]
+    print(f"Cache validation - Found {len(combined_items)} entries with HP_0000001 hierarchy + family=false")
+
+    # Verify all have correct qualifiers
+    for item in combined_items:
+        qualifiers = item.get("qualifiers", {})
+        assert qualifiers.get("family") == "false", \
+            f"Expected family=false, got {qualifiers.get('family')}"
+
+    # Extract unique subjects and terms
+    subjects_in_cache = set()
+    terms_in_cache = set()
+    termlink_ids = set()
+
+    for item in items:
+        # Extract subject_id from SK (format: path||subject_id)
+        subject_id = item["SK"].split("||")[1]
+        subjects_in_cache.add(subject_id)
+        terms_in_cache.add(item["term_iri"])
+        termlink_ids.add(item["termlink_id"])
+
+    print(f"Cache validation - Unique subjects: {len(subjects_in_cache)}")
+    print(f"Cache validation - Unique terms: {len(terms_in_cache)}")
+    print(f"Cache validation - Unique termlinks: {len(termlink_ids)}")
+
+    # Basic validation - we expect some data
+    assert len(subjects_in_cache) > 0, "No subjects found in cache"
+    assert len(terms_in_cache) > 0, "No terms found in cache"
+    assert len(termlink_ids) > 0, "No termlinks found in cache"
+
+    print(f"✅ Cache validation passed - {len(items)} entries validated")
+    return items
 
 
 @pytest.mark.integration
@@ -793,8 +927,16 @@ def test_ttl_generation_comprehensive(physical_resources, test_project_id):
         
         # Comprehensive TTL validation
         validate_ttl_structure(all_ttl_content, test_data)
-        
-        print("Comprehensive N-Quads validation passed")
+
+        print("Comprehensive TTL validation passed")
+
+        # Verify DynamoDB cache was populated
+        cache_table_name = physical_resources.get("DynamoDBCacheTable")
+        if cache_table_name:
+            print(f"Verifying cache data in table: {cache_table_name}")
+            verify_cache_data(test_project_id, cache_table_name)
+        else:
+            print("Warning: DynamoDBCacheTable not found in physical resources, skipping cache validation")
         
     finally:
         # Cleanup
@@ -1270,5 +1412,255 @@ def test_bulk_import_with_term_source(physical_resources, test_project_id):
     assert found_run_id == run_id
     assert term_iri == "http://purl.obolibrary.org/obo/MONDO_0005148"
     assert source == "" or source is None  # Should be null/empty when not provided
-    
+
     print(f"✓ Successfully verified term_source handling in bulk import")
+
+    # Verify DynamoDB cache was populated
+    cache_table_name = physical_resources.get("DynamoDBCacheTable")
+    if cache_table_name:
+        print(f"Verifying cache data in table: {cache_table_name}")
+        verify_cache_data(test_project_id, cache_table_name)
+    else:
+        print("Warning: DynamoDBCacheTable not found in physical resources, skipping cache validation")
+
+
+@pytest.mark.integration
+def test_bulk_import_multi_project_subjects(physical_resources, test_project_id):
+    """
+    Test that bulk import writes cache entries for ALL projects containing a subject.
+
+    Scenario:
+    1. Subject exists in Project A
+    2. Subject also exists in Project B (same subject UUID)
+    3. Bulk import for Project B with evidence for that subject
+    4. Cache entries should be written to BOTH Project A and Project B
+    """
+    from phebee.utils.aws import get_client
+
+    # Get S3 bucket and cache table
+    s3_bucket = physical_resources.get("PheBeeBucket")
+    cache_table_name = physical_resources.get("DynamoDBCacheTable")
+
+    if not s3_bucket:
+        pytest.skip("PheBeeBucket not found in physical resources")
+    if not cache_table_name:
+        pytest.skip("DynamoDBCacheTable not found in physical resources")
+
+    # Get Lambda client and function names
+    lambda_client = get_client("lambda")
+    create_project_fn = physical_resources["CreateProjectFunction"]
+    create_subject_fn = physical_resources["CreateSubjectFunction"]
+
+    # Create second test project via Lambda
+    project_2_id = f"{test_project_id}_multi_project"
+    create_project_resp = lambda_client.invoke(
+        FunctionName=create_project_fn,
+        Payload=json.dumps({
+            "project_id": project_2_id,
+            "project_label": "Multi-Project Test Project"
+        }).encode("utf-8"),
+        InvocationType="RequestResponse",
+    )
+    create_project_body = json.loads(create_project_resp["Payload"].read())
+    print(f"Created project {project_2_id}: {create_project_body}")
+
+    print(f"Using projects: {test_project_id}, {project_2_id}")
+
+    # Create a subject in Project A via Lambda
+    create_subject_resp = lambda_client.invoke(
+        FunctionName=create_subject_fn,
+        Payload=json.dumps({"body": json.dumps({
+            "project_id": test_project_id,
+            "project_subject_id": "multi-proj-subject-001"
+        })}).encode("utf-8"),
+        InvocationType="RequestResponse",
+    )
+    assert create_subject_resp["StatusCode"] == 200
+    create_subject_body = json.loads(json.loads(create_subject_resp["Payload"].read())["body"])
+    subject_iri = create_subject_body["subject"]["iri"]
+    subject_id = subject_iri.split("/subjects/")[-1]
+
+    print(f"Created subject in Project A: {subject_iri}")
+
+    # Link the SAME subject to Project B via Lambda
+    link_subject_resp = lambda_client.invoke(
+        FunctionName=create_subject_fn,
+        Payload=json.dumps({"body": json.dumps({
+            "project_id": project_2_id,
+            "project_subject_id": "multi-proj-subject-002",
+            "known_subject_iri": subject_iri
+        })}).encode("utf-8"),
+        InvocationType="RequestResponse",
+    )
+    assert link_subject_resp["StatusCode"] == 200
+    link_subject_body = json.loads(json.loads(link_subject_resp["Payload"].read())["body"])
+    print(f"Linked subject to Project B: {link_subject_body}")
+
+    print(f"Created subject {subject_id} in both projects")
+
+    # Create test data for bulk import to Project B
+    run_id = f"multi-project-test-{uuid.uuid4().hex[:8]}"
+
+    test_data = [
+        {
+            "project_id": project_2_id,  # Importing to Project B
+            "project_subject_id": "multi-proj-subject-002",
+            "term_iri": "http://purl.obolibrary.org/obo/HP_0001627",
+            "evidence": [
+                {
+                    "type": "clinical_note",
+                    "clinical_note_id": "note-multi-001",
+                    "encounter_id": "encounter-multi-001",
+                    "evidence_creator_id": "nlp-system-v1",
+                    "evidence_creator_type": "automated",
+                    "evidence_creator_name": "NLP Extractor",
+                    "note_timestamp": "2024-01-15",
+                    "note_type": "progress_note",
+                    "provider_type": "physician",
+                    "author_specialty": "cardiology",
+                    "span_start": 45,
+                    "span_end": 58,
+                    "contexts": {
+                        "negated": 0.0,
+                        "family": 0.0,
+                        "hypothetical": 0.0
+                    }
+                }
+            ],
+            "row_num": 1,
+            "batch_id": 0
+        }
+    ]
+
+    s3_client = boto3.client('s3')
+
+    # Upload test data
+    input_key = f"test-data/{run_id}/jsonl/batch-0.json"
+    jsonl_content = "\n".join(json.dumps(record) for record in test_data)
+    s3_client.put_object(
+        Bucket=s3_bucket,
+        Key=input_key,
+        Body=jsonl_content.encode('utf-8')
+    )
+
+    # Create subject mapping file for the resolve step
+    subject_mappings = [
+        {
+            "project_id": project_2_id,
+            "project_subject_id": "multi-proj-subject-002",
+            "subject_id": subject_id
+        }
+    ]
+
+    mapping_key = f"test-data/{run_id}/subject_mapping.json"
+    s3_client.put_object(
+        Bucket=s3_bucket,
+        Key=mapping_key,
+        Body=json.dumps(subject_mappings).encode('utf-8')
+    )
+
+    print(f"Uploaded test data to s3://{s3_bucket}/{input_key}")
+
+    try:
+        # Execute Step Function
+        stepfunctions_client = boto3.client('stepfunctions')
+        state_machine_arn = physical_resources["BulkImportStateMachine"]
+
+        execution_input = {
+            "run_id": run_id,
+            "input_path": f"s3://{s3_bucket}/test-data/{run_id}/jsonl/",
+            "mapping_file": f"s3://{s3_bucket}/{mapping_key}",
+            "iceberg_database": "phebee",
+            "iceberg_table": "evidence",
+            "output_bucket": s3_bucket,
+            "neptune_cluster": physical_resources.get("NeptuneCluster", "test-cluster")
+        }
+
+        print(f"Starting Step Function execution for run_id: {run_id}")
+
+        response = stepfunctions_client.start_execution(
+            stateMachineArn=state_machine_arn,
+            name=f"test-multi-project-{int(time.time())}",
+            input=json.dumps(execution_input)
+        )
+
+        execution_arn = response['executionArn']
+        print(f"Started execution: {execution_arn}")
+
+        # Wait for completion
+        max_wait_time = 600  # 10 minutes
+        start_time = time.time()
+
+        while time.time() - start_time < max_wait_time:
+            execution_response = stepfunctions_client.describe_execution(executionArn=execution_arn)
+            status = execution_response['status']
+
+            print(f"Execution status: {status}")
+
+            if status == 'SUCCEEDED':
+                break
+            elif status in ['FAILED', 'TIMED_OUT', 'ABORTED']:
+                output = execution_response.get('output', 'No output')
+                pytest.fail(f"Step Function execution failed with status: {status}\nOutput: {output}")
+
+            time.sleep(10)
+        else:
+            pytest.fail("Step Function execution timed out")
+
+        print(f"✅ Step Function execution completed successfully")
+
+        # NOW verify cache entries exist in BOTH projects
+        dynamodb = boto3.resource('dynamodb')
+        cache_table = dynamodb.Table(cache_table_name)
+
+        for project_id in [test_project_id, project_2_id]:
+            pk = build_project_data_pk(project_id)
+            response = cache_table.query(
+                KeyConditionExpression="PK = :pk",
+                ExpressionAttributeValues={":pk": pk}
+            )
+
+            items = response["Items"]
+            print(f"Project {project_id}: Found {len(items)} cache entries")
+
+            # Should have at least 1 entry
+            assert len(items) > 0, f"No cache entries found for project {project_id}"
+
+            # Verify structure
+            found_termlink = False
+            for item in items:
+                assert item["PK"] == f"PROJECT#{project_id}"
+                assert "||" in item["SK"], f"SK should contain || separator: {item['SK']}"
+
+                # Check if this is our imported term
+                if item["term_iri"] == "http://purl.obolibrary.org/obo/HP_0001627":
+                    # Verify subject_id in SK
+                    subject_in_sk = item["SK"].split("||")[1]
+                    assert subject_in_sk == subject_id, f"Expected subject {subject_id}, got {subject_in_sk}"
+                    found_termlink = True
+                    print(f"  ✅ Found HP_0001627 for subject {subject_id}")
+
+            assert found_termlink, f"TermLink HP_0001627 not found in cache for project {project_id}"
+
+        print(f"✅ Verified cache entries exist in BOTH projects")
+        print(f"✅ Multi-project bulk import test passed")
+
+    finally:
+        # Cleanup test data
+        try:
+            s3_client.delete_object(Bucket=s3_bucket, Key=input_key)
+            s3_client.delete_object(Bucket=s3_bucket, Key=mapping_key)
+
+            # Cleanup cache entries
+            dynamodb = boto3.resource('dynamodb')
+            cache_table = dynamodb.Table(cache_table_name)
+            for project_id in [test_project_id, project_2_id]:
+                pk = build_project_data_pk(project_id)
+                response = cache_table.query(
+                    KeyConditionExpression="PK = :pk",
+                    ExpressionAttributeValues={":pk": pk}
+                )
+                for item in response.get("Items", []):
+                    cache_table.delete_item(Key={"PK": item["PK"], "SK": item["SK"]})
+        except Exception as e:
+            print(f"Failed to cleanup test data: {e}")

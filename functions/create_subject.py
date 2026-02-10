@@ -31,19 +31,22 @@ def create_dynamodb_mapping(project_id: str, project_subject_id: str, subject_ir
     table_name = _get_table_name()
     dynamodb = boto3.resource('dynamodb')
     table = dynamodb.Table(table_name)
-    
+
+    # Extract UUID from IRI
+    subject_id = subject_iri.split('/subjects/')[-1]
+
     try:
         with table.batch_writer() as batch:
             # Direction 1: Project → Subject
             batch.put_item(Item={
                 'PK': f'PROJECT#{project_id}',
                 'SK': f'SUBJECT#{project_subject_id}',
-                'subject_id': subject_iri  # Store full IRI
+                'subject_id': subject_id  # Store just UUID
             })
-            
-            # Direction 2: Subject → Project  
+
+            # Direction 2: Subject → Project
             batch.put_item(Item={
-                'PK': f'SUBJECT#{subject_iri}',
+                'PK': f'SUBJECT#{subject_id}',
                 'SK': f'PROJECT#{project_id}#SUBJECT#{project_subject_id}'
             })
     except Exception as e:

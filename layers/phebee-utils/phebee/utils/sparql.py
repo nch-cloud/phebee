@@ -211,8 +211,18 @@ def create_subject(project_id: str, project_subject_id: str) -> str:
 def link_subject_to_project(
     subject_iri: str, project_id: str, project_subject_id: str
 ) -> None:
+    """
+    Link a subject to a project.
+
+    Also writes cache entries for ALL existing TermLinks of this subject to the new project.
+
+    Args:
+        subject_iri: The IRI of the subject
+        project_id: The project ID
+        project_subject_id: The project-specific subject ID
+    """
     project_subject_iri = f"http://ods.nationwidechildrens.org/phebee/projects/{project_id}/{project_subject_id}"
-    
+
     sparql = f"""
     PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
@@ -226,6 +236,147 @@ def link_subject_to_project(
     }}
     """
     execute_update(sparql)
+
+    # Write cache entries for all existing TermLinks to the new project
+    _duplicate_termlinks_to_project_cache(subject_iri, project_id)
+
+
+def _duplicate_termlinks_to_project_cache(subject_iri: str, project_id: str):
+    """
+    Duplicate all existing TermLink cache entries for a subject to a new project.
+
+    When a subject is added to a new project, we need to create cache entries
+    for all existing TermLinks in the new project's partition.
+
+    Args:
+        subject_iri: The IRI of the subject
+        project_id: The new project ID
+    """
+    from phebee.utils.dynamodb_cache import (
+        write_subject_term_links_batch,
+        get_term_ancestor_paths,
+        get_term_label,
+        parse_term_id_from_iri
+    )
+    from phebee.utils.dynamodb import get_current_term_source_version
+
+    try:
+        # Extract subject_id from IRI
+        subject_id = subject_iri.split("/subjects/")[-1]
+
+        logger.info(f"Duplicating TermLinks for subject {subject_id} to project {project_id} cache")
+
+        # Query Neptune to get all TermLinks for this subject
+        termlinks_query = f"""
+        PREFIX phebee: <http://ods.nationwidechildrens.org/phebee#>
+        PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+
+        SELECT ?termlink ?term ?qualifier
+        WHERE {{
+            GRAPH <http://ods.nationwidechildrens.org/phebee/subjects> {{
+                <{subject_iri}> phebee:hasTermLink ?termlink .
+                ?termlink rdf:type phebee:TermLink ;
+                          phebee:hasTerm ?term .
+                OPTIONAL {{
+                    ?termlink phebee:hasQualifyingTerm ?qualifier .
+                }}
+            }}
+        }}
+        ORDER BY ?termlink
+        """
+
+        result = execute_query(termlinks_query)
+
+        if not result or not result.get("results", {}).get("bindings"):
+            logger.info(f"No TermLinks found for subject {subject_id}, nothing to duplicate")
+            return
+
+        # Group by termlink (since qualifiers are returned in separate rows)
+        termlinks = {}
+        for binding in result["results"]["bindings"]:
+            termlink_iri = binding["termlink"]["value"]
+            term_iri = binding["term"]["value"]
+            qualifier_iri = binding.get("qualifier", {}).get("value")
+
+            if termlink_iri not in termlinks:
+                termlinks[termlink_iri] = {
+                    "term_iri": term_iri,
+                    "qualifiers": []
+                }
+
+            if qualifier_iri:
+                termlinks[termlink_iri]["qualifiers"].append(qualifier_iri)
+
+        logger.info(f"Found {len(termlinks)} TermLinks to duplicate")
+
+        # Get current ontology versions
+        hpo_version = get_current_term_source_version("hpo")
+        mondo_version = get_current_term_source_version("mondo")
+
+        # Build cache entries
+        cache_links = []
+        for termlink_iri, termlink_data in termlinks.items():
+            term_iri = termlink_data["term_iri"]
+            qualifiers = termlink_data["qualifiers"]
+
+            # Extract termlink hash from IRI
+            termlink_hash = termlink_iri.split("/term-link/")[-1]
+
+            # Parse term ID and determine ontology
+            term_id = parse_term_id_from_iri(term_iri)
+
+            # Determine ontology and version
+            if term_id.startswith("HP_"):
+                ontology = "hpo"
+                version = hpo_version
+            elif term_id.startswith("MONDO_"):
+                ontology = "mondo"
+                version = mondo_version
+            else:
+                logger.warning(f"Unknown ontology for term {term_id}, skipping")
+                continue
+
+            if not version:
+                logger.warning(f"No version found for {ontology}, skipping term {term_id}")
+                continue
+
+            # Get ancestor paths and label from cache
+            ancestor_paths = get_term_ancestor_paths(ontology, version, term_id)
+            term_label = get_term_label(ontology, version, term_id) or term_iri
+
+            if not ancestor_paths:
+                logger.warning(f"No ancestor paths found for {term_id}, skipping")
+                continue
+
+            # Convert qualifiers to dict format
+            qualifiers_dict = {}
+            for qualifier_iri in qualifiers:
+                qualifier_type = qualifier_iri.split("/")[-1]
+                qualifiers_dict[qualifier_type] = "true"
+
+            # Add cache entry for this project
+            cache_links.append({
+                "project_id": project_id,
+                "subject_id": subject_id,
+                "term_id": term_id,
+                "term_iri": term_iri,
+                "term_label": term_label,
+                "ancestor_paths": ancestor_paths,
+                "qualifiers": qualifiers_dict,
+                "termlink_id": termlink_hash
+            })
+
+        # Write to cache
+        if cache_links:
+            count = write_subject_term_links_batch(cache_links)
+            logger.info(f"Wrote {count} cache entries for {len(termlinks)} TermLinks to project {project_id}")
+        else:
+            logger.info(f"No cache entries to write for project {project_id}")
+
+    except Exception as e:
+        # Log error but don't fail the link operation
+        logger.error(f"Failed to duplicate TermLinks to project cache: {e}")
+        logger.exception("Cache duplication error details")
 
 
 def camel_to_snake(name: str) -> str:
@@ -791,27 +942,29 @@ def create_term_link(
 ) -> dict:
     """
     Create a term link between a subject and a term.
-    
+
+    Also writes cache entries for ALL projects that contain this subject.
+
     Args:
         subject_iri (str): The IRI of the subject
         term_iri (str): The IRI of the term
         creator_iri (str): The IRI of the creator
         qualifiers (list): List of qualifier IRIs
-        
+
     Returns:
         dict: Dictionary with the term link IRI and whether it was created
     """
     # Generate deterministic hash based on subject, term, and qualifiers
     termlink_hash = generate_termlink_hash(subject_iri, term_iri, qualifiers)
     termlink_iri = f"{subject_iri}/term-link/{termlink_hash}"
-    
+
     # Check if the term link already exists
     link_exists = node_exists(termlink_iri)
-    
+
     if link_exists:
         logger.info("Term link already exists: %s", termlink_iri)
         return {"termlink_iri": termlink_iri, "created": False}
-    
+
     # Create the term link if it doesn't exist
     created = get_current_timestamp()
 
@@ -822,7 +975,7 @@ def create_term_link(
         f'<{termlink_iri}> dcterms:created "{created}"^^xsd:dateTime',
         f"<{subject_iri}> phebee:hasTermLink <{termlink_iri}>",
     ]
-            
+
     # Add qualifier triples if any
     if qualifiers:
         for qualifier in qualifiers:
@@ -843,7 +996,293 @@ def create_term_link(
     }}
     """
     execute_update(sparql)
+
+    # Write to cache for ALL projects containing this subject
+    _write_termlink_to_cache(subject_iri, term_iri, termlink_hash, qualifiers)
+
     return {"termlink_iri": termlink_iri, "created": True}
+
+
+def get_projects_for_subject(subject_id: str) -> list:
+    """
+    Get all project IDs that contain a given subject by querying DynamoDB.
+
+    Args:
+        subject_id: The subject UUID (not the full IRI)
+
+    Returns:
+        List of project IDs
+    """
+    from phebee.utils.dynamodb import _get_table
+
+    try:
+        table = _get_table()
+        pk = f"SUBJECT#{subject_id}"
+
+        response = table.query(
+            KeyConditionExpression="PK = :pk",
+            ExpressionAttributeValues={":pk": pk}
+        )
+
+        items = response.get("Items", [])
+        project_ids = []
+
+        for item in items:
+            # SK format: PROJECT#{project_id}#SUBJECT#{project_subject_id}
+            sk_parts = item["SK"].split("#")
+            if len(sk_parts) >= 2:
+                project_id = sk_parts[1]
+                project_ids.append(project_id)
+
+        logger.info(f"Found {len(project_ids)} projects for subject {subject_id}: {project_ids}")
+        return project_ids
+
+    except Exception as e:
+        logger.error(f"Error querying projects for subject {subject_id}: {e}")
+        return []
+
+
+def _write_termlink_to_cache(subject_iri: str, term_iri: str, termlink_hash: str, qualifiers: list = None):
+    """
+    Write subject-term link to cache for all projects containing the subject.
+
+    Args:
+        subject_iri: The IRI of the subject (e.g., "http://.../subjects/{subject_id}")
+        term_iri: The IRI of the term
+        termlink_hash: The termlink hash ID
+        qualifiers: List of qualifier IRIs (optional)
+    """
+    from phebee.utils.dynamodb_cache import (
+        write_subject_term_links_batch,
+        get_term_ancestor_paths,
+        get_term_label,
+        parse_term_id_from_iri
+    )
+    from phebee.utils.dynamodb import get_current_term_source_version
+
+    try:
+        # Extract subject_id from IRI
+        subject_id = subject_iri.split("/subjects/")[-1]
+
+        # Get all projects containing this subject
+        project_ids = get_projects_for_subject(subject_id)
+
+        if not project_ids:
+            logger.warning(f"No projects found for subject {subject_id}, skipping cache write")
+            return
+
+        logger.info(f"Writing cache entries for subject {subject_id} across {len(project_ids)} projects")
+
+        # Parse term ID and determine ontology
+        term_id = parse_term_id_from_iri(term_iri)
+
+        # Determine ontology and get version
+        if term_id.startswith("HP_"):
+            ontology = "hpo"
+            version = get_current_term_source_version("hpo")
+        elif term_id.startswith("MONDO_"):
+            ontology = "mondo"
+            version = get_current_term_source_version("mondo")
+        else:
+            logger.warning(f"Unknown ontology for term {term_id}, skipping cache write")
+            return
+
+        if not version:
+            logger.warning(f"No version found for {ontology}, skipping cache write")
+            return
+
+        # Get ancestor paths and label from cache
+        ancestor_paths = get_term_ancestor_paths(ontology, version, term_id)
+        term_label = get_term_label(ontology, version, term_id) or term_iri
+
+        if not ancestor_paths:
+            logger.warning(f"No ancestor paths found for {term_id}, skipping cache write")
+            return
+
+        # Convert qualifiers to dict format
+        qualifiers_dict = {}
+        if qualifiers:
+            for qualifier_iri in qualifiers:
+                # Extract qualifier type from IRI (e.g., "negated" from ".../qualifier/negated")
+                qualifier_type = qualifier_iri.split("/")[-1]
+                qualifiers_dict[qualifier_type] = "true"
+
+        # Build cache entries for ALL projects
+        cache_links = []
+        for project_id in project_ids:
+            cache_links.append({
+                "project_id": project_id,
+                "subject_id": subject_id,
+                "term_id": term_id,
+                "term_iri": term_iri,
+                "term_label": term_label,
+                "ancestor_paths": ancestor_paths,
+                "qualifiers": qualifiers_dict,
+                "termlink_id": termlink_hash
+            })
+
+        # Write to cache
+        count = write_subject_term_links_batch(cache_links)
+        logger.info(f"Wrote {count} cache entries for TermLink {termlink_hash} across {len(project_ids)} projects")
+
+    except Exception as e:
+        # Log error but don't fail the TermLink creation
+        logger.error(f"Failed to write TermLink to cache: {e}")
+        logger.exception("Cache write error details")
+
+
+def _delete_termlink_from_cache(termlink_iri: str):
+    """
+    Delete termlink cache entries from all projects containing the subject.
+
+    Args:
+        termlink_iri: The IRI of the termlink (format: http://.../subjects/{subject_id}/term-link/{termlink_hash})
+    """
+    from phebee.utils.dynamodb_cache import _get_cache_table, build_project_data_pk
+    import boto3
+    import os
+
+    try:
+        # Extract subject_id and termlink_hash from IRI
+        parts = termlink_iri.split("/subjects/")[1].split("/term-link/")
+        subject_id = parts[0]
+        termlink_hash = parts[1]
+
+        # Get all projects containing this subject
+        project_ids = get_projects_for_subject(subject_id)
+
+        if not project_ids:
+            logger.warning(f"No projects found for subject {subject_id}, skipping cache deletion")
+            return
+
+        logger.info(f"Deleting cache entries for termlink {termlink_hash} from {len(project_ids)} projects")
+
+        # Get cache table
+        cache_table = _get_cache_table()
+
+        # For each project, query and delete cache entries with this termlink_id
+        total_deleted = 0
+        for project_id in project_ids:
+            pk = build_project_data_pk(project_id)
+
+            # Query for all entries with this termlink_id
+            response = cache_table.query(
+                KeyConditionExpression="PK = :pk",
+                FilterExpression="termlink_id = :termlink_id",
+                ExpressionAttributeValues={
+                    ":pk": pk,
+                    ":termlink_id": termlink_hash
+                }
+            )
+
+            items = response.get("Items", [])
+
+            # Delete each entry
+            with cache_table.batch_writer() as batch:
+                for item in items:
+                    batch.delete_item(Key={"PK": item["PK"], "SK": item["SK"]})
+                    total_deleted += 1
+
+        logger.info(f"Deleted {total_deleted} cache entries for termlink {termlink_hash}")
+
+    except Exception as e:
+        # Log error but don't fail the TermLink deletion
+        logger.error(f"Failed to delete TermLink from cache: {e}")
+        logger.exception("Cache deletion error details")
+
+
+def delete_subject_from_cache_and_mappings(subject_iri: str):
+    """
+    Delete all cache entries and DynamoDB mappings for a subject across all projects.
+
+    Args:
+        subject_iri: The IRI of the subject (format: http://.../subjects/{subject_id})
+    """
+    from phebee.utils.dynamodb_cache import _get_cache_table, build_project_data_pk
+    from phebee.utils.dynamodb import _get_table
+    import boto3
+    import os
+
+    try:
+        # Extract subject_id from IRI
+        subject_id = subject_iri.split("/subjects/")[-1]
+
+        # Get all projects containing this subject
+        project_ids = get_projects_for_subject(subject_id)
+
+        if not project_ids:
+            logger.warning(f"No projects found for subject {subject_id}, skipping cache deletion")
+        else:
+            logger.info(f"Deleting cache entries for subject {subject_id} from {len(project_ids)} projects")
+
+            # Get cache table
+            cache_table = _get_cache_table()
+
+            # For each project, query and delete all cache entries for this subject
+            total_deleted = 0
+            for project_id in project_ids:
+                pk = build_project_data_pk(project_id)
+
+                # Query for all entries with this subject_id in SK
+                # SK format: ancestor_path||subject_id
+                response = cache_table.query(
+                    KeyConditionExpression="PK = :pk",
+                    ExpressionAttributeValues={":pk": pk}
+                )
+
+                # Filter items that have this subject_id in the SK
+                items = [item for item in response.get("Items", [])
+                        if item["SK"].endswith(f"||{subject_id}")]
+
+                # Delete each entry
+                with cache_table.batch_writer() as batch:
+                    for item in items:
+                        batch.delete_item(Key={"PK": item["PK"], "SK": item["SK"]})
+                        total_deleted += 1
+
+            logger.info(f"Deleted {total_deleted} cache entries for subject {subject_id}")
+
+        # Delete DynamoDB subject mappings
+        dynamodb_table = _get_table()
+
+        # Delete Direction 2: SUBJECT#{subject_id} -> PROJECT mappings
+        response = dynamodb_table.query(
+            KeyConditionExpression="PK = :pk",
+            ExpressionAttributeValues={":pk": f"SUBJECT#{subject_id}"}
+        )
+
+        mapping_items = response.get("Items", [])
+        logger.info(f"Deleting {len(mapping_items)} subject-to-project mappings")
+
+        # Extract project info for Direction 1 deletion
+        project_mappings = []
+        for item in mapping_items:
+            # SK format: PROJECT#{project_id}#SUBJECT#{project_subject_id}
+            sk_parts = item["SK"].split("#")
+            if len(sk_parts) >= 4:
+                project_id = sk_parts[1]
+                project_subject_id = sk_parts[3]
+                project_mappings.append((project_id, project_subject_id))
+
+        # Delete all mappings
+        with dynamodb_table.batch_writer() as batch:
+            # Delete Direction 2 entries
+            for item in mapping_items:
+                batch.delete_item(Key={"PK": item["PK"], "SK": item["SK"]})
+
+            # Delete Direction 1 entries: PROJECT#{project_id} -> SUBJECT#{project_subject_id}
+            for project_id, project_subject_id in project_mappings:
+                batch.delete_item(Key={
+                    "PK": f"PROJECT#{project_id}",
+                    "SK": f"SUBJECT#{project_subject_id}"
+                })
+
+        logger.info(f"Deleted DynamoDB mappings for subject {subject_id}")
+
+    except Exception as e:
+        # Log error but don't fail the subject deletion
+        logger.error(f"Failed to delete subject from cache and mappings: {e}")
+        logger.exception("Cache and mapping deletion error details")
 
 
 def get_term_link(termlink_iri: str) -> dict:
@@ -921,6 +1360,14 @@ def flatten_response(fixed: dict, properties: dict) -> dict:
 
 
 def delete_term_link(termlink_iri: str):
+    """
+    Delete a term link from Neptune and remove associated cache entries.
+
+    Args:
+        termlink_iri: The IRI of the termlink to delete
+                     (format: http://.../subjects/{subject_id}/term-link/{termlink_hash})
+    """
+    # Delete from Neptune
     sparql = f"""
     DELETE WHERE {{
         <{termlink_iri}> ?p ?o .
@@ -930,6 +1377,11 @@ def delete_term_link(termlink_iri: str):
     }}
     """
     execute_update(sparql)
+
+    # Delete from cache for all projects containing this subject
+    logger.info(f"About to call _delete_termlink_from_cache for {termlink_iri}")
+    _delete_termlink_from_cache(termlink_iri)
+    logger.info(f"Finished _delete_termlink_from_cache for {termlink_iri}")
 
 
 
