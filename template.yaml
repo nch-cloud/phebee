@@ -75,6 +75,41 @@ Parameters:
     AllowedValues: ["true", "false"]
     Description: "Whether to create the Glue database and Iceberg table for evidence storage"
 
+  # Subject-Terms Analytical Table Parameters (two tables with different partitioning)
+  IcebergSubjectTermsBySubjectTable:
+    Type: String
+    Default: "subject_terms_by_subject"
+    Description: "Iceberg table name partitioned by subject_id for individual subject lookups"
+
+  CreateSubjectTermsBySubjectTableFlag:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: "Whether to create the subject-terms-by-subject table"
+
+  IcebergSubjectTermsByProjectTermTable:
+    Type: String
+    Default: "subject_terms_by_project_term"
+    Description: "Iceberg table name partitioned by (project_id, term_id) for term-filtered queries"
+
+  CreateSubjectTermsByProjectTermTableFlag:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: "Whether to create the subject-terms-by-project-term table"
+
+  # Ontology Hierarchy Table Parameters
+  IcebergOntologyHierarchyTable:
+    Type: String
+    Default: "ontology_hierarchy"
+    Description: "Iceberg table name for ontology hierarchies"
+
+  CreateOntologyHierarchyTableFlag:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: "Whether to create the ontology hierarchy table"
+
   HPOScheduleExpression:
     Type: String
     Default: "cron(0 9 * * ? *)"  # 4 AM EST = 9 UTC
@@ -98,6 +133,12 @@ Conditions:
   EnableScheduledOntologyUpdate: !Equals [!Ref RunOntologyUpdatesOnSchedule, "true"]
 
   ShouldCreateEvidenceTable: !Equals [!Ref CreateEvidenceTableFlag, "true"]
+
+  ShouldCreateSubjectTermsBySubjectTable: !Equals [!Ref CreateSubjectTermsBySubjectTableFlag, "true"]
+
+  ShouldCreateSubjectTermsByProjectTermTable: !Equals [!Ref CreateSubjectTermsByProjectTermTableFlag, "true"]
+
+  ShouldCreateOntologyHierarchyTable: !Equals [!Ref CreateOntologyHierarchyTableFlag, "true"]
 
 Resources:
   PheBeeUtilsLayer:
@@ -396,6 +437,54 @@ Resources:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
         - !Ref PheBeeIcebergPolicy
 
+  CreateSubjectTermsBySubjectTableRole:
+    Type: AWS::IAM::Role
+    Condition: ShouldCreateSubjectTermsBySubjectTable
+    Properties:
+      RoleName: !Sub "${AppName}-CreateSubjectTermsBySubjectTableRole"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - !Ref PheBeeIcebergPolicy
+
+  CreateSubjectTermsByProjectTermTableRole:
+    Type: AWS::IAM::Role
+    Condition: ShouldCreateSubjectTermsByProjectTermTable
+    Properties:
+      RoleName: !Sub "${AppName}-CreateSubjectTermsByProjectTermTableRole"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - !Ref PheBeeIcebergPolicy
+
+  CreateOntologyHierarchyTableRole:
+    Type: AWS::IAM::Role
+    Condition: ShouldCreateOntologyHierarchyTable
+    Properties:
+      RoleName: !Sub "${AppName}-CreateOntologyHierarchyTableRole"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - !Ref PheBeeIcebergPolicy
+
   NeptuneLoaderRole:
     Type: AWS::IAM::Role
     Properties:
@@ -648,6 +737,9 @@ Resources:
         Variables:
           ICEBERG_DATABASE: !Ref IcebergDatabase
           ICEBERG_EVIDENCE_TABLE: !Ref IcebergEvidenceTable
+          ICEBERG_SUBJECT_TERMS_BY_SUBJECT_TABLE: !Ref IcebergSubjectTermsBySubjectTable
+          ICEBERG_SUBJECT_TERMS_BY_PROJECT_TERM_TABLE: !Ref IcebergSubjectTermsByProjectTermTable
+          ICEBERG_ONTOLOGY_HIERARCHY_TABLE: !Ref IcebergOntologyHierarchyTable
           PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
           Region: !Sub ${AWS::Region}
       Policies:
@@ -801,6 +893,10 @@ Resources:
           PheBeeBus: !Ref PheBeeBus
           PheBeeBucketName: !Ref PheBeeBucket
           PheBeeDynamoTable: !Ref DynamoDBTable
+          ICEBERG_DATABASE: !Ref IcebergDatabase
+          ICEBERG_SUBJECT_TERMS_BY_SUBJECT_TABLE: !Ref IcebergSubjectTermsBySubjectTable
+          ICEBERG_SUBJECT_TERMS_BY_PROJECT_TERM_TABLE: !Ref IcebergSubjectTermsByProjectTermTable
+          ICEBERG_ONTOLOGY_HIERARCHY_TABLE: !Ref IcebergOntologyHierarchyTable
       VpcConfig:
         SecurityGroupIds:
           - !Ref PheBeeLambdaSecurityGroup
@@ -811,6 +907,7 @@ Resources:
         - !Ref PheBeeNeptuneReadPolicy
         - !Ref PheBeeDynamoDBReadPolicy
         - !Ref PheBeeS3WritePolicy
+        - !Ref PheBeeIcebergPolicy
 
   ResetDatabaseFunction:
     Type: AWS::Serverless::Function
@@ -1412,6 +1509,42 @@ Resources:
       MemorySize: 256
       Role: !GetAtt CreateEvidenceTableRole.Arn
 
+  CreateSubjectTermsBySubjectTableFunction:
+    Type: AWS::Serverless::Function
+    Condition: ShouldCreateSubjectTermsBySubjectTable
+    Properties:
+      FunctionName: !Sub "${AppName}-CreateSubjectTermsBySubjectTableFunction"
+      CodeUri: functions/
+      Handler: create_subject_terms_by_subject_table.lambda_handler
+      Runtime: python3.11
+      Timeout: 120
+      MemorySize: 256
+      Role: !GetAtt CreateSubjectTermsBySubjectTableRole.Arn
+
+  CreateSubjectTermsByProjectTermTableFunction:
+    Type: AWS::Serverless::Function
+    Condition: ShouldCreateSubjectTermsByProjectTermTable
+    Properties:
+      FunctionName: !Sub "${AppName}-CreateSubjectTermsByProjectTermTableFunction"
+      CodeUri: functions/
+      Handler: create_subject_terms_by_project_term_table.lambda_handler
+      Runtime: python3.11
+      Timeout: 120
+      MemorySize: 256
+      Role: !GetAtt CreateSubjectTermsByProjectTermTableRole.Arn
+
+  CreateOntologyHierarchyTableFunction:
+    Type: AWS::Serverless::Function
+    Condition: ShouldCreateOntologyHierarchyTable
+    Properties:
+      FunctionName: !Sub "${AppName}-CreateOntologyHierarchyTableFunction"
+      CodeUri: functions/
+      Handler: create_ontology_hierarchy_table.lambda_handler
+      Runtime: python3.11
+      Timeout: 120
+      MemorySize: 256
+      Role: !GetAtt CreateOntologyHierarchyTableRole.Arn
+
   #################
   # Step Functions
   #################
@@ -1616,6 +1749,42 @@ Resources:
       S3Location: !Sub "s3://${PheBeeBucket}/iceberg/evidence/"
       QueryResultsS3: !Sub "s3://${PheBeeBucket}/athena-results/${AppName}/"
       Version: "4.0"
+
+  CreateSubjectTermsBySubjectTableResource:
+    Type: Custom::IcebergTable
+    Condition: ShouldCreateSubjectTermsBySubjectTable
+    DependsOn: IcebergGlueDatabase
+    Properties:
+      ServiceToken: !GetAtt CreateSubjectTermsBySubjectTableFunction.Arn
+      Database: !Ref IcebergDatabase
+      Table: !Ref IcebergSubjectTermsBySubjectTable
+      S3Location: !Sub "s3://${PheBeeBucket}/iceberg/subject_terms_by_subject/"
+      QueryResultsS3: !Sub "s3://${PheBeeBucket}/athena-results/${AppName}/"
+      Version: "1.0"
+
+  CreateSubjectTermsByProjectTermTableResource:
+    Type: Custom::IcebergTable
+    Condition: ShouldCreateSubjectTermsByProjectTermTable
+    DependsOn: IcebergGlueDatabase
+    Properties:
+      ServiceToken: !GetAtt CreateSubjectTermsByProjectTermTableFunction.Arn
+      Database: !Ref IcebergDatabase
+      Table: !Ref IcebergSubjectTermsByProjectTermTable
+      S3Location: !Sub "s3://${PheBeeBucket}/iceberg/subject_terms_by_project_term/"
+      QueryResultsS3: !Sub "s3://${PheBeeBucket}/athena-results/${AppName}/"
+      Version: "1.0"
+
+  CreateOntologyHierarchyTableResource:
+    Type: Custom::IcebergTable
+    Condition: ShouldCreateOntologyHierarchyTable
+    DependsOn: IcebergGlueDatabase
+    Properties:
+      ServiceToken: !GetAtt CreateOntologyHierarchyTableFunction.Arn
+      Database: !Ref IcebergDatabase
+      Table: !Ref IcebergOntologyHierarchyTable
+      S3Location: !Sub "s3://${PheBeeBucket}/iceberg/ontology_hierarchy/"
+      QueryResultsS3: !Sub "s3://${PheBeeBucket}/athena-results/${AppName}/"
+      Version: "1.0"
 
   #################
   # S3 Storage
@@ -1872,11 +2041,29 @@ Outputs:
       Name: !Sub "${AppName}-AthenaDatabase"
   
   AthenaEvidenceTable:
-    Description: Evidence table name for Athena queries  
+    Description: Evidence table name for Athena queries
     Value: !Ref IcebergEvidenceTable
     Export:
       Name: !Sub "${AppName}-AthenaEvidenceTable"
-      
+
+  AthenaSubjectTermsBySubjectTable:
+    Description: Subject-terms table partitioned by subject_id for individual lookups
+    Value: !Ref IcebergSubjectTermsBySubjectTable
+    Export:
+      Name: !Sub "${AppName}-AthenaSubjectTermsBySubjectTable"
+
+  AthenaSubjectTermsByProjectTermTable:
+    Description: Subject-terms table partitioned by (project_id, term_id) for term-filtered queries
+    Value: !Ref IcebergSubjectTermsByProjectTermTable
+    Export:
+      Name: !Sub "${AppName}-AthenaSubjectTermsByProjectTermTable"
+
+  AthenaOntologyHierarchyTable:
+    Description: Ontology hierarchy table name for Athena queries
+    Value: !Ref IcebergOntologyHierarchyTable
+    Export:
+      Name: !Sub "${AppName}-AthenaOntologyHierarchyTable"
+
   AthenaResultsLocation:
     Description: S3 location for Athena query results
     Value: !Sub "s3://${PheBeeBucket}/athena-results/${AppName}/"

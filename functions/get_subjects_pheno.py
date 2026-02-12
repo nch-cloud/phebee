@@ -40,7 +40,7 @@ def lambda_handler(event, context):
     project_subject_ids = body.get("project_subject_ids")
 
     # Qualifier filtering parameter
-    include_qualified = body.get("include_qualified", False)
+    include_qualified = body.get("include_qualified", True)
 
     # Term hierarchy parameter
     include_child_terms = body.get("include_child_terms", True)
@@ -62,6 +62,10 @@ def lambda_handler(event, context):
     limit = body.get("limit", 1000)
     cursor = body.get("cursor")
 
+    # Internal parameter for testing: override cache behavior
+    # _use_cache=true forces cache, _use_cache=false forces Neptune
+    use_cache = body.get("_use_cache")
+
     result = get_subjects(
         project_iri=project_iri,
         hpo_version=hpo_version,
@@ -74,6 +78,7 @@ def lambda_handler(event, context):
         project_subject_ids=project_subject_ids,
         include_qualified=include_qualified,
         include_child_terms=include_child_terms,
+        use_cache=use_cache,
     )
     
     # Extract subjects and pagination info
