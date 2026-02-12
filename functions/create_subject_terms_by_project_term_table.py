@@ -67,9 +67,7 @@ def create_table(database: str, table: str, s3_location: str, query_results_s3: 
     LOCATION '{s3_location}'
     TBLPROPERTIES (
         'table_type'='ICEBERG',
-        'format'='parquet',
-        'write.parquet.compression-codec'='snappy',
-        'description'='Subject-term associations partitioned by (project_id, term_id) for term-filtered queries'
+        'format'='parquet'
     )
     """
 

@@ -9,9 +9,16 @@ from cloudformation_utils import get_output_value_from_stack
 from s3_utils import check_s3_file_exists
 
 
-def update_source(cloudformation_stack, source_name, sfn_output_key, test=True):
+def update_source(cloudformation_stack, source_name, sfn_output_key, test=True, timeout=600):
     """
     Utility function to trigger the update step function and return the test_start_time.
+
+    Args:
+        cloudformation_stack: Stack name
+        source_name: Source identifier (e.g., 'hpo', 'mondo')
+        sfn_output_key: CloudFormation output key for Step Function ARN
+        test: Whether to run in test mode
+        timeout: Timeout in seconds for waiting for Step Function completion (default: 600)
     """
 
     # Get the ARN of the Step Function (assuming it is stored in the stack's output)
@@ -30,7 +37,7 @@ def update_source(cloudformation_stack, source_name, sfn_output_key, test=True):
         pytest.fail(str(e))
 
     # Wait for the Step Function to complete
-    execution_status = wait_for_step_function_completion(execution_arn)
+    execution_status = wait_for_step_function_completion(execution_arn, timeout=timeout)
 
     # Verify the Step Function execution result
     if execution_status != "SUCCEEDED":

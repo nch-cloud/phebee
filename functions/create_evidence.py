@@ -1,7 +1,8 @@
 import json
+import os
 from aws_lambda_powertools import Metrics, Logger, Tracer
 from phebee.utils.aws import extract_body
-from phebee.utils.iceberg import create_evidence_record
+from phebee.utils.iceberg import create_evidence_record, materialize_subject_terms
 
 logger = Logger()
 tracer = Tracer()
@@ -17,6 +18,7 @@ def lambda_handler(event, context):
         subject_id = body.get("subject_id")
         term_iri = body.get("term_iri")
         creator_id = body.get("creator_id")
+        project_id = body.get("project_id")  # Required for materialization
         creator_name = body.get("creator_name")
         creator_type = body.get("creator_type", "human")  # Default to human
         evidence_type = body.get("evidence_type", "manual_annotation")
@@ -30,18 +32,18 @@ def lambda_handler(event, context):
         span_end = body.get("span_end")
         qualifiers = body.get("qualifiers", [])
         term_source = body.get("term_source")
-        
+
         # Clinical note context fields
         note_timestamp = body.get("note_timestamp")
         provider_type = body.get("provider_type")
         author_specialty = body.get("author_specialty")
         note_type = body.get("note_type")
 
-        if not subject_id or not term_iri or not creator_id:
+        if not subject_id or not term_iri or not creator_id or not project_id:
             return {
                 "statusCode": 400,
                 "body": json.dumps({
-                    "message": "Missing required fields: subject_id, term_iri, and creator_id are required."
+                    "message": "Missing required fields: subject_id, term_iri, creator_id, and project_id are required."
                 })
             }
 
@@ -79,6 +81,20 @@ def lambda_handler(event, context):
             note_type=note_type,
             term_source=term_source
         )
+
+        # Materialize subject-terms analytical tables (if enabled)
+        enable_materialization = os.environ.get('ENABLE_SUBJECT_TERMS_MATERIALIZATION', 'false').lower() == 'true'
+        if enable_materialization:
+            try:
+                logger.info(f"Materializing subject-terms for subject {subject_id} in project {project_id}")
+                materialize_subject_terms(
+                    project_id=project_id,
+                    subject_id=subject_id
+                )
+                logger.info("Subject-terms materialization completed")
+            except Exception as e:
+                # Log but don't fail the request if materialization fails
+                logger.warning(f"Failed to materialize subject-terms: {e}")
 
         # Return the complete evidence record
         evidence_record = {

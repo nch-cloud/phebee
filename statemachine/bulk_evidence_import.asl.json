@@ -235,7 +235,7 @@
       "Choices": [{
         "Variable": "$.subjects_status.Payload.body.status",
         "StringEquals": "LOAD_COMPLETED",
-        "Next": "NotifySuccess"
+        "Next": "MaterializeProjectSubjectTerms"
       }, {
         "Variable": "$.subjects_status.Payload.body.status",
         "StringEquals": "LOAD_FAILED",
@@ -249,7 +249,38 @@
       "Seconds": 30,
       "Next": "MonitorSubjectsLoad"
     },
-    
+
+    "MaterializeProjectSubjectTerms": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${MaterializeProjectSubjectTermsFunction}",
+        "Payload": {
+          "project_id.$": "$.validation.Payload.body.project_id",
+          "run_id.$": "$.run_id",
+          "batch_size": 100
+        }
+      },
+      "ResultPath": "$.materialization",
+      "Next": "CheckMaterializationStatus",
+      "Catch": [{
+        "ErrorEquals": ["States.ALL"],
+        "Next": "NotifyFailure",
+        "ResultPath": "$.error"
+      }]
+    },
+
+    "CheckMaterializationStatus": {
+      "Type": "Choice",
+      "Choices": [{
+        "Variable": "$.materialization.Payload.status",
+        "StringEquals": "success",
+        "Next": "NotifySuccess"
+      }],
+      "Default": "NotifySuccess",
+      "Comment": "Always proceed to success - materialization is optional optimization"
+    },
+
     "NotifySuccess": {
       "Type": "Task",
       "Resource": "arn:aws:states:::lambda:invoke",

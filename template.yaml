@@ -1279,6 +1279,222 @@ Resources:
       Policies:
         - !Ref PheBeePutEventsPolicy
 
+  MaterializeProjectSubjectTermsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AppName}-MaterializeProjectSubjectTermsFunction
+      CodeUri: functions
+      Handler: materialize_project_subject_terms.lambda_handler
+      MemorySize: 1024
+      Timeout: 900
+      Layers:
+        - !Ref PheBeeUtilsLayer
+      Environment:
+        Variables:
+          ICEBERG_DATABASE: !Ref IcebergDatabase
+          ICEBERG_EVIDENCE_TABLE: !Ref IcebergEvidenceTable
+          ICEBERG_SUBJECT_TERMS_BY_SUBJECT_TABLE: !Ref IcebergSubjectTermsBySubjectTable
+          ICEBERG_SUBJECT_TERMS_BY_PROJECT_TERM_TABLE: !Ref IcebergSubjectTermsByProjectTermTable
+          PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - athena:StartQueryExecution
+                - athena:GetQueryExecution
+                - athena:GetQueryResults
+                - athena:GetWorkGroup
+              Resource:
+                - !Sub "arn:aws:athena:${AWS::Region}:${AWS::AccountId}:workgroup/primary"
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+                - s3:ListBucket
+                - s3:GetBucketLocation
+              Resource:
+                - !GetAtt PheBeeBucket.Arn
+                - !Sub "${PheBeeBucket.Arn}/*"
+            - Effect: Allow
+              Action:
+                - glue:GetDatabase
+                - glue:GetTable
+                - glue:GetPartitions
+                - glue:UpdateTable
+              Resource:
+                - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog"
+                - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/${IcebergDatabase}"
+                - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/${IcebergDatabase}/*"
+
+  MaterializeOntologyHierarchyFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AppName}-MaterializeOntologyHierarchyFunction
+      CodeUri: functions
+      Handler: materialize_ontology_hierarchy.lambda_handler
+      MemorySize: 2048
+      Timeout: 900
+      Layers:
+        - !Ref PheBeeUtilsLayer
+      Environment:
+        Variables:
+          ICEBERG_DATABASE: !Ref IcebergDatabase
+          ICEBERG_ONTOLOGY_HIERARCHY_TABLE: !Ref IcebergOntologyHierarchyTable
+          PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+              Resource:
+                - !Sub "arn:aws:s3:::${PheBeeBucket}/*"
+            - Effect: Allow
+              Action:
+                - athena:StartQueryExecution
+                - athena:GetQueryExecution
+                - athena:GetQueryResults
+                - athena:GetWorkGroup
+              Resource:
+                - !Sub "arn:aws:athena:${AWS::Region}:${AWS::AccountId}:workgroup/primary"
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+                - s3:ListBucket
+                - s3:GetBucketLocation
+              Resource:
+                - !GetAtt PheBeeBucket.Arn
+                - !Sub "${PheBeeBucket.Arn}/*"
+            - Effect: Allow
+              Action:
+                - glue:GetDatabase
+                - glue:GetTable
+                - glue:GetPartitions
+                - glue:UpdateTable
+              Resource:
+                - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog"
+                - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/${IcebergDatabase}"
+                - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/${IcebergDatabase}/*"
+
+  InsertOntologyHierarchyBatchFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AppName}-InsertOntologyHierarchyBatchFunction
+      CodeUri: functions
+      Handler: insert_ontology_hierarchy_batch.lambda_handler
+      MemorySize: 512
+      Timeout: 300
+      Layers:
+        - !Ref PheBeeUtilsLayer
+      Environment:
+        Variables:
+          ICEBERG_DATABASE: !Ref IcebergDatabase
+          ICEBERG_ONTOLOGY_HIERARCHY_TABLE: !Ref IcebergOntologyHierarchyTable
+          PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+              Resource:
+                - !Sub "arn:aws:s3:::${PheBeeBucket}/*"
+            - Effect: Allow
+              Action:
+                - athena:StartQueryExecution
+                - athena:GetQueryExecution
+                - athena:GetQueryResults
+                - athena:GetWorkGroup
+              Resource:
+                - !Sub "arn:aws:athena:${AWS::Region}:${AWS::AccountId}:workgroup/primary"
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+                - s3:ListBucket
+                - s3:GetBucketLocation
+              Resource:
+                - !GetAtt PheBeeBucket.Arn
+                - !Sub "${PheBeeBucket.Arn}/*"
+            - Effect: Allow
+              Action:
+                - glue:GetDatabase
+                - glue:GetTable
+                - glue:GetPartitions
+                - glue:UpdateTable
+              Resource:
+                - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog"
+                - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/${IcebergDatabase}"
+                - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/${IcebergDatabase}/*"
+
+  CleanupS3PrefixFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AppName}-CleanupS3PrefixFunction
+      CodeUri: functions
+      Handler: cleanup_s3_prefix.lambda_handler
+      MemorySize: 256
+      Timeout: 300
+      Layers:
+        - !Ref PheBeeUtilsLayer
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - s3:ListBucket
+                - s3:DeleteObject
+              Resource:
+                - !GetAtt PheBeeBucket.Arn
+                - !Sub "${PheBeeBucket.Arn}/*"
+
+  DeleteOntologyHierarchyPartitionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AppName}-DeleteOntologyHierarchyPartitionFunction
+      CodeUri: functions
+      Handler: delete_ontology_hierarchy_partition.lambda_handler
+      MemorySize: 256
+      Timeout: 300
+      Layers:
+        - !Ref PheBeeUtilsLayer
+      Environment:
+        Variables:
+          ICEBERG_DATABASE: !Ref IcebergDatabase
+          ICEBERG_ONTOLOGY_HIERARCHY_TABLE: !Ref IcebergOntologyHierarchyTable
+          PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - athena:StartQueryExecution
+                - athena:GetQueryExecution
+                - athena:GetQueryResults
+                - athena:GetWorkGroup
+              Resource:
+                - !Sub "arn:aws:athena:${AWS::Region}:${AWS::AccountId}:workgroup/primary"
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+                - s3:ListBucket
+                - s3:GetBucketLocation
+              Resource:
+                - !GetAtt PheBeeBucket.Arn
+                - !Sub "${PheBeeBucket.Arn}/*"
+            - Effect: Allow
+              Action:
+                - glue:GetDatabase
+                - glue:GetTable
+                - glue:GetPartitions
+                - glue:UpdateTable
+              Resource:
+                - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog"
+                - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/${IcebergDatabase}"
+                - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/${IcebergDatabase}/*"
+
   # EMR Serverless Application
   EMRServerlessApplication:
     Type: AWS::EMRServerless::Application
@@ -1394,6 +1610,7 @@ Resources:
         GenerateTTLFromIcebergFunction: !GetAtt GenerateTTLFromIcebergFunction.Arn
         NotifyBulkImportCompleteFunction: !GetAtt NotifyBulkImportCompleteFunction.Arn
         NotifyBulkImportFailureFunction: !GetAtt NotifyBulkImportFailureFunction.Arn
+        MaterializeProjectSubjectTermsFunction: !GetAtt MaterializeProjectSubjectTermsFunction.Arn
         DynamoDBTableName: !Ref DynamoDBTable
 
   BulkImportStateMachineRole:
@@ -1423,6 +1640,7 @@ Resources:
                   - !GetAtt GenerateTTLFromIcebergFunction.Arn
                   - !GetAtt NotifyBulkImportCompleteFunction.Arn
                   - !GetAtt NotifyBulkImportFailureFunction.Arn
+                  - !GetAtt MaterializeProjectSubjectTermsFunction.Arn
         - PolicyName: EMRServerlessAccess
           PolicyDocument:
             Version: '2012-10-17'
@@ -1589,6 +1807,13 @@ Resources:
         InstallRDFXMLSFNArn: !Ref InstallRDFXMLSFN
         DownloadGithubReleaseFunctionArn: !Ref DownloadGithubReleaseFunction
         UpdateInstallTimestampFunctionArn: !Ref UpdateInstallTimestampFunction
+        MaterializeOntologyHierarchyFunction: !GetAtt MaterializeOntologyHierarchyFunction.Arn
+        InsertOntologyHierarchyBatchFunction: !GetAtt InsertOntologyHierarchyBatchFunction.Arn
+        CleanupS3PrefixFunction: !GetAtt CleanupS3PrefixFunction.Arn
+        DeleteOntologyHierarchyPartitionFunction: !GetAtt DeleteOntologyHierarchyPartitionFunction.Arn
+        AthenaDatabase: !Ref IcebergDatabase
+        AthenaOntologyHierarchyTable: !Ref IcebergOntologyHierarchyTable
+        PheBeeBucketName: !Ref PheBeeBucket
         PheBeeBus: !Ref PheBeeBus
       Type: STANDARD
       Policies:
@@ -1600,10 +1825,33 @@ Resources:
             Resource:
               - !GetAtt DownloadGithubReleaseFunction.Arn
               - !GetAtt UpdateInstallTimestampFunction.Arn
+              - !GetAtt MaterializeOntologyHierarchyFunction.Arn
+              - !GetAtt InsertOntologyHierarchyBatchFunction.Arn
+              - !GetAtt CleanupS3PrefixFunction.Arn
+              - !GetAtt DeleteOntologyHierarchyPartitionFunction.Arn
           - Effect: Allow
             Action: states:StartExecution
             Resource:
               - !GetAtt InstallRDFXMLSFN.Arn
+          - Effect: Allow
+            Action:
+              - s3:ListBucket
+              - s3:GetObject
+              - s3:PutObject
+            Resource:
+              - !GetAtt PheBeeBucket.Arn
+              - !Sub "${PheBeeBucket.Arn}/*"
+          - Effect: Allow
+            Action:
+              - states:StartExecution
+            Resource:
+              - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*"
+          - Effect: Allow
+            Action:
+              - states:DescribeExecution
+              - states:StopExecution
+            Resource:
+              - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:*:*"
 
   UpdateMondoSFN:
     Type: AWS::Serverless::StateMachine
@@ -1619,6 +1867,13 @@ Resources:
         InstallRDFXMLSFNArn: !Ref InstallRDFXMLSFN
         DownloadGithubReleaseFunctionArn: !Ref DownloadGithubReleaseFunction
         UpdateInstallTimestampFunctionArn: !Ref UpdateInstallTimestampFunction
+        MaterializeOntologyHierarchyFunction: !GetAtt MaterializeOntologyHierarchyFunction.Arn
+        InsertOntologyHierarchyBatchFunction: !GetAtt InsertOntologyHierarchyBatchFunction.Arn
+        CleanupS3PrefixFunction: !GetAtt CleanupS3PrefixFunction.Arn
+        DeleteOntologyHierarchyPartitionFunction: !GetAtt DeleteOntologyHierarchyPartitionFunction.Arn
+        AthenaDatabase: !Ref IcebergDatabase
+        AthenaOntologyHierarchyTable: !Ref IcebergOntologyHierarchyTable
+        PheBeeBucketName: !Ref PheBeeBucket
         PheBeeBus: !Ref PheBeeBus
       Type: STANDARD
       Policies:
@@ -1630,10 +1885,33 @@ Resources:
             Resource:
               - !GetAtt DownloadGithubReleaseFunction.Arn
               - !GetAtt UpdateInstallTimestampFunction.Arn
+              - !GetAtt MaterializeOntologyHierarchyFunction.Arn
+              - !GetAtt InsertOntologyHierarchyBatchFunction.Arn
+              - !GetAtt CleanupS3PrefixFunction.Arn
+              - !GetAtt DeleteOntologyHierarchyPartitionFunction.Arn
           - Effect: Allow
             Action: states:StartExecution
             Resource:
               - !GetAtt InstallRDFXMLSFN.Arn
+          - Effect: Allow
+            Action:
+              - s3:ListBucket
+              - s3:GetObject
+              - s3:PutObject
+            Resource:
+              - !GetAtt PheBeeBucket.Arn
+              - !Sub "${PheBeeBucket.Arn}/*"
+          - Effect: Allow
+            Action:
+              - states:StartExecution
+            Resource:
+              - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*"
+          - Effect: Allow
+            Action:
+              - states:DescribeExecution
+              - states:StopExecution
+            Resource:
+              - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:*:*"
 
   UpdateECOSFN:
     Type: AWS::Serverless::StateMachine

@@ -774,6 +774,765 @@ def get_subject_term_info(
         "evidence_count": len(evidence_data),
         "term_links": term_links
     }
+
+
+# =============================================================================
+# Subject-Terms Analytical Table Query Functions
+# =============================================================================
+
+def query_subject_by_id(subject_id: str) -> List[Dict[str, Any]]:
+    """
+    Query all terms for a specific subject using the subject_terms_by_subject table.
+    Optimized for individual subject lookups.
+
+    Args:
+        subject_id: The subject ID
+
+    Returns:
+        List of term records for the subject
+    """
+    database_name = os.environ.get('ICEBERG_DATABASE')
+    table_name = os.environ.get('ICEBERG_SUBJECT_TERMS_BY_SUBJECT_TABLE')
+
+    if not database_name or not table_name:
+        raise ValueError("ICEBERG_DATABASE and ICEBERG_SUBJECT_TERMS_BY_SUBJECT_TABLE environment variables are required")
+
+    query = f"""
+    SELECT
+        project_id,
+        subject_id,
+        project_subject_id,
+        subject_iri,
+        project_subject_iri,
+        term_iri,
+        term_id,
+        term_label,
+        qualifiers,
+        evidence_count,
+        termlink_id,
+        first_evidence_date,
+        last_evidence_date
+    FROM {database_name}.{table_name}
+    WHERE subject_id = '{subject_id}'
+    ORDER BY term_id
+    """
+
+    try:
+        results = query_iceberg_evidence(query)
+
+        # Parse results
+        terms = []
+        for row in results:
+            term = {
+                "project_id": row.get('project_id'),
+                "subject_id": row.get('subject_id'),
+                "project_subject_id": row.get('project_subject_id'),
+                "subject_iri": row.get('subject_iri'),
+                "project_subject_iri": row.get('project_subject_iri'),
+                "term_iri": row.get('term_iri'),
+                "term_id": row.get('term_id'),
+                "term_label": row.get('term_label'),
+                "evidence_count": int(row.get('evidence_count', 0)) if row.get('evidence_count') else 0,
+                "termlink_id": row.get('termlink_id'),
+                "first_evidence_date": row.get('first_evidence_date'),
+                "last_evidence_date": row.get('last_evidence_date')
+            }
+
+            # Parse qualifiers array
+            qualifiers_str = row.get('qualifiers')
+            if qualifiers_str and qualifiers_str != '[]' and qualifiers_str != 'null':
+                # Parse array format like ['negated', 'severity_moderate']
+                qualifiers_str = qualifiers_str.strip('[]')
+                if qualifiers_str:
+                    term["qualifiers"] = [q.strip().strip("'\"") for q in qualifiers_str.split(',')]
+                else:
+                    term["qualifiers"] = []
+            else:
+                term["qualifiers"] = []
+
+            terms.append(term)
+
+        logger.info(f"Found {len(terms)} terms for subject {subject_id}")
+        return terms
+
+    except Exception as e:
+        logger.error(f"Error querying subject by ID {subject_id}: {e}")
+        raise
+
+
+def query_subjects_by_project(
+    project_id: str,
+    term_id: str = None,
+    limit: int = 50,
+    offset: int = 0
+) -> Dict[str, Any]:
+    """
+    Query subjects in a project with optional term filtering and pagination.
+    Uses the subject_terms_by_project_term table for efficient queries.
+
+    Args:
+        project_id: The project ID
+        term_id: Optional term ID to filter by (e.g., "HP:0001234")
+        limit: Number of subjects to return (default 50)
+        offset: Offset for pagination (default 0)
+
+    Returns:
+        Dict with:
+            - subjects: List of subject records with aggregated terms
+            - total_count: Total number of subjects (without pagination)
+            - has_more: Boolean indicating if more results exist
+    """
+    database_name = os.environ.get('ICEBERG_DATABASE')
+    table_name = os.environ.get('ICEBERG_SUBJECT_TERMS_BY_PROJECT_TERM_TABLE')
+
+    if not database_name or not table_name:
+        raise ValueError("ICEBERG_DATABASE and ICEBERG_SUBJECT_TERMS_BY_PROJECT_TERM_TABLE environment variables are required")
+
+    # Build term filter
+    term_filter = f"AND term_id = '{term_id}'" if term_id else ""
+
+    # Query to get subjects with aggregated term data
+    query = f"""
+    SELECT
+        subject_id,
+        project_subject_id,
+        subject_iri,
+        project_subject_iri,
+        ARRAY_AGG(
+            ROW(term_id, term_iri, term_label, qualifiers, evidence_count, termlink_id, first_evidence_date, last_evidence_date)
+        ) as terms
+    FROM {database_name}.{table_name}
+    WHERE project_id = '{project_id}'
+    {term_filter}
+    GROUP BY subject_id, project_subject_id, subject_iri, project_subject_iri
+    ORDER BY subject_id
+    LIMIT {limit}
+    OFFSET {offset}
+    """
+
+    # Count query for total
+    count_query = f"""
+    SELECT COUNT(DISTINCT subject_id) as total
+    FROM {database_name}.{table_name}
+    WHERE project_id = '{project_id}'
+    {term_filter}
+    """
+
+    try:
+        # Execute queries
+        results = query_iceberg_evidence(query)
+        count_results = query_iceberg_evidence(count_query)
+
+        total_count = int(count_results[0]['total']) if count_results else 0
+
+        # Parse subjects
+        subjects = []
+        for row in results:
+            subject = {
+                "subject_id": row.get('subject_id'),
+                "project_subject_id": row.get('project_subject_id'),
+                "subject_iri": row.get('subject_iri'),
+                "project_subject_iri": row.get('project_subject_iri'),
+                "terms": []
+            }
+
+            # Parse terms array - this comes as a string representation of ROW structures
+            terms_str = row.get('terms')
+            if terms_str and terms_str != '[]' and terms_str != 'null':
+                # Parse the array of ROW structures
+                # Format: [{term_id=HP:0001234, term_iri=..., ...}, {...}]
+                terms_list = parse_athena_struct_array(terms_str)
+                for term_dict in terms_list:
+                    term = {
+                        "term_id": term_dict.get('term_id'),
+                        "term_iri": term_dict.get('term_iri'),
+                        "term_label": term_dict.get('term_label'),
+                        "evidence_count": int(term_dict.get('evidence_count', 0)) if term_dict.get('evidence_count') else 0,
+                        "termlink_id": term_dict.get('termlink_id'),
+                        "first_evidence_date": term_dict.get('first_evidence_date'),
+                        "last_evidence_date": term_dict.get('last_evidence_date')
+                    }
+
+                    # Parse qualifiers if present
+                    qualifiers_str = term_dict.get('qualifiers')
+                    if qualifiers_str and qualifiers_str != '[]' and qualifiers_str != 'null':
+                        qualifiers_str = qualifiers_str.strip('[]')
+                        if qualifiers_str:
+                            term["qualifiers"] = [q.strip().strip("'\"") for q in qualifiers_str.split(',')]
+                        else:
+                            term["qualifiers"] = []
+                    else:
+                        term["qualifiers"] = []
+
+                    subject["terms"].append(term)
+
+            subjects.append(subject)
+
+        has_more = (offset + len(subjects)) < total_count
+
+        logger.info(f"Found {len(subjects)} subjects for project {project_id} (total: {total_count})")
+
+        return {
+            "subjects": subjects,
+            "total_count": total_count,
+            "has_more": has_more,
+            "limit": limit,
+            "offset": offset
+        }
+
+    except Exception as e:
+        logger.error(f"Error querying subjects by project {project_id}: {e}")
+        raise
+
+
+def query_subject_with_hierarchy(
+    subject_id: str,
+    ontology_source: str = "hpo",
+    ontology_version: str = None
+) -> Dict[str, Any]:
+    """
+    Query a subject's terms with ontology hierarchy information.
+    Joins subject_terms_by_subject with ontology_hierarchy table.
+
+    Args:
+        subject_id: The subject ID
+        ontology_source: Ontology source (default "HPO")
+        ontology_version: Optional specific version (uses latest if not specified)
+
+    Returns:
+        Dict with subject info and terms enriched with hierarchy data
+    """
+    database_name = os.environ.get('ICEBERG_DATABASE')
+    subject_terms_table = os.environ.get('ICEBERG_SUBJECT_TERMS_BY_SUBJECT_TABLE')
+    hierarchy_table = os.environ.get('ICEBERG_ONTOLOGY_HIERARCHY_TABLE')
+
+    if not database_name or not subject_terms_table or not hierarchy_table:
+        raise ValueError("ICEBERG_DATABASE, ICEBERG_SUBJECT_TERMS_BY_SUBJECT_TABLE, and ICEBERG_ONTOLOGY_HIERARCHY_TABLE environment variables are required")
+
+    # Build version filter
+    version_filter = f"AND h.version = '{ontology_version}'" if ontology_version else ""
+
+    # If no version specified, get latest version first
+    version_query = ""
+    if not ontology_version:
+        version_query = f"""
+        SELECT version
+        FROM {database_name}.{hierarchy_table}
+        WHERE ontology_source = '{ontology_source}'
+        ORDER BY version DESC
+        LIMIT 1
+        """
+        try:
+            version_results = query_iceberg_evidence(version_query)
+            if version_results:
+                ontology_version = version_results[0]['version']
+                version_filter = f"AND h.version = '{ontology_version}'"
+        except:
+            pass  # Continue without version filter if query fails
+
+    # Join query
+    query = f"""
+    SELECT
+        st.project_id,
+        st.subject_id,
+        st.project_subject_id,
+        st.subject_iri,
+        st.project_subject_iri,
+        st.term_iri,
+        st.term_id,
+        st.term_label as current_term_label,
+        st.qualifiers,
+        st.evidence_count,
+        st.termlink_id,
+        st.first_evidence_date,
+        st.last_evidence_date,
+        h.term_label as hierarchy_term_label,
+        h.ancestor_term_ids,
+        h.version as ontology_version
+    FROM {database_name}.{subject_terms_table} st
+    LEFT JOIN {database_name}.{hierarchy_table} h
+        ON st.term_id = h.term_id
+        AND h.ontology_source = '{ontology_source}'
+        {version_filter}
+    WHERE st.subject_id = '{subject_id}'
+    ORDER BY st.term_id
+    """
+
+    try:
+        results = query_iceberg_evidence(query)
+
+        if not results:
+            return None
+
+        # Build subject record
+        first_row = results[0]
+        subject = {
+            "project_id": first_row.get('project_id'),
+            "subject_id": first_row.get('subject_id'),
+            "project_subject_id": first_row.get('project_subject_id'),
+            "subject_iri": first_row.get('subject_iri'),
+            "project_subject_iri": first_row.get('project_subject_iri'),
+            "ontology_source": ontology_source,
+            "ontology_version": first_row.get('ontology_version'),
+            "terms": []
+        }
+
+        # Parse each term with hierarchy info
+        for row in results:
+            term = {
+                "term_iri": row.get('term_iri'),
+                "term_id": row.get('term_id'),
+                "term_label": row.get('hierarchy_term_label') or row.get('current_term_label'),  # Prefer hierarchy label
+                "evidence_count": int(row.get('evidence_count', 0)) if row.get('evidence_count') else 0,
+                "termlink_id": row.get('termlink_id'),
+                "first_evidence_date": row.get('first_evidence_date'),
+                "last_evidence_date": row.get('last_evidence_date')
+            }
+
+            # Parse qualifiers
+            qualifiers_str = row.get('qualifiers')
+            if qualifiers_str and qualifiers_str != '[]' and qualifiers_str != 'null':
+                qualifiers_str = qualifiers_str.strip('[]')
+                if qualifiers_str:
+                    term["qualifiers"] = [q.strip().strip("'\"") for q in qualifiers_str.split(',')]
+                else:
+                    term["qualifiers"] = []
+            else:
+                term["qualifiers"] = []
+
+            # Parse ancestor_term_ids
+            ancestors_str = row.get('ancestor_term_ids')
+            if ancestors_str and ancestors_str != '[]' and ancestors_str != 'null':
+                ancestors_str = ancestors_str.strip('[]')
+                if ancestors_str:
+                    term["ancestor_term_ids"] = [a.strip().strip("'\"") for a in ancestors_str.split(',')]
+                else:
+                    term["ancestor_term_ids"] = []
+            else:
+                term["ancestor_term_ids"] = []
+
+            subject["terms"].append(term)
+
+        logger.info(f"Found {len(subject['terms'])} terms with hierarchy for subject {subject_id}")
+        return subject
+
+    except Exception as e:
+        logger.error(f"Error querying subject with hierarchy {subject_id}: {e}")
+        raise
+
+
+# =============================================================================
+# Subject-Terms Materialization Functions (Write Operations)
+# =============================================================================
+
+def _execute_athena_query(query: str, wait_for_completion: bool = True) -> str:
+    """
+    Helper function to execute an Athena query.
+
+    Args:
+        query: SQL query to execute
+        wait_for_completion: Whether to wait for query to complete
+
+    Returns:
+        Query execution ID
+    """
+    athena_client = boto3.client('athena')
+    database_name = os.environ.get('ICEBERG_DATABASE')
+    bucket_name = os.environ.get('PHEBEE_BUCKET_NAME')
+
+    if not database_name:
+        raise ValueError("ICEBERG_DATABASE environment variable is required")
+
+    # Check if primary workgroup is managed
+    wg_cfg = athena_client.get_work_group(WorkGroup="primary")["WorkGroup"]["Configuration"]
+    managed_config = wg_cfg.get("ManagedQueryResultsConfiguration", {})
+    managed = managed_config.get("Enabled", False) if isinstance(managed_config, dict) else False
+
+    params = {
+        "QueryString": query,
+        "QueryExecutionContext": {"Database": database_name},
+        "WorkGroup": "primary"
+    }
+
+    if not managed:
+        params["ResultConfiguration"] = {"OutputLocation": f"s3://{bucket_name}/athena-results/"}
+
+    response = athena_client.start_query_execution(**params)
+    query_execution_id = response['QueryExecutionId']
+
+    if wait_for_completion:
+        # Wait for query completion
+        while True:
+            result = athena_client.get_query_execution(QueryExecutionId=query_execution_id)
+            status = result['QueryExecution']['Status']['State']
+
+            if status == 'SUCCEEDED':
+                break
+            elif status in ['FAILED', 'CANCELLED']:
+                error_msg = result['QueryExecution']['Status'].get('StateChangeReason', 'Unknown error')
+                raise Exception(f"Athena query failed: {error_msg}")
+
+            time.sleep(2)
+
+    return query_execution_id
+
+
+def _extract_term_id_from_iri(term_iri: str) -> str:
+    """
+    Extract term ID from IRI (e.g., HP:0001234 from http://purl.obolibrary.org/obo/HP_0001234).
+
+    Args:
+        term_iri: The term IRI
+
+    Returns:
+        The term ID (e.g., "HP:0001234")
+    """
+    if not term_iri:
+        return None
+
+    # Handle OBO format: http://purl.obolibrary.org/obo/HP_0001234 -> HP:0001234
+    if '/obo/' in term_iri:
+        term_part = term_iri.split('/obo/')[-1]
+        return term_part.replace('_', ':')
+
+    # Handle other formats - just take the last part
+    return term_iri.split('/')[-1]
+
+
+def materialize_subject_terms(
+    project_id: str,
+    subject_id: str,
+    project_subject_id: str = None,
+    subject_iri: str = None,
+    project_subject_iri: str = None
+) -> int:
+    """
+    Materialize subject-term associations from evidence table to analytical tables.
+    Aggregates evidence by subject and term, computing counts and date ranges.
+
+    Args:
+        project_id: The project ID
+        subject_id: The subject ID
+        project_subject_id: Optional project-specific subject ID
+        subject_iri: Optional subject IRI (will be constructed if not provided)
+        project_subject_iri: Optional project-specific subject IRI
+
+    Returns:
+        Number of subject-term records materialized
+    """
+    database_name = os.environ['ICEBERG_DATABASE']
+    evidence_table = os.environ['ICEBERG_EVIDENCE_TABLE']
+    by_subject_table = os.environ['ICEBERG_SUBJECT_TERMS_BY_SUBJECT_TABLE']
+    by_project_term_table = os.environ['ICEBERG_SUBJECT_TERMS_BY_PROJECT_TERM_TABLE']
+
+    # Construct IRIs if not provided
+    if not subject_iri:
+        subject_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"
+    if not project_subject_id:
+        project_subject_id = subject_id
+    if not project_subject_iri:
+        project_subject_iri = subject_iri
+
+    logger.info(f"Materializing subject-terms for project={project_id}, subject={subject_id}")
+
+    # Delete existing records for this subject
+    delete_query = f"""
+    DELETE FROM {database_name}.{by_subject_table}
+    WHERE subject_id = '{subject_id}'
+    """
+    try:
+        _execute_athena_query(delete_query)
+    except Exception as e:
+        logger.warning(f"Error deleting existing records from by_subject table: {e}")
+
+    delete_query_2 = f"""
+    DELETE FROM {database_name}.{by_project_term_table}
+    WHERE project_id = '{project_id}' AND subject_id = '{subject_id}'
+    """
+    try:
+        _execute_athena_query(delete_query_2)
+    except Exception as e:
+        logger.warning(f"Error deleting existing records from by_project_term table: {e}")
+
+    # Aggregate query from evidence table
+    aggregate_query = f"""
+    WITH aggregated AS (
+        SELECT
+            '{project_id}' as project_id,
+            subject_id,
+            '{project_subject_id}' as project_subject_id,
+            '{subject_iri}' as subject_iri,
+            '{project_subject_iri}' as project_subject_iri,
+            term_iri,
+            COUNT(*) as evidence_count,
+            MIN(created_date) as first_evidence_date,
+            MAX(created_date) as last_evidence_date,
+            ARBITRARY(termlink_id) as termlink_id,
+            ARRAY_AGG(DISTINCT
+                CASE
+                    WHEN q.qualifier_value IN ('true', '1') THEN q.qualifier_type
+                    ELSE NULL
+                END
+            ) as active_qualifiers
+        FROM {database_name}.{evidence_table}
+        CROSS JOIN UNNEST(COALESCE(qualifiers, ARRAY[])) AS t(q)
+        WHERE subject_id = '{subject_id}'
+        GROUP BY subject_id, term_iri
+    )
+    SELECT
+        project_id,
+        subject_id,
+        project_subject_id,
+        subject_iri,
+        project_subject_iri,
+        term_iri,
+        REGEXP_REPLACE(
+            REGEXP_REPLACE(term_iri, '.*/obo/', ''),
+            '_', ':'
+        ) as term_id,
+        CAST(NULL AS VARCHAR) as term_label,
+        FILTER(active_qualifiers, x -> x IS NOT NULL) as qualifiers,
+        evidence_count,
+        termlink_id,
+        first_evidence_date,
+        last_evidence_date
+    FROM aggregated
+    """
+
+    # Insert into by_subject table
+    insert_by_subject_query = f"""
+    INSERT INTO {database_name}.{by_subject_table}
+    {aggregate_query}
+    """
+
+    # Insert into by_project_term table
+    insert_by_project_term_query = f"""
+    INSERT INTO {database_name}.{by_project_term_table}
+    {aggregate_query}
+    """
+
+    try:
+        # Execute both inserts
+        _execute_athena_query(insert_by_subject_query)
+        _execute_athena_query(insert_by_project_term_query)
+
+        # Count results
+        count_query = f"""
+        SELECT COUNT(*) as cnt
+        FROM {database_name}.{by_subject_table}
+        WHERE subject_id = '{subject_id}'
+        """
+        count_results = query_iceberg_evidence(count_query)
+        count = int(count_results[0]['cnt']) if count_results else 0
+
+        logger.info(f"Materialized {count} subject-term records for subject {subject_id}")
+        return count
+
+    except Exception as e:
+        logger.error(f"Error materializing subject-terms for {subject_id}: {e}")
+        raise
+
+
+def materialize_project(project_id: str, batch_size: int = 100) -> Dict[str, int]:
+    """
+    Materialize all subject-term associations for an entire project.
+    More efficient than individual subject materialization for bulk operations.
+
+    Args:
+        project_id: The project ID
+        batch_size: Number of subjects to process per batch
+
+    Returns:
+        Dict with statistics: subjects_processed, terms_materialized
+    """
+    database_name = os.environ['ICEBERG_DATABASE']
+    evidence_table = os.environ['ICEBERG_EVIDENCE_TABLE']
+    by_subject_table = os.environ['ICEBERG_SUBJECT_TERMS_BY_SUBJECT_TABLE']
+    by_project_term_table = os.environ['ICEBERG_SUBJECT_TERMS_BY_PROJECT_TERM_TABLE']
+
+    logger.info(f"Materializing project {project_id}")
+
+    # Delete existing records for this project
+    delete_query_1 = f"""
+    DELETE FROM {database_name}.{by_project_term_table}
+    WHERE project_id = '{project_id}'
+    """
+
+    try:
+        _execute_athena_query(delete_query_1)
+        logger.info(f"Deleted existing records for project {project_id} from by_project_term table")
+    except Exception as e:
+        logger.warning(f"Error deleting from by_project_term: {e}")
+
+    # Note: We can't easily delete from by_subject table without knowing subject_ids
+    # That table is partitioned by subject_id, not project_id
+    # We'll let individual records be overwritten by the INSERT
+
+    # Build aggregation query
+    # This aggregates ALL subjects in the project at once
+    aggregate_query = f"""
+    WITH aggregated AS (
+        SELECT
+            '{project_id}' as project_id,
+            subject_id,
+            subject_id as project_subject_id,
+            CONCAT('http://ods.nationwidechildrens.org/phebee/subjects/', subject_id) as subject_iri,
+            CONCAT('http://ods.nationwidechildrens.org/phebee/subjects/', subject_id) as project_subject_iri,
+            term_iri,
+            COUNT(*) as evidence_count,
+            MIN(created_date) as first_evidence_date,
+            MAX(created_date) as last_evidence_date,
+            ARBITRARY(termlink_id) as termlink_id,
+            ARRAY_AGG(DISTINCT
+                CASE
+                    WHEN q.qualifier_value IN ('true', '1') THEN q.qualifier_type
+                    ELSE NULL
+                END
+            ) as active_qualifiers
+        FROM {database_name}.{evidence_table}
+        CROSS JOIN UNNEST(COALESCE(qualifiers, ARRAY[])) AS t(q)
+        GROUP BY subject_id, term_iri
+    )
+    SELECT
+        project_id,
+        subject_id,
+        project_subject_id,
+        subject_iri,
+        project_subject_iri,
+        term_iri,
+        REGEXP_REPLACE(
+            REGEXP_REPLACE(term_iri, '.*/obo/', ''),
+            '_', ':'
+        ) as term_id,
+        CAST(NULL AS VARCHAR) as term_label,
+        FILTER(active_qualifiers, x -> x IS NOT NULL) as qualifiers,
+        evidence_count,
+        termlink_id,
+        first_evidence_date,
+        last_evidence_date
+    FROM aggregated
+    """
+
+    try:
+        # Insert into both tables
+        insert_by_subject_query = f"""
+        INSERT INTO {database_name}.{by_subject_table}
+        {aggregate_query}
+        """
+
+        insert_by_project_term_query = f"""
+        INSERT INTO {database_name}.{by_project_term_table}
+        {aggregate_query}
+        """
+
+        _execute_athena_query(insert_by_subject_query)
+        _execute_athena_query(insert_by_project_term_query)
+
+        # Get statistics
+        stats_query = f"""
+        SELECT
+            COUNT(DISTINCT subject_id) as subjects,
+            COUNT(*) as terms
+        FROM {database_name}.{by_project_term_table}
+        WHERE project_id = '{project_id}'
+        """
+
+        stats_results = query_iceberg_evidence(stats_query)
+        stats = {
+            "subjects_processed": int(stats_results[0]['subjects']) if stats_results else 0,
+            "terms_materialized": int(stats_results[0]['terms']) if stats_results else 0
+        }
+
+        logger.info(f"Materialized project {project_id}: {stats}")
+        return stats
+
+    except Exception as e:
+        logger.error(f"Error materializing project {project_id}: {e}")
+        raise
+
+
+def delete_subject_terms(subject_id: str, project_id: str = None) -> bool:
+    """
+    Delete all subject-term records for a specific subject.
+    Called when a subject is removed or needs cleanup.
+
+    Args:
+        subject_id: The subject ID
+        project_id: Optional project ID to limit deletion to specific project
+
+    Returns:
+        True if successful
+    """
+    database_name = os.environ['ICEBERG_DATABASE']
+    by_subject_table = os.environ['ICEBERG_SUBJECT_TERMS_BY_SUBJECT_TABLE']
+    by_project_term_table = os.environ['ICEBERG_SUBJECT_TERMS_BY_PROJECT_TERM_TABLE']
+
+    logger.info(f"Deleting subject-terms for subject {subject_id}" +
+                (f" in project {project_id}" if project_id else ""))
+
+    try:
+        # Delete from by_subject table (partitioned by subject_id, so efficient)
+        delete_query_1 = f"""
+        DELETE FROM {database_name}.{by_subject_table}
+        WHERE subject_id = '{subject_id}'
+        """
+        _execute_athena_query(delete_query_1)
+
+        # Delete from by_project_term table
+        if project_id:
+            # More efficient with project_id filter (uses partition)
+            delete_query_2 = f"""
+            DELETE FROM {database_name}.{by_project_term_table}
+            WHERE project_id = '{project_id}' AND subject_id = '{subject_id}'
+            """
+        else:
+            # Delete from all projects (less efficient, scans all partitions)
+            delete_query_2 = f"""
+            DELETE FROM {database_name}.{by_project_term_table}
+            WHERE subject_id = '{subject_id}'
+            """
+        _execute_athena_query(delete_query_2)
+
+        logger.info(f"Successfully deleted subject-terms for subject {subject_id}")
+        return True
+
+    except Exception as e:
+        logger.error(f"Error deleting subject-terms for subject {subject_id}: {e}")
+        raise
+
+
+def delete_project_subject_terms(project_id: str) -> bool:
+    """
+    Delete all subject-term records for a project.
+    Called when a project is removed.
+
+    Args:
+        project_id: The project ID
+
+    Returns:
+        True if successful
+    """
+    database_name = os.environ['ICEBERG_DATABASE']
+    by_project_term_table = os.environ['ICEBERG_SUBJECT_TERMS_BY_PROJECT_TERM_TABLE']
+
+    logger.info(f"Deleting subject-terms for project {project_id}")
+
+    # Delete from by_project_term table (partitioned by project_id, so efficient)
+    delete_query = f"""
+    DELETE FROM {database_name}.{by_project_term_table}
+    WHERE project_id = '{project_id}'
+    """
+
+    try:
+        _execute_athena_query(delete_query)
+        logger.info(f"Successfully deleted subject-terms for project {project_id}")
+        return True
+
+    except Exception as e:
+        logger.error(f"Error deleting subject-terms for project {project_id}: {e}")
+        raise
+
+
     """
     Get all evidence data for a subject-term combination from Iceberg.
     
@@ -853,7 +1612,228 @@ def get_subject_term_info(
             evidence.append(record)
         
         return evidence
-        
+
     except Exception as e:
         logger.error(f"Error getting evidence for subject-term: {e}")
         return []
+
+
+# ==============================================================================
+# Phase 4: Ontology Hierarchy Functions
+# ==============================================================================
+
+def query_term_ancestors(
+    term_id: str,
+    ontology_source: str = "hpo",
+    version: str = None,
+    database_name: str = None,
+    table_name: str = None
+) -> List[str]:
+    """
+    Query ancestor term IDs for a given term from the ontology hierarchy table.
+
+    Args:
+        term_id: The term ID (e.g., "HP:0000001")
+        ontology_source: The ontology source (default: "HPO")
+        version: The ontology version. If None, uses the latest version.
+        database_name: Optional override for database name
+        table_name: Optional override for table name
+
+    Returns:
+        List of ancestor term IDs (including the term itself)
+    """
+    database_name = database_name or os.environ.get('ICEBERG_DATABASE')
+    table_name = table_name or os.environ.get('ICEBERG_ONTOLOGY_HIERARCHY_TABLE')
+
+    if not database_name or not table_name:
+        raise ValueError("Database and table name must be provided or set in environment")
+
+    # If no version specified, get the latest version
+    if not version:
+        version_query = f"""
+        SELECT version
+        FROM {database_name}.{table_name}
+        WHERE ontology_source = '{ontology_source}'
+        GROUP BY version
+        ORDER BY version DESC
+        LIMIT 1
+        """
+
+        try:
+            result = _execute_athena_query(version_query, wait_for_completion=True)
+            version_rows = _get_query_results(result)
+
+            if not version_rows:
+                logger.warning(f"No versions found for ontology source: {ontology_source}")
+                return []
+
+            version = version_rows[0]['version']
+            logger.info(f"Using latest version {version} for {ontology_source}")
+
+        except Exception as e:
+            logger.error(f"Failed to get latest version for {ontology_source}: {e}")
+            return []
+
+    # Query ancestors for the specific term
+    query = f"""
+    SELECT ancestor_term_ids
+    FROM {database_name}.{table_name}
+    WHERE ontology_source = '{ontology_source}'
+      AND version = '{version}'
+      AND term_id = '{term_id}'
+    """
+
+    try:
+        query_execution_id = _execute_athena_query(query, wait_for_completion=True)
+        results = _get_query_results(query_execution_id)
+
+        if not results:
+            logger.warning(f"No hierarchy data found for term {term_id} in {ontology_source} version {version}")
+            return []
+
+        # Extract ancestor_term_ids array
+        ancestor_ids = results[0].get('ancestor_term_ids', [])
+
+        # Handle different formats (string representation vs actual array)
+        if isinstance(ancestor_ids, str):
+            # Parse string representation like "[HP:0000001, HP:0000002]"
+            import json
+            try:
+                ancestor_ids = json.loads(ancestor_ids)
+            except:
+                # Try parsing as comma-separated list
+                ancestor_ids = [aid.strip() for aid in ancestor_ids.strip('[]').split(',') if aid.strip()]
+
+        return ancestor_ids
+
+    except Exception as e:
+        logger.error(f"Failed to query ancestors for term {term_id}: {e}")
+        return []
+
+
+def query_term_descendants(
+    term_id: str,
+    ontology_source: str = "hpo",
+    version: str = None,
+    database_name: str = None,
+    table_name: str = None
+) -> List[Dict[str, Any]]:
+    """
+    Query descendant term IDs for a given term from the ontology hierarchy table.
+
+    Returns all terms that have the given term in their ancestor lineage.
+
+    Args:
+        term_id: The term ID (e.g., "HP:0000001")
+        ontology_source: The ontology source (default: "HPO")
+        version: The ontology version. If None, uses the latest version.
+        database_name: Optional override for database name
+        table_name: Optional override for table name
+
+    Returns:
+        List of descendant term dictionaries with term_id, term_label, and depth.
+        Ordered by depth (shallow to deep).
+    """
+    database_name = database_name or os.environ.get('ICEBERG_DATABASE')
+    table_name = table_name or os.environ.get('ICEBERG_ONTOLOGY_HIERARCHY_TABLE')
+
+    if not database_name or not table_name:
+        raise ValueError("Database and table name must be provided or set in environment")
+
+    # If no version specified, get the latest version
+    if not version:
+        version_query = f"""
+        SELECT version
+        FROM {database_name}.{table_name}
+        WHERE ontology_source = '{ontology_source}'
+        GROUP BY version
+        ORDER BY version DESC
+        LIMIT 1
+        """
+
+        try:
+            result = _execute_athena_query(version_query, wait_for_completion=True)
+            version_rows = _get_query_results(result)
+
+            if not version_rows:
+                logger.warning(f"No versions found for ontology source: {ontology_source}")
+                return []
+
+            version = version_rows[0]['version']
+            logger.info(f"Using latest version {version} for {ontology_source}")
+
+        except Exception as e:
+            logger.error(f"Failed to get latest version for {ontology_source}: {e}")
+            return []
+
+    # Query descendants - all terms that have this term in their ancestor_term_ids
+    query = f"""
+    SELECT term_id, term_label, depth
+    FROM {database_name}.{table_name}
+    WHERE ontology_source = '{ontology_source}'
+      AND version = '{version}'
+      AND CONTAINS(ancestor_term_ids, '{term_id}')
+      AND term_id != '{term_id}'
+    ORDER BY depth ASC
+    """
+
+    try:
+        query_execution_id = _execute_athena_query(query, wait_for_completion=True)
+        results = _get_query_results(query_execution_id)
+
+        if not results:
+            logger.info(f"No descendants found for term {term_id} in {ontology_source} version {version}")
+            return []
+
+        logger.info(f"Found {len(results)} descendants for term {term_id}")
+        return results
+
+    except Exception as e:
+        logger.error(f"Failed to query descendants for term {term_id}: {e}")
+        return []
+
+
+def _get_query_results(query_execution_id: str) -> List[Dict[str, Any]]:
+    """
+    Helper function to retrieve query results from Athena.
+
+    Args:
+        query_execution_id: The Athena query execution ID
+
+    Returns:
+        List of result rows as dictionaries
+    """
+    import boto3
+
+    athena = boto3.client('athena')
+
+    try:
+        # Get query results
+        paginator = athena.get_paginator('get_query_results')
+        page_iterator = paginator.paginate(QueryExecutionId=query_execution_id)
+
+        results = []
+        for page in page_iterator:
+            rows = page['ResultSet']['Rows']
+
+            # Skip header row (first page only)
+            if not results and rows:
+                rows = rows[1:]
+
+            # Extract column names from metadata
+            columns = [col['Name'] for col in page['ResultSet']['ResultSetMetadata']['ColumnInfo']]
+
+            # Parse rows
+            for row in rows:
+                data = row['Data']
+                result_dict = {}
+                for i, col_name in enumerate(columns):
+                    if i < len(data):
+                        result_dict[col_name] = data[i].get('VarCharValue')
+                results.append(result_dict)
+
+        return results
+
+    except Exception as e:
+        logger.error(f"Failed to get query results: {e}")
+        raise

@@ -13,7 +13,8 @@
             "repo": "mondo",
             "test.$": "$.test",
             "asset_names": [
-              "mondo.owl"
+              "mondo.owl",
+              "mondo.obo"
             ]
           }
         },
@@ -35,6 +36,7 @@
         "Type": "Pass",
         "Parameters": {
           "filtered_assets.$": "$.mondo.Payload.assets.[?(@.asset_name == 'mondo.owl')]",
+          "obo_assets.$": "$.mondo.Payload.assets.[?(@.asset_name == 'mondo.obo')]",
           "mondo_version.$": "$.mondo.Payload.version"
         },
         "Next": "Install MONDO"
@@ -63,6 +65,96 @@
           }
         },
         "ResultPath": "$.update_timestamp",
+        "Next": "Delete Old MONDO Hierarchy Data"
+      },
+      "Delete Old MONDO Hierarchy Data": {
+        "Type": "Task",
+        "Resource": "arn:aws:states:::lambda:invoke",
+        "Parameters": {
+          "FunctionName": "${DeleteOntologyHierarchyPartitionFunction}",
+          "Payload": {
+            "ontology_source": "mondo",
+            "version.$": "$.mondo_version"
+          }
+        },
+        "ResultPath": "$.delete_result",
+        "Next": "Prepare MONDO Hierarchy Batches"
+      },
+      "Prepare MONDO Hierarchy Batches": {
+        "Type": "Task",
+        "Resource": "arn:aws:states:::lambda:invoke",
+        "Parameters": {
+          "FunctionName": "${MaterializeOntologyHierarchyFunction}",
+          "Payload": {
+            "obo_file_s3_path.$": "$.obo_assets[0].asset_path",
+            "ontology_source": "mondo",
+            "version.$": "$.mondo_version"
+          }
+        },
+        "ResultPath": "$.batch_preparation",
+        "Next": "Insert MONDO Hierarchy Batches"
+      },
+      "Insert MONDO Hierarchy Batches": {
+        "Type": "Map",
+        "ItemProcessor": {
+          "ProcessorConfig": {
+            "Mode": "DISTRIBUTED",
+            "ExecutionType": "STANDARD"
+          },
+          "StartAt": "Insert Batch",
+          "States": {
+            "Insert Batch": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::lambda:invoke",
+              "Parameters": {
+                "FunctionName": "${InsertOntologyHierarchyBatchFunction}",
+                "Payload.$": "$"
+              },
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "States.TaskFailed",
+                    "Lambda.TooManyRequestsException",
+                    "Lambda.ServiceException"
+                  ],
+                  "IntervalSeconds": 2,
+                  "MaxAttempts": 5,
+                  "BackoffRate": 2.5
+                }
+              ],
+              "End": true
+            }
+          }
+        },
+        "ItemReader": {
+          "Resource": "arn:aws:states:::s3:listObjectsV2",
+          "Parameters": {
+            "Bucket.$": "$.batch_preparation.Payload.s3_bucket",
+            "Prefix.$": "$.batch_preparation.Payload.s3_prefix"
+          }
+        },
+        "MaxConcurrency": 10,
+        "ResultPath": null,
+        "Next": "Cleanup Batch Files"
+      },
+      "Cleanup Batch Files": {
+        "Type": "Task",
+        "Resource": "arn:aws:states:::lambda:invoke",
+        "Parameters": {
+          "FunctionName": "${CleanupS3PrefixFunction}",
+          "Payload": {
+            "bucket.$": "$.batch_preparation.Payload.s3_bucket",
+            "prefix.$": "$.batch_preparation.Payload.s3_prefix"
+          }
+        },
+        "ResultPath": "$.cleanup_result",
+        "Catch": [
+          {
+            "ErrorEquals": ["States.ALL"],
+            "ResultPath": "$.cleanup_error",
+            "Next": "Fire Update Event"
+          }
+        ],
         "Next": "Fire Update Event"
       },
       "Fire Update Event": {

@@ -227,6 +227,12 @@ def set_env_variables_from_stack(cloudformation_stack):
                 os.environ["NeptuneEndpoint"] = output["OutputValue"]
             if output["OutputKey"] == "NeptuneClusterIdentifier":
                 os.environ["NeptuneClusterIdentifier"] = output["OutputValue"]
+            if output["OutputKey"] == "AthenaDatabase":
+                os.environ["ICEBERG_DATABASE"] = output["OutputValue"]
+            if output["OutputKey"] == "AthenaOntologyHierarchyTable":
+                os.environ["ICEBERG_ONTOLOGY_HIERARCHY_TABLE"] = output["OutputValue"]
+            if output["OutputKey"] == "PheBeeBucketName":
+                os.environ["PHEBEE_BUCKET_NAME"] = output["OutputValue"]
 
         print(f"Environment variables set from stack {cloudformation_stack}.")
 
@@ -297,8 +303,9 @@ def update_mondo(request, cloudformation_stack, physical_resources):
         yield
     else:
         from update_source_utils import update_source
+        # MONDO has ~25,000 terms and takes longer than HPO - use 15 minute timeout
         test_start_time = update_source(
-            cloudformation_stack, "mondo", "UpdateMondoSFNArn"
+            cloudformation_stack, "mondo", "UpdateMondoSFNArn", timeout=900
         )
         yield test_start_time
 

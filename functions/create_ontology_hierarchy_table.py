@@ -54,15 +54,14 @@ def create_table(database: str, table: str, s3_location: str, query_results_s3: 
         term_iri string,
         term_label string,
         ancestor_term_ids array<string>,
+        depth int,
         last_updated timestamp
     )
     PARTITIONED BY (ontology_source, version)
     LOCATION '{s3_location}'
     TBLPROPERTIES (
         'table_type'='ICEBERG',
-        'format'='parquet',
-        'write.parquet.compression-codec'='snappy',
-        'description'='Ontology term hierarchies for HPO, MONDO, and other ontologies'
+        'format'='parquet'
     )
     """
 

@@ -4,9 +4,10 @@ This directory contains performance evaluation tools for the PheBee phenotype-to
 
 ## Overview
 
-The performance test suite evaluates PheBee across two dimensions:
+The performance test suite evaluates PheBee across three dimensions:
 1. **Import Performance (Table 3)**: Bulk data ingestion throughput and scalability
 2. **API Latency (Table 4)**: Query response times under load (p50/p95/p99 latencies)
+3. **Cache Performance**: DynamoDB cache vs Neptune query performance at scale
 
 ## File Structure
 
@@ -16,6 +17,7 @@ tests/integration/performance/
 ├── conftest.py                                # Shared fixtures and data generation utilities
 ├── test_import_performance.py                 # Table 3: Bulk ingestion performance
 ├── test_api_latency.py                        # Table 4: API query latency
+├── test_cache_performance_scale.py            # Cache vs Neptune performance at scale
 ├── generate_benchmark_dataset.py              # Script to create static benchmark dataset
 ├── create_import_performance_datasets.sh      # Script to generate all dataset scales
 ├── data/
@@ -130,6 +132,36 @@ pytest tests/integration/performance/test_import_performance.py -v
 # Then run latency test on the imported data
 pytest tests/integration/performance/test_api_latency.py -v
 ```
+
+### Run Cache Performance Tests
+
+Tests cache vs Neptune performance at scale (1000+ subjects):
+
+```bash
+# Run with default settings (1000 subjects)
+pytest tests/integration/performance/test_cache_performance_scale.py -v
+
+# Run with custom subject count
+export PHEBEE_PERF_SCALE_N=5000
+pytest tests/integration/performance/test_cache_performance_scale.py -v
+
+# Skip performance tests (useful for CI/CD)
+export PHEBEE_PERF_SKIP=1
+pytest tests/integration/performance/ -v
+```
+
+**What it measures:**
+- Full project query latency (cache vs Neptune)
+- Term-filtered query latency with hierarchy expansion
+- Pagination performance at scale
+- p50/p95/p99 latencies and speedup factors
+
+**Expected results:**
+- Cache should be 5-10x faster than Neptune at 1000+ subjects
+- Consistent sub-second latencies even with large datasets
+- Efficient pagination with stable per-page latency
+
+**Note:** This test creates its own test project with generated data and cleans up afterwards. Runtime scales with `PHEBEE_PERF_SCALE_N` (default 1000 subjects takes ~5-10 minutes).
 
 ## Generating Static Benchmark Dataset
 
