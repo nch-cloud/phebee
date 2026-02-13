@@ -68,8 +68,6 @@ def lambda_handler(event, context):
 
     subject_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"
 
-    # TODO - Check for statements that will currently be orphaned.  Perhaps add a cascade flag to either prevent subject deletion or propagate it.
-
     dynamodb = boto3.resource('dynamodb')
     table = dynamodb.Table(table_name)
 
@@ -107,7 +105,19 @@ def lambda_handler(event, context):
         # This leaves by_subject table and subject_iri intact for other potential projects
         is_last_mapping = False
 
-    # 4. Always remove from Iceberg by_project_term table for this project
+    # 4. If this is the last mapping, cascade delete all evidence
+    termlink_data_to_delete = []
+    if is_last_mapping:
+        try:
+            from phebee.utils.iceberg import delete_all_evidence_for_subject
+            result = delete_all_evidence_for_subject(subject_id)
+            termlink_data_to_delete = result.get("termlink_data", [])
+            logger.info(f"Cascade deleted {result.get('evidence_deleted', 0)} evidence records for subject {subject_id}")
+        except Exception as e:
+            logger.error(f"Error cascade deleting evidence: {e}")
+            # Continue with deletion even if evidence cascade fails
+
+    # 5. Always remove from Iceberg by_project_term table for this project
     # Only remove from by_subject table if it's the last mapping
     try:
         delete_subject_terms(
@@ -123,7 +133,7 @@ def lambda_handler(event, context):
         logger.error(f"Error removing Iceberg data: {e}")
         # Continue with deletion even if Iceberg cleanup fails
 
-    # 5. Always delete project-specific Neptune triples for this project_subject_iri
+    # 6. Always delete project-specific Neptune triples for this project_subject_iri
     try:
         logger.info(f"Removing Neptune triples for project_subject_iri {project_subject_iri}")
         execute_update(f"DELETE WHERE {{ <{project_subject_iri}> ?p ?o . }}")
@@ -132,8 +142,24 @@ def lambda_handler(event, context):
         logger.error(f"Error removing project-specific Neptune triples: {e}")
         # Continue with deletion even if Neptune cleanup fails
 
-    # 6. Only delete subject_iri from Neptune if this was the last mapping
+    # 7. If this was the last mapping, delete all term links and subject_iri from Neptune
     if is_last_mapping:
+        # 7a. Delete term links that were associated with the evidence
+        if termlink_data_to_delete:
+            from phebee.utils.sparql import delete_term_link
+            logger.info(f"Deleting {len(termlink_data_to_delete)} term links from Neptune")
+            for termlink_data in termlink_data_to_delete:
+                termlink_id = termlink_data.get("termlink_id")
+                if termlink_id:
+                    try:
+                        termlink_iri = f"{subject_iri}/term-link/{termlink_id}"
+                        delete_term_link(termlink_iri)
+                        logger.info(f"Deleted term link: {termlink_iri}")
+                    except Exception as e:
+                        logger.error(f"Error deleting term link {termlink_iri}: {e}")
+                        # Continue with other deletions even if one fails
+
+        # 7b. Delete subject_iri from Neptune
         try:
             logger.info(f"This was the last mapping for subject {subject_id}, removing subject_iri from Neptune")
             execute_update(f"DELETE WHERE {{ <{subject_iri}> ?p ?o . }}")

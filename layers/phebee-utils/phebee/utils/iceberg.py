@@ -1837,6 +1837,60 @@ def delete_project_subject_terms(project_id: str) -> bool:
         raise
 
 
+def delete_all_evidence_for_subject(subject_id: str) -> Dict[str, Any]:
+    """
+    Delete all evidence records for a subject and return the termlink_ids that had evidence.
+    Called when a subject is being fully removed (last project mapping deleted).
+
+    Args:
+        subject_id: The subject UUID
+
+    Returns:
+        Dict with 'termlink_ids' (list of termlink_ids that had evidence) and 'evidence_deleted' (count)
+    """
+    database_name = os.environ['ICEBERG_DATABASE']
+    evidence_table = os.environ['ICEBERG_EVIDENCE_TABLE']
+
+    logger.info(f"Deleting all evidence for subject {subject_id}")
+
+    # First, query the distinct termlink_ids and term_iris so we can delete corresponding term links from Neptune
+    query_termlinks = f"""
+    SELECT DISTINCT termlink_id, term_iri
+    FROM {database_name}.{evidence_table}
+    WHERE subject_id = '{subject_id}'
+    """
+
+    termlink_data = []
+    try:
+        results = query_iceberg_evidence(query_termlinks)
+        termlink_data = [
+            {"termlink_id": row.get("termlink_id"), "term_iri": row.get("term_iri")}
+            for row in results if row.get("termlink_id")
+        ]
+        logger.info(f"Found {len(termlink_data)} distinct term links for subject {subject_id}")
+    except Exception as e:
+        logger.error(f"Error querying termlink_ids for subject {subject_id}: {e}")
+        raise
+
+    # Delete all evidence for this subject
+    delete_query = f"""
+    DELETE FROM {database_name}.{evidence_table}
+    WHERE subject_id = '{subject_id}'
+    """
+
+    try:
+        _execute_athena_query(delete_query)
+        logger.info(f"Deleted all evidence for subject {subject_id}")
+    except Exception as e:
+        logger.error(f"Error deleting evidence for subject {subject_id}: {e}")
+        raise
+
+    return {
+        "termlink_data": termlink_data,
+        "evidence_deleted": len(termlink_data)
+    }
+
+
     """
     Get all evidence data for a subject-term combination from Iceberg.
     
