@@ -228,9 +228,6 @@ Resources:
               - !GetAtt CreateEvidenceFunction.Arn
               - !GetAtt GetEvidenceFunction.Arn
               - !GetAtt RemoveEvidenceFunction.Arn
-              - !GetAtt CreateTermLinkFunction.Arn
-              - !GetAtt GetTermLinkFunction.Arn
-              - !GetAtt RemoveTermLinkFunction.Arn
           - Effect: Allow
             Action:
               - states:StartSyncExecution
@@ -1011,84 +1008,12 @@ Resources:
       Policies:
         - !Ref PheBeeIcebergPolicy
 
-  CreateTermLinkFunction:
+  PrepareEvidencePayloadFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub ${AppName}-CreateTermLinkFunction
+      FunctionName: !Sub ${AppName}-PrepareEvidencePayloadFunction
       CodeUri: functions
-      Handler: create_term_link.lambda_handler
-      MemorySize: 512
-      Layers:
-        - !Ref PheBeeUtilsLayer
-      Environment:
-        Variables:
-          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
-          Region: !Sub ${AWS::Region}
-      VpcConfig:
-        SecurityGroupIds:
-          - !Ref PheBeeLambdaSecurityGroup
-        SubnetIds:
-          - !Ref SubnetId1
-          - !Ref SubnetId2
-      Policies:
-        - !Ref PheBeeNeptuneReadPolicy
-        - !Ref PheBeeNeptuneWritePolicy
-
-  GetTermLinkFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: !Sub ${AppName}-GetTermLinkFunction
-      CodeUri: functions
-      Handler: get_term_link.lambda_handler
-      MemorySize: 512
-      Layers:
-        - !Ref PheBeeUtilsLayer
-      Environment:
-        Variables:
-          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
-          Region: !Sub ${AWS::Region}
-          ICEBERG_DATABASE: !Ref IcebergDatabase
-          ICEBERG_EVIDENCE_TABLE: !Ref IcebergEvidenceTable
-          PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
-      VpcConfig:
-        SecurityGroupIds:
-          - !Ref PheBeeLambdaSecurityGroup
-        SubnetIds:
-          - !Ref SubnetId1
-          - !Ref SubnetId2
-      Policies:
-        - !Ref PheBeeNeptuneReadPolicy
-        - !Ref PheBeeIcebergPolicy
-
-  RemoveTermLinkFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: !Sub ${AppName}-RemoveTermLinkFunction
-      CodeUri: functions
-      Handler: remove_term_link.lambda_handler
-      MemorySize: 512
-      Layers:
-        - !Ref PheBeeUtilsLayer
-      Environment:
-        Variables:
-          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
-          Region: !Sub ${AWS::Region}
-      VpcConfig:
-        SecurityGroupIds:
-          - !Ref PheBeeLambdaSecurityGroup
-        SubnetIds:
-          - !Ref SubnetId1
-          - !Ref SubnetId2
-      Policies:
-        - !Ref PheBeeNeptuneReadPolicy
-        - !Ref PheBeeNeptuneDeletePolicy
-
-  PrepareSubjectTermLinksPayloadFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: !Sub ${AppName}-PrepareSubjectTermLinksPayloadFunction
-      CodeUri: functions
-      Handler: prepare_subject_term_links_payload.lambda_handler
+      Handler: prepare_evidence_payload.lambda_handler
       MemorySize: 512
       VpcConfig:
         SecurityGroupIds:
@@ -1699,22 +1624,6 @@ Resources:
         - !Ref PheBeeNeptuneReadPolicy
         - !Ref PheBeeNeptuneLoadPolicy
 
-  FireBulkEventFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: !Sub ${AppName}-FireBulkEventFunction
-      CodeUri: functions
-      Handler: fire_bulk_event.lambda_handler
-      MemorySize: 256
-      Timeout: 60
-      Layers:
-        - !Ref PheBeeUtilsLayer
-      Environment:
-        Variables:
-          PheBeeBus: !Ref PheBeeBus
-      Policies:
-        - !Ref PheBeePutEventsPolicy
-
   CreateEvidenceTableFunction:
     Type: AWS::Serverless::Function
     Condition: ShouldCreateEvidenceTable
@@ -1959,8 +1868,8 @@ Resources:
         ParsePhenopacketCollectionFunctionArn: !Ref ParsePhenopacketCollectionFunction
         ProcessPhenopacketFunctionArn: !Ref ProcessPhenopacketFunction
         CreateSubjectFunctionArn: !Ref CreateSubjectFunction
-        CreateTermLinkFunctionArn: !Ref CreateTermLinkFunction
-        PrepareSubjectTermLinksPayloadFunctionArn: !Ref PrepareSubjectTermLinksPayloadFunction
+        PrepareEvidencePayloadFunctionArn: !Ref PrepareEvidencePayloadFunction
+        CreateEvidenceFunctionArn: !Ref CreateEvidenceFunction
       Type: STANDARD
       Policies:
         - !Ref PheBeeStepFunctionPolicy
@@ -1972,10 +1881,10 @@ Resources:
               - lambda:InvokeFunction
             Resource:
               - !GetAtt CreateSubjectFunction.Arn
-              - !GetAtt CreateTermLinkFunction.Arn
               - !GetAtt ParsePhenopacketCollectionFunction.Arn
               - !GetAtt ProcessPhenopacketFunction.Arn
-              - !GetAtt PrepareSubjectTermLinksPayloadFunction.Arn
+              - !GetAtt PrepareEvidencePayloadFunction.Arn
+              - !GetAtt CreateEvidenceFunction.Arn
           - Effect: Allow
             Action:
               - states:StartExecution
@@ -2121,40 +2030,6 @@ Resources:
           Parameters:
             Location: 'api.yaml'
 
-  BulkLoadMonitorSFN:
-    Type: AWS::Serverless::StateMachine
-    Properties:
-      DefinitionUri: statemachine/bulk_load_monitor.asl.json
-      Logging:
-        Destinations:
-          - CloudWatchLogsLogGroup:
-              LogGroupArn: !GetAtt SAMLogs.Arn
-        IncludeExecutionData: true
-        Level: ALL
-      DefinitionSubstitutions:
-        CheckBulkLoadStatusFunctionArn: !GetAtt CheckBulkLoadStatusFunction.Arn
-        FireBulkEventFunctionArn: !GetAtt FireBulkEventFunction.Arn
-      Type: STANDARD
-      Policies:
-        - Statement:
-          - Effect: Allow
-            Action:
-              - lambda:InvokeFunction
-            Resource:
-              - !GetAtt CheckBulkLoadStatusFunction.Arn
-              - !GetAtt FireBulkEventFunction.Arn
-          - Effect: Allow
-            Action:
-              - logs:CreateLogDelivery
-              - logs:GetLogDelivery
-              - logs:UpdateLogDelivery
-              - logs:DeleteLogDelivery
-              - logs:ListLogDeliveries
-              - logs:PutResourcePolicy
-              - logs:DescribeResourcePolicies
-              - logs:DescribeLogGroups
-            Resource: "*"
-
   #################
   # EventBridge
   #################
@@ -2227,16 +2102,6 @@ Outputs:
     Value: !GetAtt CheckBulkLoadStatusFunction.Arn
     Export:
       Name: !Sub "${AppName}-CheckBulkLoadStatusFunctionArn"
-
-  FireBulkEventFunctionArn:
-    Value: !GetAtt FireBulkEventFunction.Arn
-    Export:
-      Name: !Sub "${AppName}-FireBulkEventFunctionArn"
-
-  BulkLoadMonitorSFNArn:
-    Value: !Ref BulkLoadMonitorSFN
-    Export:
-      Name: !Sub "${AppName}-BulkLoadMonitorSFNArn"
 
   BulkImportStateMachineArn:
     Value: !Ref BulkImportStateMachine

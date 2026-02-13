@@ -1,4 +1,4 @@
-"""Process a single phenopacket: create payloads for create_subject and create_term_link calls."""
+"""Process a single phenopacket: create payloads for create_subject and create_evidence calls."""
 
 from aws_lambda_powertools import Metrics, Logger, Tracer
 from phebee.utils.aws import escape_string
@@ -20,38 +20,51 @@ def lambda_handler(event, context):
         "project_subject_id": project_subject_id,
     }
 
-    term_links_payload = create_term_links_payload(
+    evidence_payload = create_evidence_payload(
         project_id, project_subject_id, phenopacket
     )
 
     return {
         "statusCode": 200,
         "subject_payload": subject_payload,
-        "term_links_payload": term_links_payload,
+        "evidence_payload": evidence_payload,
     }
 
 
-def create_term_links_payload(project_id, project_subject_id, phenopacket):
+def create_evidence_payload(project_id, project_subject_id, phenopacket):
     namespace_to_iri_prefix = create_iri_map(phenopacket)
-    creator_id = "phenopacket-importer"
 
-    # Use subject_id instead of subject_iri
+    # Extract creator from phenopacket metadata
+    creator_id = phenopacket.get('metaData', {}).get('createdBy', 'phenopacket-importer')
+
+    # Use temporary identifier - will be replaced with UUID in prepare_evidence_payload
     subject_id = f"{project_id}#{project_subject_id}"
 
-    term_links = []
+    evidence_records = []
 
     for feature in phenopacket["phenotypicFeatures"]:
         term_iri = to_full_iri(namespace_to_iri_prefix, feature["type"]["id"])
 
-        term_links.append(
+        # Map excluded field to negated qualifier
+        qualifiers = []
+        if feature.get("excluded", False):
+            qualifiers.append("negated")
+
+        # Note: Phenopacket modifiers are not currently mapped to PheBee qualifiers
+        # This could be added in the future if needed
+
+        evidence_records.append(
             {
-                "subject_id": subject_id,
+                "subject_id": subject_id,  # Temporary - will be replaced with UUID
                 "term_iri": term_iri,
+                "evidence_type": "http://purl.obolibrary.org/obo/ECO_0000311",  # Imported information
                 "creator_id": creator_id,
+                "creator_type": "system",  # Phenopackets are imported, not manually annotated
+                "qualifiers": qualifiers,
             }
         )
 
-    return term_links
+    return evidence_records
 
 
 def create_iri_map(phenopacket):

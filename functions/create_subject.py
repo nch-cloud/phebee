@@ -183,6 +183,7 @@ def lambda_handler(event, context):
             # Success - fire event and return
             subject_data = {
                 "iri": subject_iri,
+                "subject_id": subject_id,
                 "projects": {project_id: project_subject_id},
             }
             try:
@@ -229,6 +230,7 @@ def lambda_handler(event, context):
                                 "subject_created": False,
                                 "subject": {
                                     "iri": existing_subject_iri,
+                                    "subject_id": existing_subject_id,
                                     "projects": {project_id: project_subject_id},
                                 },
                             }
@@ -273,6 +275,7 @@ def lambda_handler(event, context):
                     "subject_created": False,
                     "subject": {
                         "iri": subject_iri,
+                        "subject_id": existing_subject_id,
                         "projects": {project_id: project_subject_id},
                     },
                 }
@@ -357,6 +360,7 @@ def lambda_handler(event, context):
                 "subject_created": False,
                 "subject": {
                     "iri": subject_iri,
+                    "subject_id": subject_id,
                     "projects": {project_id: project_subject_id},
                 },
             }

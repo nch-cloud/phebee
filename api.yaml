@@ -116,7 +116,7 @@ paths:
       summary: Retrieve subject details and associated terms
       description: |
         Returns metadata and linked terms for a subject, including evidence supporting each association.
-        Requires a project ID and a project-specific subject ID to identify the subject in the graph.
+        Can be queried by either project_subject_iri (project-scoped identifier) or subject_id (internal UUID).
       operationId: getSubjectDetails
       requestBody:
         required: true
@@ -242,10 +242,8 @@ paths:
                   type: string
                 include_qualified:
                   type: boolean
-                  default: false
+                  default: true
                   description: Include term links with negated, hypothetical, or family qualifiers when filtering by term_iri
-                include_terms:
-                  type: boolean
                 include_child_terms:
                   type: boolean
                   default: true
@@ -254,11 +252,11 @@ paths:
                   type: integer
                   minimum: 1
                   maximum: 5000
-                  default: 200
+                  default: 1000
                   description: Maximum number of subjects to return per page
                 cursor:
                   type: string
-                  description: Subject IRI to start pagination after (from previous response's next_cursor)
+                  description: Pagination offset (integer as string) from previous response's next_cursor
       security:
         - sigv4: []
       x-amazon-apigateway-integration:

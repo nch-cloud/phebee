@@ -538,7 +538,7 @@ def update_subject_terms_for_evidence(
     try:
         # Get existing data for by_subject table to preserve counts and dates
         check_query_subject = f"""
-        SELECT evidence_count, first_evidence_date, last_evidence_date, project_id
+        SELECT evidence_count, first_evidence_date, last_evidence_date
         FROM {database_name}.{by_subject_table}
         WHERE subject_id = '{subject_id}' AND termlink_id = '{termlink_id}'
         """
@@ -550,10 +550,6 @@ def update_subject_terms_for_evidence(
             old_count = int(existing_subject[0].get('evidence_count', 0))
             old_first_date = existing_subject[0].get('first_evidence_date')
             old_last_date = existing_subject[0].get('last_evidence_date')
-            # Use existing project_id from by_subject table for the INSERT
-            by_subject_project_id = existing_subject[0].get('project_id')
-            if not by_subject_project_id:
-                raise ValueError(f"Existing by_subject row for subject {subject_id}, termlink {termlink_id} has no project_id - data consistency error")
 
             new_count = old_count + 1
             first_date = old_first_date
@@ -563,11 +559,6 @@ def update_subject_terms_for_evidence(
             new_count = 1
             first_date = created_date
             last_date = created_date
-            # For new rows, query projects for this subject and use the first one
-            project_ids = get_projects_for_subject(subject_id)
-            if not project_ids:
-                raise ValueError(f"Subject {subject_id} has no associated projects in DynamoDB - data consistency error")
-            by_subject_project_id = project_ids[0]
 
         # Delete and reinsert for by_subject table
         delete_by_subject = f"""
@@ -577,11 +568,8 @@ def update_subject_terms_for_evidence(
 
         insert_by_subject = f"""
         INSERT INTO {database_name}.{by_subject_table} VALUES (
-            '{by_subject_project_id}',
-            '{subject_id}',
             '{subject_id}',
             '{subject_iri}',
-            '{project_subject_iri}',
             '{term_iri}',
             '{term_id}',
             CAST(NULL AS VARCHAR),
@@ -962,7 +950,6 @@ def get_subject_term_info(
     if not evidence_data:
         logger.info("No evidence data found, returning None")
         return None
-        return None
     
     # Create deterministic termlink ID using only true qualifiers
     # Extract qualifier values from evidence data if available
@@ -1074,11 +1061,8 @@ def query_subject_by_id(subject_id: str) -> List[Dict[str, Any]]:
 
     query = f"""
     SELECT
-        project_id,
         subject_id,
-        project_subject_id,
         subject_iri,
-        project_subject_iri,
         term_iri,
         term_id,
         term_label,
@@ -1099,11 +1083,8 @@ def query_subject_by_id(subject_id: str) -> List[Dict[str, Any]]:
         terms = []
         for row in results:
             term = {
-                "project_id": row.get('project_id'),
                 "subject_id": row.get('subject_id'),
-                "project_subject_id": row.get('project_subject_id'),
                 "subject_iri": row.get('subject_iri'),
-                "project_subject_iri": row.get('project_subject_iri'),
                 "term_iri": row.get('term_iri'),
                 "term_id": row.get('term_id'),
                 "term_label": row.get('term_label'),
@@ -1376,11 +1357,8 @@ def query_subject_with_hierarchy(
     # Join query
     query = f"""
     SELECT
-        st.project_id,
         st.subject_id,
-        st.project_subject_id,
         st.subject_iri,
-        st.project_subject_iri,
         st.term_iri,
         st.term_id,
         st.term_label as current_term_label,
@@ -1410,11 +1388,8 @@ def query_subject_with_hierarchy(
         # Build subject record
         first_row = results[0]
         subject = {
-            "project_id": first_row.get('project_id'),
             "subject_id": first_row.get('subject_id'),
-            "project_subject_id": first_row.get('project_subject_id'),
             "subject_iri": first_row.get('subject_iri'),
-            "project_subject_iri": first_row.get('project_subject_iri'),
             "ontology_source": ontology_source,
             "ontology_version": first_row.get('ontology_version'),
             "terms": []
@@ -1542,152 +1517,26 @@ def _extract_term_id_from_iri(term_iri: str) -> str:
     return term_iri.split('/')[-1]
 
 
-def materialize_subject_terms(
-    project_id: str,
-    subject_id: str,
-    project_subject_id: str = None,
-    subject_iri: str = None,
-    project_subject_iri: str = None
-) -> int:
-    """
-    Materialize subject-term associations from evidence table to analytical tables.
-    Aggregates evidence by subject and term, computing counts and date ranges.
-
-    Args:
-        project_id: The project ID
-        subject_id: The subject ID
-        project_subject_id: Optional project-specific subject ID
-        subject_iri: Optional subject IRI (will be constructed if not provided)
-        project_subject_iri: Optional project-specific subject IRI
-
-    Returns:
-        Number of subject-term records materialized
-    """
-    database_name = os.environ['ICEBERG_DATABASE']
-    evidence_table = os.environ['ICEBERG_EVIDENCE_TABLE']
-    by_subject_table = os.environ['ICEBERG_SUBJECT_TERMS_BY_SUBJECT_TABLE']
-    by_project_term_table = os.environ['ICEBERG_SUBJECT_TERMS_BY_PROJECT_TERM_TABLE']
-
-    # Construct IRIs if not provided
-    if not subject_iri:
-        subject_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"
-    if not project_subject_id:
-        project_subject_id = subject_id
-    if not project_subject_iri:
-        project_subject_iri = subject_iri
-
-    logger.info(f"Materializing subject-terms for project={project_id}, subject={subject_id}")
-
-    # Delete existing records for this subject
-    delete_query = f"""
-    DELETE FROM {database_name}.{by_subject_table}
-    WHERE subject_id = '{subject_id}'
-    """
-    try:
-        _execute_athena_query(delete_query)
-    except Exception as e:
-        logger.warning(f"Error deleting existing records from by_subject table: {e}")
-
-    delete_query_2 = f"""
-    DELETE FROM {database_name}.{by_project_term_table}
-    WHERE project_id = '{project_id}' AND subject_id = '{subject_id}'
-    """
-    try:
-        _execute_athena_query(delete_query_2)
-    except Exception as e:
-        logger.warning(f"Error deleting existing records from by_project_term table: {e}")
-
-    # Aggregate query from evidence table
-    aggregate_query = f"""
-    WITH aggregated AS (
-        SELECT
-            '{project_id}' as project_id,
-            subject_id,
-            '{project_subject_id}' as project_subject_id,
-            '{subject_iri}' as subject_iri,
-            '{project_subject_iri}' as project_subject_iri,
-            term_iri,
-            COUNT(*) as evidence_count,
-            MIN(created_date) as first_evidence_date,
-            MAX(created_date) as last_evidence_date,
-            ARBITRARY(termlink_id) as termlink_id,
-            ARRAY_AGG(DISTINCT
-                CASE
-                    WHEN q.qualifier_value IN ('true', '1') THEN q.qualifier_type
-                    ELSE NULL
-                END
-            ) as active_qualifiers
-        FROM {database_name}.{evidence_table}
-        CROSS JOIN UNNEST(COALESCE(qualifiers, ARRAY[])) AS t(q)
-        WHERE subject_id = '{subject_id}'
-        GROUP BY subject_id, term_iri
-    )
-    SELECT
-        project_id,
-        subject_id,
-        project_subject_id,
-        subject_iri,
-        project_subject_iri,
-        term_iri,
-        REGEXP_REPLACE(
-            REGEXP_REPLACE(term_iri, '.*/obo/', ''),
-            '_', ':'
-        ) as term_id,
-        CAST(NULL AS VARCHAR) as term_label,
-        FILTER(active_qualifiers, x -> x IS NOT NULL) as qualifiers,
-        evidence_count,
-        termlink_id,
-        first_evidence_date,
-        last_evidence_date
-    FROM aggregated
-    """
-
-    # Insert into by_subject table
-    insert_by_subject_query = f"""
-    INSERT INTO {database_name}.{by_subject_table}
-    {aggregate_query}
-    """
-
-    # Insert into by_project_term table
-    insert_by_project_term_query = f"""
-    INSERT INTO {database_name}.{by_project_term_table}
-    {aggregate_query}
-    """
-
-    try:
-        # Execute both inserts
-        _execute_athena_query(insert_by_subject_query)
-        _execute_athena_query(insert_by_project_term_query)
-
-        # Count results
-        count_query = f"""
-        SELECT COUNT(*) as cnt
-        FROM {database_name}.{by_subject_table}
-        WHERE subject_id = '{subject_id}'
-        """
-        count_results = query_iceberg_evidence(count_query)
-        count = int(count_results[0]['cnt']) if count_results else 0
-
-        logger.info(f"Materialized {count} subject-term records for subject {subject_id}")
-        return count
-
-    except Exception as e:
-        logger.error(f"Error materializing subject-terms for {subject_id}: {e}")
-        raise
-
-
 def materialize_project(project_id: str, batch_size: int = 100) -> Dict[str, int]:
     """
     Materialize all subject-term associations for an entire project.
     More efficient than individual subject materialization for bulk operations.
 
+    Since evidence is project-agnostic, this function:
+    1. Queries DynamoDB to get all subjects in this project
+    2. Materializes by_subject_table rows (project-agnostic) for those subjects
+    3. Materializes by_project_term_table rows (project-specific) for this project
+
     Args:
         project_id: The project ID
-        batch_size: Number of subjects to process per batch
+        batch_size: Number of subjects to process per batch (currently unused)
 
     Returns:
         Dict with statistics: subjects_processed, terms_materialized
     """
+    from phebee.utils.dynamodb import _get_table_name
+    import boto3
+
     database_name = os.environ['ICEBERG_DATABASE']
     evidence_table = os.environ['ICEBERG_EVIDENCE_TABLE']
     by_subject_table = os.environ['ICEBERG_SUBJECT_TERMS_BY_SUBJECT_TABLE']
@@ -1695,32 +1544,79 @@ def materialize_project(project_id: str, batch_size: int = 100) -> Dict[str, int
 
     logger.info(f"Materializing project {project_id}")
 
-    # Delete existing records for this project
-    delete_query_1 = f"""
+    # Step 1: Get all subjects in this project from DynamoDB
+    table_name = _get_table_name()
+    dynamodb = boto3.resource('dynamodb', region_name='us-east-2')
+    table = dynamodb.Table(table_name)
+
+    subject_ids = []
+    project_subject_map = {}  # {subject_id: project_subject_id}
+
+    try:
+        response = table.query(
+            IndexName='GSI1',
+            KeyConditionExpression='GSI1PK = :pk',
+            ExpressionAttributeValues={':pk': f'PROJECT#{project_id}'}
+        )
+
+        for item in response.get('Items', []):
+            # Parse PK: "SUBJECT#{subject_id}"
+            pk = item.get('PK', '')
+            if pk.startswith('SUBJECT#'):
+                subject_id = pk.split('#', 1)[1]
+                subject_ids.append(subject_id)
+
+                # Parse SK: "PROJECT#{project_id}#SUBJECT#{project_subject_id}"
+                sk = item.get('SK', '')
+                sk_parts = sk.split('#')
+                if len(sk_parts) >= 4:
+                    project_subject_id = sk_parts[3]
+                    project_subject_map[subject_id] = project_subject_id
+
+        logger.info(f"Found {len(subject_ids)} subjects in project {project_id}")
+
+    except Exception as e:
+        logger.error(f"Error querying DynamoDB for project subjects: {e}")
+        raise
+
+    if not subject_ids:
+        logger.warning(f"No subjects found for project {project_id}")
+        return {"subjects_processed": 0, "terms_materialized": 0}
+
+    # Build WHERE clause for subject_id filter
+    subject_id_list = "', '".join(subject_ids)
+    subject_filter = f"WHERE subject_id IN ('{subject_id_list}')"
+
+    # Step 2: Delete existing records for these subjects from by_subject_table
+    delete_by_subject = f"""
+    DELETE FROM {database_name}.{by_subject_table}
+    {subject_filter}
+    """
+
+    try:
+        _execute_athena_query(delete_by_subject)
+        logger.info(f"Deleted existing by_subject records for {len(subject_ids)} subjects")
+    except Exception as e:
+        logger.warning(f"Error deleting from by_subject: {e}")
+
+    # Step 3: Delete existing records for this project from by_project_term_table
+    delete_by_project = f"""
     DELETE FROM {database_name}.{by_project_term_table}
     WHERE project_id = '{project_id}'
     """
 
     try:
-        _execute_athena_query(delete_query_1)
-        logger.info(f"Deleted existing records for project {project_id} from by_project_term table")
+        _execute_athena_query(delete_by_project)
+        logger.info(f"Deleted existing by_project_term records for project {project_id}")
     except Exception as e:
         logger.warning(f"Error deleting from by_project_term: {e}")
 
-    # Note: We can't easily delete from by_subject table without knowing subject_ids
-    # That table is partitioned by subject_id, not project_id
-    # We'll let individual records be overwritten by the INSERT
-
-    # Build aggregation query
-    # This aggregates ALL subjects in the project at once
-    aggregate_query = f"""
+    # Step 4: Build aggregation query for by_subject_table (project-agnostic)
+    aggregate_by_subject = f"""
     WITH aggregated AS (
         SELECT
-            '{project_id}' as project_id,
             subject_id,
-            subject_id as project_subject_id,
             CONCAT('http://ods.nationwidechildrens.org/phebee/subjects/', subject_id) as subject_iri,
-            CONCAT('http://ods.nationwidechildrens.org/phebee/subjects/', subject_id) as project_subject_iri,
             term_iri,
             COUNT(*) as evidence_count,
             MIN(created_date) as first_evidence_date,
@@ -1734,6 +1630,49 @@ def materialize_project(project_id: str, batch_size: int = 100) -> Dict[str, int
             ) as active_qualifiers
         FROM {database_name}.{evidence_table}
         CROSS JOIN UNNEST(COALESCE(qualifiers, ARRAY[])) AS t(q)
+        {subject_filter}
+        GROUP BY subject_id, term_iri
+    )
+    SELECT
+        subject_id,
+        subject_iri,
+        term_iri,
+        REGEXP_REPLACE(
+            REGEXP_REPLACE(term_iri, '.*/obo/', ''),
+            '_', ':'
+        ) as term_id,
+        CAST(NULL AS VARCHAR) as term_label,
+        FILTER(active_qualifiers, x -> x IS NOT NULL) as qualifiers,
+        evidence_count,
+        termlink_id,
+        first_evidence_date,
+        last_evidence_date
+    FROM aggregated
+    """
+
+    # Step 5: Build aggregation query for by_project_term_table (project-specific)
+    aggregate_by_project = f"""
+    WITH aggregated AS (
+        SELECT
+            '{project_id}' as project_id,
+            subject_id,
+            subject_id as project_subject_id,
+            CONCAT('http://ods.nationwidechildrens.org/phebee/subjects/', subject_id) as subject_iri,
+            CONCAT('http://ods.nationwidechildrens.org/phebee/projects/{project_id}/', subject_id) as project_subject_iri,
+            term_iri,
+            COUNT(*) as evidence_count,
+            MIN(created_date) as first_evidence_date,
+            MAX(created_date) as last_evidence_date,
+            ARBITRARY(termlink_id) as termlink_id,
+            ARRAY_AGG(DISTINCT
+                CASE
+                    WHEN q.qualifier_value IN ('true', '1') THEN q.qualifier_type
+                    ELSE NULL
+                END
+            ) as active_qualifiers
+        FROM {database_name}.{evidence_table}
+        CROSS JOIN UNNEST(COALESCE(qualifiers, ARRAY[])) AS t(q)
+        {subject_filter}
         GROUP BY subject_id, term_iri
     )
     SELECT
@@ -1757,21 +1696,23 @@ def materialize_project(project_id: str, batch_size: int = 100) -> Dict[str, int
     """
 
     try:
-        # Insert into both tables
+        # Step 6: Insert into by_subject_table (project-agnostic)
         insert_by_subject_query = f"""
         INSERT INTO {database_name}.{by_subject_table}
-        {aggregate_query}
+        {aggregate_by_subject}
         """
-
-        insert_by_project_term_query = f"""
-        INSERT INTO {database_name}.{by_project_term_table}
-        {aggregate_query}
-        """
-
         _execute_athena_query(insert_by_subject_query)
-        _execute_athena_query(insert_by_project_term_query)
+        logger.info(f"Inserted by_subject records for {len(subject_ids)} subjects")
 
-        # Get statistics
+        # Step 7: Insert into by_project_term_table (project-specific)
+        insert_by_project_query = f"""
+        INSERT INTO {database_name}.{by_project_term_table}
+        {aggregate_by_project}
+        """
+        _execute_athena_query(insert_by_project_query)
+        logger.info(f"Inserted by_project_term records for project {project_id}")
+
+        # Step 8: Get statistics
         stats_query = f"""
         SELECT
             COUNT(DISTINCT subject_id) as subjects,

@@ -67,40 +67,40 @@
                             "parsed_subject.$": "States.StringToJson($.CreateSubjectResult.Payload.body)"
                         },
                         "ResultPath": "$.ParsedSubject",
-                        "Next": "PrepareSubjectTermLinksPayload"
+                        "Next": "PrepareEvidencePayload"
                     },
-                    "PrepareSubjectTermLinksPayload": {
+                    "PrepareEvidencePayload": {
                         "Type": "Task",
                         "Resource": "arn:aws:states:::lambda:invoke",
                         "Parameters": {
-                            "FunctionName": "${PrepareSubjectTermLinksPayloadFunctionArn}",
+                            "FunctionName": "${PrepareEvidencePayloadFunctionArn}",
                             "Payload": {
-                                "term_links_payload.$": "$.ProcessedData.Payload.term_links_payload",
-                                "source_node_iri.$": "$.ParsedSubject.parsed_subject.subject.iri"
+                                "evidence_payload.$": "$.ProcessedData.Payload.evidence_payload",
+                                "subject_id.$": "$.ParsedSubject.parsed_subject.subject.subject_id"
                             }
                         },
-                        "ResultPath": "$.PreparedLinks",
-                        "Next": "CreateTermLinksMap"
+                        "ResultPath": "$.PreparedEvidence",
+                        "Next": "CreateEvidenceMap"
                     },
-                    "CreateTermLinksMap": {
+                    "CreateEvidenceMap": {
                         "Type": "Map",
-                        "ItemsPath": "$.PreparedLinks.Payload.fixed_term_links_payload",
+                        "ItemsPath": "$.PreparedEvidence.Payload.fixed_evidence_payload",
                         "MaxConcurrency": 32,
                         "ItemProcessor": {
-                            "StartAt": "CreateTermLink",
+                            "StartAt": "CreateEvidence",
                             "States": {
-                                "CreateTermLink": {
+                                "CreateEvidence": {
                                     "Type": "Task",
                                     "Resource": "arn:aws:states:::lambda:invoke",
                                     "Parameters": {
-                                        "FunctionName": "${CreateTermLinkFunctionArn}",
+                                        "FunctionName": "${CreateEvidenceFunctionArn}",
                                         "Payload.$": "$"
                                     },
                                     "End": true
                                 }
                             }
                         },
-                        "ResultPath": "$.CreateTermLinksResult",
+                        "ResultPath": "$.CreateEvidenceResult",
                         "End": true
                     }
                 }
