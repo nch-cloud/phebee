@@ -2,7 +2,9 @@ import json
 import os
 from aws_lambda_powertools import Metrics, Logger, Tracer
 from phebee.utils.aws import extract_body
-from phebee.utils.iceberg import create_evidence_record, materialize_subject_terms
+from phebee.utils.iceberg import create_evidence_record, count_evidence_by_termlink
+from phebee.utils.hash import generate_termlink_hash
+from phebee.utils.sparql import create_term_link
 
 logger = Logger()
 tracer = Tracer()
@@ -18,7 +20,6 @@ def lambda_handler(event, context):
         subject_id = body.get("subject_id")
         term_iri = body.get("term_iri")
         creator_id = body.get("creator_id")
-        project_id = body.get("project_id")  # Required for materialization
         creator_name = body.get("creator_name")
         creator_type = body.get("creator_type", "human")  # Default to human
         evidence_type = body.get("evidence_type", "manual_annotation")
@@ -39,11 +40,11 @@ def lambda_handler(event, context):
         author_specialty = body.get("author_specialty")
         note_type = body.get("note_type")
 
-        if not subject_id or not term_iri or not creator_id or not project_id:
+        if not subject_id or not term_iri or not creator_id:
             return {
                 "statusCode": 400,
                 "body": json.dumps({
-                    "message": "Missing required fields: subject_id, term_iri, creator_id, and project_id are required."
+                    "message": "Missing required fields: subject_id, term_iri, and creator_id are required."
                 })
             }
 
@@ -57,10 +58,17 @@ def lambda_handler(event, context):
         if creator_name:
             creator["creator_name"] = creator_name
 
-        # Generate timestamp
+        # Generate timestamps (use same base time for consistency)
         from datetime import datetime
-        created_timestamp = datetime.utcnow().isoformat()
+        now = datetime.utcnow()
+        created_timestamp = now.isoformat()
+        created_date = now.date().isoformat()
 
+        # Compute termlink_id using the same logic as create_evidence_record
+        subject_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"
+        termlink_id = generate_termlink_hash(subject_iri, term_iri, qualifiers or [])
+
+        # Create evidence record in Iceberg
         evidence_id = create_evidence_record(
             subject_id=subject_id,
             term_iri=term_iri,
@@ -82,19 +90,49 @@ def lambda_handler(event, context):
             term_source=term_source
         )
 
-        # Materialize subject-terms analytical tables (if enabled)
-        enable_materialization = os.environ.get('ENABLE_SUBJECT_TERMS_MATERIALIZATION', 'false').lower() == 'true'
-        if enable_materialization:
-            try:
-                logger.info(f"Materializing subject-terms for subject {subject_id} in project {project_id}")
-                materialize_subject_terms(
-                    project_id=project_id,
-                    subject_id=subject_id
-                )
-                logger.info("Subject-terms materialization completed")
-            except Exception as e:
-                # Log but don't fail the request if materialization fails
-                logger.warning(f"Failed to materialize subject-terms: {e}")
+        # Create the term link in Neptune (idempotent - will not recreate if it exists)
+        try:
+            logger.info(f"Ensuring term link exists in Neptune for termlink {termlink_id}")
+            creator_iri = f"http://ods.nationwidechildrens.org/phebee/creators/{creator_id}"
+
+            # Convert qualifier strings to IRIs if needed
+            qualifier_iris = []
+            for q in (qualifiers or []):
+                if q.startswith('http://') or q.startswith('https://'):
+                    qualifier_iris.append(q)
+                else:
+                    # Assume qualifier is a short name, convert to IRI
+                    qualifier_iris.append(f"http://ods.nationwidechildrens.org/phebee/qualifier/{q}")
+
+            result = create_term_link(
+                subject_iri=subject_iri,
+                term_iri=term_iri,
+                creator_iri=creator_iri,
+                qualifiers=qualifier_iris
+            )
+            if result.get("created"):
+                logger.info(f"Created new term link in Neptune: {result.get('termlink_iri')}")
+            else:
+                logger.info(f"Term link already exists in Neptune: {result.get('termlink_iri')}")
+        except Exception as e:
+            # Log but don't fail the evidence creation if term link creation fails
+            logger.error(f"Failed to ensure term link in Neptune: {e}")
+
+        # Update subject-terms analytical tables incrementally
+        try:
+            from phebee.utils.iceberg import update_subject_terms_for_evidence
+
+            update_subject_terms_for_evidence(
+                subject_id=subject_id,
+                term_iri=term_iri,
+                termlink_id=termlink_id,
+                qualifiers=qualifiers or [],
+                created_date=created_date
+            )
+            logger.info(f"Updated subject-terms analytical tables for termlink {termlink_id}")
+        except Exception as e:
+            # Log but don't fail the evidence creation if analytical table update fails
+            logger.error(f"Failed to update subject-terms analytical tables: {e}")
 
         # Return the complete evidence record
         evidence_record = {

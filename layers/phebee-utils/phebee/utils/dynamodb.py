@@ -143,13 +143,13 @@ def get_project_subjects(table_name: str, subject_id: str, region: str = 'us-eas
     """Get all (project_id, project_subject_id) pairs for a given subject_id"""
     dynamodb = boto3.resource('dynamodb', region_name=region)
     table = dynamodb.Table(table_name)
-    
+
     try:
         response = table.query(
             KeyConditionExpression='PK = :pk',
             ExpressionAttributeValues={':pk': f'SUBJECT#{subject_id}'}
         )
-        
+
         pairs = []
         for item in response.get('Items', []):
             # Parse SK: "PROJECT#{project_id}#SUBJECT#{project_subject_id}"
@@ -158,10 +158,28 @@ def get_project_subjects(table_name: str, subject_id: str, region: str = 'us-eas
                 project_id = sk_parts[1]
                 project_subject_id = sk_parts[3]
                 pairs.append((project_id, project_subject_id))
-        
+
         return pairs
     except ClientError:
         return []
+
+def get_projects_for_subject(subject_id: str, region: str = 'us-east-2') -> List[str]:
+    """
+    Get all unique project IDs that have a given subject.
+
+    Args:
+        subject_id: The subject UUID
+        region: AWS region (default: us-east-2)
+
+    Returns:
+        List of unique project IDs that have this subject
+    """
+    table_name = _get_table_name()
+    pairs = get_project_subjects(table_name, subject_id, region)
+
+    # Extract unique project_ids
+    project_ids = list(set(project_id for project_id, _ in pairs))
+    return project_ids
 
 def create_subject_mapping(table_name: str, project_id: str, project_subject_id: str, region: str = 'us-east-2') -> str:
     """Create a new subject mapping and return the generated subject_id"""

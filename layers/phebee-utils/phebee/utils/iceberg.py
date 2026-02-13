@@ -459,10 +459,285 @@ def get_evidence_record(evidence_id: str) -> Dict[str, Any] | None:
         return None
 
 
+def count_evidence_by_termlink(termlink_id: str) -> int:
+    """
+    Count evidence records for a given termlink_id.
+    Used to determine if a term link should be created/deleted.
+
+    Args:
+        termlink_id: The termlink ID
+
+    Returns:
+        int: Number of evidence records with this termlink_id
+    """
+    database_name = os.environ['ICEBERG_DATABASE']
+    table_name = os.environ['ICEBERG_EVIDENCE_TABLE']
+
+    query = f"""
+    SELECT COUNT(*) as evidence_count
+    FROM {database_name}.{table_name}
+    WHERE termlink_id = '{termlink_id}'
+    """
+
+    try:
+        results = query_iceberg_evidence(query)
+        if results and len(results) > 0:
+            count = int(results[0].get('evidence_count', 0))
+            logger.info(f"Found {count} evidence records for termlink {termlink_id}")
+            return count
+        return 0
+    except Exception as e:
+        logger.error(f"Error counting evidence for termlink {termlink_id}: {e}")
+        raise
+
+
+def update_subject_terms_for_evidence(
+    subject_id: str,
+    term_iri: str,
+    termlink_id: str,
+    qualifiers: List[str] = None,
+    created_date: str = None
+):
+    """
+    Incrementally update subject-terms analytical tables when evidence is added.
+    Uses DELETE + INSERT pattern to upsert rows with incremented evidence_count.
+
+    Since evidence is project-agnostic, this function ALWAYS updates ALL projects that have
+    this subject with the same evidence count to maintain consistency across projects.
+
+    Args:
+        subject_id: The subject ID
+        term_iri: The term IRI
+        termlink_id: The termlink ID
+        qualifiers: List of active qualifiers
+        created_date: Date of evidence creation (YYYY-MM-DD format)
+    """
+    from phebee.utils.dynamodb import get_projects_for_subject
+
+    database_name = os.environ['ICEBERG_DATABASE']
+    by_subject_table = os.environ['ICEBERG_SUBJECT_TERMS_BY_SUBJECT_TABLE']
+    by_project_term_table = os.environ['ICEBERG_SUBJECT_TERMS_BY_PROJECT_TERM_TABLE']
+
+    if not created_date:
+        from datetime import datetime
+        created_date = datetime.utcnow().date().isoformat()
+
+    # Extract term_id from IRI
+    term_id = _extract_term_id_from_iri(term_iri)
+
+    # Build qualifiers array SQL
+    qualifiers_sql = "ARRAY[]"
+    if qualifiers:
+        escaped_qualifiers = [q.replace("'", "''") for q in qualifiers]
+        qualifiers_sql = f"ARRAY[{', '.join(f\"'{q}'\" for q in escaped_qualifiers)}]"
+
+    # Construct IRIs
+    subject_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"
+    project_subject_iri = subject_iri  # For now, same as subject_iri
+
+    try:
+        # Get existing data for by_subject table to preserve counts and dates
+        check_query_subject = f"""
+        SELECT evidence_count, first_evidence_date, last_evidence_date, project_id
+        FROM {database_name}.{by_subject_table}
+        WHERE subject_id = '{subject_id}' AND termlink_id = '{termlink_id}'
+        """
+
+        existing_subject = query_iceberg_evidence(check_query_subject)
+
+        if existing_subject and len(existing_subject) > 0:
+            # Row exists - increment count and update last_evidence_date
+            old_count = int(existing_subject[0].get('evidence_count', 0))
+            old_first_date = existing_subject[0].get('first_evidence_date')
+            old_last_date = existing_subject[0].get('last_evidence_date')
+            # Use existing project_id from by_subject table for the INSERT
+            by_subject_project_id = existing_subject[0].get('project_id')
+            if not by_subject_project_id:
+                raise ValueError(f"Existing by_subject row for subject {subject_id}, termlink {termlink_id} has no project_id - data consistency error")
+
+            new_count = old_count + 1
+            first_date = old_first_date
+            last_date = created_date if created_date > old_last_date else old_last_date
+        else:
+            # New row - set count to 1
+            new_count = 1
+            first_date = created_date
+            last_date = created_date
+            # For new rows, query projects for this subject and use the first one
+            project_ids = get_projects_for_subject(subject_id)
+            if not project_ids:
+                raise ValueError(f"Subject {subject_id} has no associated projects in DynamoDB - data consistency error")
+            by_subject_project_id = project_ids[0]
+
+        # Delete and reinsert for by_subject table
+        delete_by_subject = f"""
+        DELETE FROM {database_name}.{by_subject_table}
+        WHERE subject_id = '{subject_id}' AND termlink_id = '{termlink_id}'
+        """
+
+        insert_by_subject = f"""
+        INSERT INTO {database_name}.{by_subject_table} VALUES (
+            '{by_subject_project_id}',
+            '{subject_id}',
+            '{subject_id}',
+            '{subject_iri}',
+            '{project_subject_iri}',
+            '{term_iri}',
+            '{term_id}',
+            CAST(NULL AS VARCHAR),
+            {qualifiers_sql},
+            {new_count},
+            '{termlink_id}',
+            DATE '{first_date}',
+            DATE '{last_date}'
+        )
+        """
+
+        # Execute by_subject updates
+        _execute_athena_query(delete_by_subject)
+        _execute_athena_query(insert_by_subject)
+
+        # Update by_project_term table for ALL projects that have this subject
+        # This ensures consistency since evidence is project-agnostic
+        project_ids_to_update = get_projects_for_subject(subject_id)
+        if not project_ids_to_update:
+            raise ValueError(f"Subject {subject_id} has no associated projects in DynamoDB - data consistency error")
+
+        # Update each project with the same evidence count
+        for pid in project_ids_to_update:
+            # Use DELETE + INSERT pattern (no need to check if row exists first)
+            delete_by_project = f"""
+            DELETE FROM {database_name}.{by_project_term_table}
+            WHERE project_id = '{pid}' AND subject_id = '{subject_id}' AND termlink_id = '{termlink_id}'
+            """
+
+            insert_by_project = f"""
+            INSERT INTO {database_name}.{by_project_term_table} VALUES (
+                '{pid}',
+                '{subject_id}',
+                '{subject_id}',
+                '{subject_iri}',
+                '{project_subject_iri}',
+                '{term_iri}',
+                '{term_id}',
+                CAST(NULL AS VARCHAR),
+                {qualifiers_sql},
+                {new_count},
+                '{termlink_id}',
+                DATE '{first_date}',
+                DATE '{last_date}'
+            )
+            """
+
+            _execute_athena_query(delete_by_project)
+            _execute_athena_query(insert_by_project)
+
+        logger.info(f"Updated subject-terms analytical tables for termlink {termlink_id} across {len(project_ids_to_update)} project(s)")
+
+    except Exception as e:
+        logger.error(f"Error updating subject-terms for evidence: {e}")
+        raise
+
+
+def remove_subject_terms_for_evidence(
+    subject_id: str,
+    termlink_id: str,
+    evidence_count_remaining: int
+):
+    """
+    Incrementally update subject-terms analytical tables when evidence is removed.
+    Decrements evidence_count or deletes row if count reaches 0.
+
+    Since evidence is project-agnostic, this function ALWAYS updates ALL projects that have
+    this subject with the same evidence count to maintain consistency across projects.
+
+    Args:
+        subject_id: The subject ID
+        termlink_id: The termlink ID
+        evidence_count_remaining: Remaining evidence count after deletion
+    """
+    from phebee.utils.dynamodb import get_projects_for_subject
+
+    database_name = os.environ['ICEBERG_DATABASE']
+    by_subject_table = os.environ['ICEBERG_SUBJECT_TERMS_BY_SUBJECT_TABLE']
+    by_project_term_table = os.environ['ICEBERG_SUBJECT_TERMS_BY_PROJECT_TERM_TABLE']
+
+    # Validate that subject has associated projects
+    project_ids = get_projects_for_subject(subject_id)
+    if not project_ids:
+        raise ValueError(f"Subject {subject_id} has no associated projects in DynamoDB - data consistency error")
+
+    try:
+        if evidence_count_remaining == 0:
+            # Delete rows from by_subject table
+            delete_by_subject = f"""
+            DELETE FROM {database_name}.{by_subject_table}
+            WHERE subject_id = '{subject_id}' AND termlink_id = '{termlink_id}'
+            """
+            _execute_athena_query(delete_by_subject)
+            logger.info(f"Deleted by_subject row for termlink {termlink_id} (evidence_count=0)")
+
+            # Delete rows from by_project_term table for ALL projects
+            delete_by_project = f"""
+            DELETE FROM {database_name}.{by_project_term_table}
+            WHERE subject_id = '{subject_id}'
+              AND termlink_id = '{termlink_id}'
+            """
+            _execute_athena_query(delete_by_project)
+            logger.info(f"Deleted by_project_term rows for termlink {termlink_id} (all projects)")
+
+        else:
+            # Decrement evidence_count and update last_evidence_date using UPDATE
+
+            # Query for the latest evidence date from remaining evidence
+            evidence_table = os.environ['ICEBERG_EVIDENCE_TABLE']
+            latest_date_query = f"""
+            SELECT MAX(DATE(created_timestamp)) as latest_date
+            FROM {database_name}.{evidence_table}
+            WHERE termlink_id = '{termlink_id}'
+            """
+            latest_result = query_iceberg_evidence(latest_date_query)
+
+            # Get the latest date, or use a default if no results
+            if latest_result and latest_result[0].get('latest_date'):
+                last_date = latest_result[0]['latest_date']
+                last_date_sql = f"DATE '{last_date}'"
+            else:
+                # If no evidence found, keep the existing first_evidence_date as last_evidence_date
+                last_date_sql = "first_evidence_date"
+
+            # Update by_subject table
+            update_by_subject = f"""
+            UPDATE {database_name}.{by_subject_table}
+            SET evidence_count = {evidence_count_remaining},
+                last_evidence_date = {last_date_sql}
+            WHERE subject_id = '{subject_id}' AND termlink_id = '{termlink_id}'
+            """
+            _execute_athena_query(update_by_subject)
+            logger.info(f"Decremented by_subject evidence_count to {evidence_count_remaining} for termlink {termlink_id}")
+
+            # Update by_project_term table for ALL projects
+            update_by_project = f"""
+            UPDATE {database_name}.{by_project_term_table}
+            SET evidence_count = {evidence_count_remaining},
+                last_evidence_date = {last_date_sql}
+            WHERE subject_id = '{subject_id}'
+              AND termlink_id = '{termlink_id}'
+            """
+            _execute_athena_query(update_by_project)
+
+            # Log which projects were updated (project_ids already retrieved at function start)
+            logger.info(f"Decremented by_project_term evidence_count to {evidence_count_remaining} across {len(project_ids)} project(s)")
+
+    except Exception as e:
+        logger.error(f"Error removing subject-terms for evidence: {e}")
+        raise
+
+
 def delete_evidence_record(evidence_id: str) -> bool:
     """
     Delete a single evidence record by ID from Iceberg.
-    
+
     Returns:
         bool: True if deleted, False if not found
     """
@@ -470,20 +745,20 @@ def delete_evidence_record(evidence_id: str) -> bool:
     existing = get_evidence_record(evidence_id)
     if not existing:
         return False
-    
+
     # Execute DELETE query using Athena
     database_name = os.environ['ICEBERG_DATABASE']
     table_name = os.environ['ICEBERG_EVIDENCE_TABLE']
-    
+
     delete_query = f"""
     DELETE FROM {database_name}.{table_name}
     WHERE evidence_id = '{evidence_id}'
     """
-    
+
     try:
-        
+
         athena_client = boto3.client('athena')
-        
+
         # Check if primary workgroup is managed
         wg_cfg = athena_client.get_work_group(WorkGroup="primary")["WorkGroup"]["Configuration"]
         managed_config = wg_cfg.get("ManagedQueryResultsConfiguration", {})
@@ -505,12 +780,12 @@ def delete_evidence_record(evidence_id: str) -> bool:
 
         response = athena_client.start_query_execution(**params)
         query_execution_id = response['QueryExecutionId']
-        
+
         # Wait for query completion
         while True:
             result = athena_client.get_query_execution(QueryExecutionId=query_execution_id)
             status = result['QueryExecution']['Status']['State']
-            
+
             if status == 'SUCCEEDED':
                 logger.info(f"Successfully deleted evidence record: {evidence_id}")
                 return True
@@ -518,9 +793,9 @@ def delete_evidence_record(evidence_id: str) -> bool:
                 error_msg = result['QueryExecution']['Status'].get('StateChangeReason', 'Unknown error')
                 logger.error(f"Athena DELETE failed: {error_msg}")
                 return False
-            
+
             time.sleep(1)
-            
+
     except Exception as e:
         logger.error(f"Failed to delete evidence record {evidence_id}: {e}")
         return False
@@ -760,11 +1035,11 @@ def get_subject_term_info(
                 if isinstance(q, dict) and q.get('qualifier_value') in ['true', '1', 1, 1.0, True]:
                     qualifier_type = q.get('qualifier_type', '')
                     # Extract short name from full IRI if needed
-                    # NOTE: This assumes all qualifiers are in the same namespace and can be 
-                    # shortened by taking the last path segment. If we need to support 
+                    # NOTE: This assumes all qualifiers are in the same namespace and can be
+                    # shortened by taking the last path segment. If we need to support
                     # qualifiers from multiple namespaces in the future, this logic should
                     # be moved to a dedicated function that handles namespace mapping.
-                    if qualifier_type.startswith('http://'):
+                    if qualifier_type.startswith('http://') or qualifier_type.startswith('https://'):
                         qualifier_type = qualifier_type.split('/')[-1]
                     active_qualifiers.append(qualifier_type)
     

@@ -314,6 +314,8 @@ paths:
       description: |
         Creates an evidence record linking a subject to a term with supporting metadata.
         Evidence can include clinical note context, text annotations, and qualifiers.
+        Evidence is project-agnostic and automatically updates analytical tables for all projects
+        that have this subject to maintain data consistency.
       operationId: createEvidence
       requestBody:
         required: true
@@ -505,127 +507,6 @@ paths:
         connectionType: "INTERNET"
         timeoutInMillis: 30000
 
-  /term-link/create:
-    post:
-      summary: Create a TermLink node
-      description: |
-        Creates a TermLink node that connects a Subject, Encounter, or ClinicalNote to a term with supporting evidence.
-      operationId: createTermLink
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required:
-                - subject_id
-                - term_iri
-                - creator_id
-              properties:
-                subject_id:
-                  type: string
-                  description: The subject UUID
-                term_iri:
-                  type: string
-                  description: The ontology term IRI
-                creator_id:
-                  type: string
-                  description: The creator identifier
-                qualifiers:
-                  type: array
-                  items:
-                    type: string
-                  description: Optional qualifier IRIs
-      responses:
-        "200":
-          description: TermLink created
-        "400":
-          description: Missing required fields or invalid structure
-        "500":
-          description: Internal server error
-      security:
-        - sigv4: []
-      x-amazon-apigateway-integration:
-        credentials:
-          Fn::GetAtt: [PheBeeAPIRole, Arn]
-        payloadFormatVersion: "2.0"
-        type: "aws_proxy"
-        uri:
-          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-CreateTermLinkFunction/invocations
-        connectionType: "INTERNET"
-        timeoutInMillis: 30000
-
-  /term-link:
-    post:
-      summary: Get TermLink details
-      description: |
-        Retrieves a TermLink node and its associated properties.
-      operationId: getTermLink
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required:
-                - termlink_iri
-              properties:
-                termlink_iri:
-                  type: string
-      responses:
-        "200":
-          description: TermLink found or not found
-        "400":
-          description: Missing required field
-        "500":
-          description: Internal server error
-      security:
-        - sigv4: []
-      x-amazon-apigateway-integration:
-        credentials:
-          Fn::GetAtt: [PheBeeAPIRole, Arn]
-        payloadFormatVersion: "2.0"
-        type: "aws_proxy"
-        uri:
-          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-GetTermLinkFunction/invocations
-        connectionType: "INTERNET"
-        timeoutInMillis: 30000
-
-  /term-link/remove:
-    post:
-      summary: Delete a TermLink node
-      description: |
-        Deletes a TermLink node by IRI.
-      operationId: removeTermLink
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required:
-                - termlink_iri
-              properties:
-                termlink_iri:
-                  type: string
-      responses:
-        "200":
-          description: TermLink deleted
-        "400":
-          description: Missing required field
-        "500":
-          description: Internal server error
-      security:
-        - sigv4: []
-      x-amazon-apigateway-integration:
-        credentials:
-          Fn::GetAtt: [PheBeeAPIRole, Arn]
-        payloadFormatVersion: "2.0"
-        type: "aws_proxy"
-        uri:
-          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-RemoveTermLinkFunction/invocations
-        connectionType: "INTERNET"
-        timeoutInMillis: 30000
 x-amazon-apigateway-cors:
   allowMethods:
     - "*"
