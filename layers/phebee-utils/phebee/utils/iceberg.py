@@ -1651,29 +1651,42 @@ def materialize_project(project_id: str, batch_size: int = 100) -> Dict[str, int
     """
 
     # Step 5: Build aggregation query for by_project_term_table (project-specific)
+    # Create mapping CTE using VALUES to join subject_id (UUID) -> project_subject_id
+    mapping_values = []
+    for subject_id, project_subject_id in project_subject_map.items():
+        mapping_values.append(f"('{subject_id}', '{project_subject_id}')")
+
+    mapping_cte = f"""
+    subject_mapping AS (
+        SELECT subject_id, project_subject_id
+        FROM (VALUES {', '.join(mapping_values)}) AS t(subject_id, project_subject_id)
+    ),
+    """
+
     aggregate_by_project = f"""
-    WITH aggregated AS (
+    WITH {mapping_cte}
+    aggregated AS (
         SELECT
             '{project_id}' as project_id,
-            subject_id,
-            subject_id as project_subject_id,
-            CONCAT('http://ods.nationwidechildrens.org/phebee/subjects/', subject_id) as subject_iri,
-            CONCAT('http://ods.nationwidechildrens.org/phebee/projects/{project_id}/', subject_id) as project_subject_iri,
-            term_iri,
+            e.subject_id,
+            m.project_subject_id,
+            CONCAT('http://ods.nationwidechildrens.org/phebee/subjects/', e.subject_id) as subject_iri,
+            CONCAT('http://ods.nationwidechildrens.org/phebee/projects/{project_id}/', m.project_subject_id) as project_subject_iri,
+            e.term_iri,
             COUNT(*) as evidence_count,
-            MIN(created_date) as first_evidence_date,
-            MAX(created_date) as last_evidence_date,
-            ARBITRARY(termlink_id) as termlink_id,
+            MIN(e.created_date) as first_evidence_date,
+            MAX(e.created_date) as last_evidence_date,
+            ARBITRARY(e.termlink_id) as termlink_id,
             ARRAY_AGG(DISTINCT
                 CASE
                     WHEN q.qualifier_value IN ('true', '1') THEN q.qualifier_type
                     ELSE NULL
                 END
             ) as active_qualifiers
-        FROM {database_name}.{evidence_table}
-        CROSS JOIN UNNEST(COALESCE(qualifiers, ARRAY[])) AS t(q)
-        {subject_filter}
-        GROUP BY subject_id, term_iri
+        FROM {database_name}.{evidence_table} e
+        JOIN subject_mapping m ON e.subject_id = m.subject_id
+        CROSS JOIN UNNEST(COALESCE(e.qualifiers, ARRAY[])) AS t(q)
+        GROUP BY e.subject_id, m.project_subject_id, e.term_iri
     )
     SELECT
         project_id,
