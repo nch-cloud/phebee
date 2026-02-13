@@ -529,7 +529,8 @@ def update_subject_terms_for_evidence(
     qualifiers_sql = "ARRAY[]"
     if qualifiers:
         escaped_qualifiers = [q.replace("'", "''") for q in qualifiers]
-        qualifiers_sql = f"ARRAY[{', '.join(f\"'{q}'\" for q in escaped_qualifiers)}]"
+        qualifier_strings = [f"'{q}'" for q in escaped_qualifiers]
+        qualifiers_sql = f"ARRAY[{', '.join(qualifier_strings)}]"
 
     # Construct IRIs
     subject_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"
