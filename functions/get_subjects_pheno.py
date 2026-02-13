@@ -2,7 +2,7 @@ import json
 import gzip
 import base64
 from aws_lambda_powertools import Metrics, Logger, Tracer
-from phebee.utils.sparql import get_subjects
+from phebee.utils.iceberg import query_subjects_by_project
 from phebee.utils.aws import parse_s3_path, get_client, extract_body
 from phebee.utils.dynamodb import get_current_term_source_version
 from phebee.utils.phenopackets import subjects_to_phenopackets, zip_phenopackets
@@ -62,23 +62,25 @@ def lambda_handler(event, context):
     limit = body.get("limit", 1000)
     cursor = body.get("cursor")
 
-    # Internal parameter for testing: override cache behavior
-    # _use_cache=true forces cache, _use_cache=false forces Neptune
-    use_cache = body.get("_use_cache")
+    # Convert term IRI to term ID if provided
+    term_id = None
+    if term_iri:
+        if '/obo/' in term_iri:
+            term_id = term_iri.split('/obo/')[-1].replace('_', ':')
+        else:
+            term_id = term_iri.split('/')[-1]
 
-    result = get_subjects(
-        project_iri=project_iri,
-        hpo_version=hpo_version,
-        mondo_version=mondo_version,
-        limit=limit,
-        cursor=cursor,
-        term_iri=term_iri,
+    # Query Iceberg analytical tables directly
+    offset = int(cursor) if cursor else 0
+    result = query_subjects_by_project(
+        project_id=project_id,
+        term_id=term_id,
         term_source=term_source,
-        term_source_version=term_source_version,
-        project_subject_ids=project_subject_ids,
-        include_qualified=include_qualified,
         include_child_terms=include_child_terms,
-        use_cache=use_cache,
+        include_qualified=include_qualified,
+        project_subject_ids=project_subject_ids,
+        limit=limit,
+        offset=offset
     )
     
     # Extract subjects and pagination info

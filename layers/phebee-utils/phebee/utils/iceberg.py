@@ -863,6 +863,10 @@ def query_subject_by_id(subject_id: str) -> List[Dict[str, Any]]:
 def query_subjects_by_project(
     project_id: str,
     term_id: str = None,
+    term_source: str = None,
+    include_child_terms: bool = True,
+    include_qualified: bool = True,
+    project_subject_ids: list = None,
     limit: int = 50,
     offset: int = 0
 ) -> Dict[str, Any]:
@@ -870,26 +874,85 @@ def query_subjects_by_project(
     Query subjects in a project with optional term filtering and pagination.
     Uses the subject_terms_by_project_term table for efficient queries.
 
+    Supports hierarchy expansion via ontology_hierarchy table when include_child_terms=True.
+
     Args:
         project_id: The project ID
         term_id: Optional term ID to filter by (e.g., "HP:0001234")
+        term_source: Ontology source ("hpo" or "mondo") - inferred from term_id if not provided
+        include_child_terms: If True, expand term_id to include all descendants (default True)
+        include_qualified: If False, exclude terms with negated/hypothetical/family qualifiers (default True)
+        project_subject_ids: Optional list of specific project_subject_ids to filter by
         limit: Number of subjects to return (default 50)
         offset: Offset for pagination (default 0)
 
     Returns:
         Dict with:
-            - subjects: List of subject records with aggregated terms
-            - total_count: Total number of subjects (without pagination)
-            - has_more: Boolean indicating if more results exist
+            - subjects: List of subject records with phenotypes in API format
+            - pagination: Pagination metadata (limit, cursor, next_cursor, has_more, total_count)
     """
+    from phebee.utils.hash import generate_termlink_hash
+
     database_name = os.environ.get('ICEBERG_DATABASE')
     table_name = os.environ.get('ICEBERG_SUBJECT_TERMS_BY_PROJECT_TERM_TABLE')
 
     if not database_name or not table_name:
         raise ValueError("ICEBERG_DATABASE and ICEBERG_SUBJECT_TERMS_BY_PROJECT_TERM_TABLE environment variables are required")
 
-    # Build term filter
-    term_filter = f"AND term_id = '{term_id}'" if term_id else ""
+    # Infer ontology source from term_id if not provided
+    if term_id and not term_source:
+        if term_id.startswith('HP:'):
+            term_source = 'hpo'
+        elif term_id.startswith('MONDO:'):
+            term_source = 'mondo'
+
+    # Build WHERE clauses
+    where_clauses = [f"project_id = '{project_id}'"]
+
+    # Build term filter with hierarchy expansion
+    if term_id:
+        if include_child_terms:
+            # Expand to include all descendant terms using hierarchy table
+            try:
+                descendant_ids = query_term_descendants(term_id, ontology_source=term_source)
+                if descendant_ids:
+                    # Extract just the term_id from results
+                    term_ids = [d['term_id'] for d in descendant_ids]
+                    # Add the query term itself if not already included
+                    if term_id not in term_ids:
+                        term_ids.append(term_id)
+                    # Build IN clause
+                    term_list = "', '".join(term_ids)
+                    where_clauses.append(f"term_id IN ('{term_list}')")
+                    logger.info(f"Expanded {term_id} to {len(term_ids)} descendant terms")
+                else:
+                    # No descendants found, just use exact match
+                    where_clauses.append(f"term_id = '{term_id}'")
+            except Exception as e:
+                logger.warning(f"Error querying term descendants for {term_id}: {e}")
+                # Fall back to exact match
+                where_clauses.append(f"term_id = '{term_id}'")
+        else:
+            # Exact match only
+            where_clauses.append(f"term_id = '{term_id}'")
+
+    # Build qualifier filter
+    if not include_qualified:
+        # Exclude terms with negated, hypothetical, or family qualifiers
+        where_clauses.append("""
+            NOT (
+                CONTAINS(qualifiers, 'negated') OR
+                CONTAINS(qualifiers, 'hypothetical') OR
+                CONTAINS(qualifiers, 'family')
+            )
+        """)
+
+    # Build project_subject_ids filter
+    if project_subject_ids:
+        psid_list = "', '".join(project_subject_ids)
+        where_clauses.append(f"project_subject_id IN ('{psid_list}')")
+
+    where_clause = " AND ".join(where_clauses)
 
     # Query to get subjects with aggregated term data
     query = f"""
@@ -902,8 +965,7 @@ def query_subjects_by_project(
             ROW(term_id, term_iri, term_label, qualifiers, evidence_count, termlink_id, first_evidence_date, last_evidence_date)
         ) as terms
     FROM {database_name}.{table_name}
-    WHERE project_id = '{project_id}'
-    {term_filter}
+    WHERE {where_clause}
     GROUP BY subject_id, project_subject_id, subject_iri, project_subject_iri
     ORDER BY subject_id
     LIMIT {limit}
@@ -914,8 +976,7 @@ def query_subjects_by_project(
     count_query = f"""
     SELECT COUNT(DISTINCT subject_id) as total
     FROM {database_name}.{table_name}
-    WHERE project_id = '{project_id}'
-    {term_filter}
+    WHERE {where_clause}
     """
 
     try:
@@ -925,59 +986,66 @@ def query_subjects_by_project(
 
         total_count = int(count_results[0]['total']) if count_results else 0
 
-        # Parse subjects
+        # Parse subjects and convert to API format
         subjects = []
         for row in results:
-            subject = {
-                "subject_id": row.get('subject_id'),
-                "project_subject_id": row.get('project_subject_id'),
-                "subject_iri": row.get('subject_iri'),
-                "project_subject_iri": row.get('project_subject_iri'),
-                "terms": []
-            }
-
             # Parse terms array - this comes as a string representation of ROW structures
             terms_str = row.get('terms')
+            phenotypes = []
+
             if terms_str and terms_str != '[]' and terms_str != 'null':
                 # Parse the array of ROW structures
-                # Format: [{term_id=HP:0001234, term_iri=..., ...}, {...}]
                 terms_list = parse_athena_struct_array(terms_str)
                 for term_dict in terms_list:
-                    term = {
-                        "term_id": term_dict.get('term_id'),
-                        "term_iri": term_dict.get('term_iri'),
-                        "term_label": term_dict.get('term_label'),
-                        "evidence_count": int(term_dict.get('evidence_count', 0)) if term_dict.get('evidence_count') else 0,
-                        "termlink_id": term_dict.get('termlink_id'),
-                        "first_evidence_date": term_dict.get('first_evidence_date'),
-                        "last_evidence_date": term_dict.get('last_evidence_date')
-                    }
-
-                    # Parse qualifiers if present
+                    # Parse qualifiers
                     qualifiers_str = term_dict.get('qualifiers')
+                    qualifiers = []
                     if qualifiers_str and qualifiers_str != '[]' and qualifiers_str != 'null':
                         qualifiers_str = qualifiers_str.strip('[]')
                         if qualifiers_str:
-                            term["qualifiers"] = [q.strip().strip("'\"") for q in qualifiers_str.split(',')]
-                        else:
-                            term["qualifiers"] = []
-                    else:
-                        term["qualifiers"] = []
+                            qualifiers = [q.strip().strip("'\"") for q in qualifiers_str.split(',')]
 
-                    subject["terms"].append(term)
+                    # Build phenotype in API format
+                    phenotype = {
+                        "term": {
+                            "iri": term_dict.get('term_iri'),
+                            "id": term_dict.get('term_id'),
+                            "label": term_dict.get('term_label') or term_dict.get('term_id')
+                        },
+                        "qualifiers": qualifiers,
+                        "termlink_id": term_dict.get('termlink_id'),
+                        "evidence_count": int(term_dict.get('evidence_count', 0)) if term_dict.get('evidence_count') else 0,
+                        "first_evidence_date": term_dict.get('first_evidence_date'),
+                        "last_evidence_date": term_dict.get('last_evidence_date')
+                    }
+                    phenotypes.append(phenotype)
 
-            subjects.append(subject)
+            # Build subject in API format
+            subject_data = {
+                "subject_iri": row.get('subject_iri'),
+                "project_subject_iri": row.get('project_subject_iri'),
+                "project_subject_id": row.get('project_subject_id'),
+                "phenotypes": phenotypes
+            }
+            subjects.append(subject_data)
 
         has_more = (offset + len(subjects)) < total_count
 
-        logger.info(f"Found {len(subjects)} subjects for project {project_id} (total: {total_count})")
+        logger.info(f"Found {len(subjects)} subjects for project {project_id} (total: {total_count}, offset: {offset})")
+
+        # Build pagination in API format
+        next_cursor = str(offset + len(subjects)) if has_more else None
+        pagination = {
+            "limit": limit,
+            "cursor": str(offset) if offset > 0 else None,
+            "next_cursor": next_cursor,
+            "has_more": has_more,
+            "total_count": total_count
+        }
 
         return {
             "subjects": subjects,
-            "total_count": total_count,
-            "has_more": has_more,
-            "limit": limit,
-            "offset": offset
+            "pagination": pagination
         }
 
     except Exception as e:
@@ -1451,14 +1519,16 @@ def materialize_project(project_id: str, batch_size: int = 100) -> Dict[str, int
         raise
 
 
-def delete_subject_terms(subject_id: str, project_id: str = None) -> bool:
+def delete_subject_terms(subject_id: str, project_id: str = None, include_by_subject: bool = True) -> bool:
     """
-    Delete all subject-term records for a specific subject.
-    Called when a subject is removed or needs cleanup.
+    Delete subject-term records for a specific subject.
+    Called when a subject is removed or unlinked from a project.
 
     Args:
         subject_id: The subject ID
         project_id: Optional project ID to limit deletion to specific project
+        include_by_subject: Whether to delete from by_subject table (default True)
+                           Set to False when unlinking from a project but subject still exists
 
     Returns:
         True if successful
@@ -1468,17 +1538,20 @@ def delete_subject_terms(subject_id: str, project_id: str = None) -> bool:
     by_project_term_table = os.environ['ICEBERG_SUBJECT_TERMS_BY_PROJECT_TERM_TABLE']
 
     logger.info(f"Deleting subject-terms for subject {subject_id}" +
-                (f" in project {project_id}" if project_id else ""))
+                (f" in project {project_id}" if project_id else "") +
+                (f" (including by_subject table)" if include_by_subject else " (by_project_term only)"))
 
     try:
-        # Delete from by_subject table (partitioned by subject_id, so efficient)
-        delete_query_1 = f"""
-        DELETE FROM {database_name}.{by_subject_table}
-        WHERE subject_id = '{subject_id}'
-        """
-        _execute_athena_query(delete_query_1)
+        # Delete from by_subject table only if this is the last mapping
+        if include_by_subject:
+            delete_query_1 = f"""
+            DELETE FROM {database_name}.{by_subject_table}
+            WHERE subject_id = '{subject_id}'
+            """
+            _execute_athena_query(delete_query_1)
+            logger.info(f"Deleted from by_subject table for subject {subject_id}")
 
-        # Delete from by_project_term table
+        # Always delete from by_project_term table
         if project_id:
             # More efficient with project_id filter (uses partition)
             delete_query_2 = f"""
@@ -1492,6 +1565,8 @@ def delete_subject_terms(subject_id: str, project_id: str = None) -> bool:
             WHERE subject_id = '{subject_id}'
             """
         _execute_athena_query(delete_query_2)
+        logger.info(f"Deleted from by_project_term table for subject {subject_id}" +
+                   (f" in project {project_id}" if project_id else " (all projects)"))
 
         logger.info(f"Successfully deleted subject-terms for subject {subject_id}")
         return True

@@ -304,7 +304,6 @@ def get_subjects(
     # Route to Iceberg analytical tables if use_cache is enabled
     if use_cache is True:
         from phebee.utils.iceberg import query_subjects_by_project
-        from phebee.utils.hash import generate_termlink_hash
 
         # Convert term IRI to term ID if provided
         term_id = None
@@ -314,62 +313,18 @@ def get_subjects(
             else:
                 term_id = term_iri.split('/')[-1]
 
-        # Query Iceberg analytical tables
+        # Query Iceberg analytical tables with all parameters
         offset = int(cursor) if cursor else 0
-        result = query_subjects_by_project(
+        return query_subjects_by_project(
             project_id=project_id,
             term_id=term_id,
+            term_source=term_source,
+            include_child_terms=include_child_terms,
+            include_qualified=include_qualified,
+            project_subject_ids=project_subject_ids,
             limit=limit,
             offset=offset
         )
-
-        # Convert to expected format
-        subjects = []
-        for subj in result['subjects']:
-            # Build phenotype array
-            phenotypes = []
-            for term in subj.get('terms', []):
-                # Generate termlink_id
-                subject_iri = subj['subject_iri']
-                term_iri_full = term['term_iri']
-                qualifiers = term.get('qualifiers', [])
-                termlink_id = generate_termlink_hash(subject_iri, term_iri_full, qualifiers)
-
-                phenotype = {
-                    "term": {
-                        "iri": term['term_iri'],
-                        "id": term['term_id'],
-                        "label": term.get('term_label') or term['term_id']
-                    },
-                    "qualifiers": qualifiers,
-                    "termlink_id": termlink_id,
-                    "evidence_count": term.get('evidence_count', 0),
-                    "first_evidence_date": term.get('first_evidence_date'),
-                    "last_evidence_date": term.get('last_evidence_date')
-                }
-                phenotypes.append(phenotype)
-
-            subject_data = {
-                "subject_iri": subj['subject_iri'],
-                "project_subject_id": subj['project_subject_id'],
-                "phenotypes": phenotypes
-            }
-            subjects.append(subject_data)
-
-        # Build pagination info
-        next_cursor = str(offset + len(subjects)) if result['has_more'] else None
-        pagination = {
-            "limit": limit,
-            "cursor": cursor,
-            "next_cursor": next_cursor,
-            "has_more": result['has_more'],
-            "total_count": result['total_count']
-        }
-
-        return {
-            "subjects": subjects,
-            "pagination": pagination
-        }
 
     # Track if we originally had specific subject IDs
     has_specific_subjects = bool(project_subject_ids)
@@ -687,14 +642,18 @@ def get_term_links_with_counts(
 ) -> list[dict]:
     """
     Query Iceberg for term links with evidence counts, grouped by term + qualifiers.
-    
+
+    Uses the pre-aggregated subject_terms_by_subject table when no encounter/note filters
+    are provided for optimal performance. Falls back to evidence table aggregation when
+    granular filtering is needed.
+
     Args:
         subject_id: The subject UUID
-        encounter_id: Optional encounter filter
-        note_id: Optional clinical note filter  
+        encounter_id: Optional encounter filter (forces evidence table query)
+        note_id: Optional clinical note filter (forces evidence table query)
         hpo_version: HPO version (for future term label lookup)
         mondo_version: MONDO version (for future term label lookup)
-    
+
     Returns:
       [
         {
@@ -706,16 +665,40 @@ def get_term_links_with_counts(
         ...
       ]
     """
+    # Optimization: Use pre-aggregated subject_terms_by_subject table when no granular filtering needed
+    if not encounter_id and not note_id:
+        from phebee.utils.iceberg import query_subject_by_id
+
+        try:
+            results = query_subject_by_id(subject_id)
+
+            # Convert to expected format
+            terms = []
+            for row in results:
+                terms.append({
+                    "term_iri": row["term_iri"],
+                    "term_label": row.get("term_label"),
+                    "qualifiers": row.get("qualifiers", []),
+                    "evidence_count": row.get("evidence_count", 0)
+                })
+
+            return terms
+
+        except Exception as e:
+            logger.error(f"Error querying subject_terms_by_subject for subject {subject_id}: {e}")
+            raise
+
+    # Fall back to evidence table for granular encounter/note filtering
     from phebee.utils.iceberg import query_iceberg_evidence
-    
+
     # Build filter conditions
     filters = [f"subject_id = '{subject_id}'"]
-    
+
     if encounter_id:
         filters.append(f"encounter_id = '{encounter_id}'")
     if note_id:
         filters.append(f"clinical_note_id = '{note_id}'")
-    
+
     where_clause = " AND ".join(filters)
     
     # Get database name from environment

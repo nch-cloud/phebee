@@ -1,7 +1,7 @@
 from aws_lambda_powertools import Metrics, Logger, Tracer
-from phebee.utils.sparql import get_subject, get_term_links_with_counts
+from phebee.utils.iceberg import query_subject_by_id
 from phebee.utils.aws import extract_body
-from phebee.utils.dynamodb import get_current_term_source_version
+from phebee.utils.dynamodb import get_current_term_source_version, get_subject_id, _get_table_name
 import json
 
 logger = Logger()
@@ -51,42 +51,58 @@ def lambda_handler(event, context):
 
 
 def get_subject_info_by_project_iri(project_subject_iri: str):
-    """Get subject info using project-scoped IRI (requires SPARQL lookup)."""
-    # Retrieve the IRI for the subject node in our graph associated to the given project with the given project-subject id
-    subject = get_subject(project_subject_iri)
-    if subject is None:
+    """Get subject info using project-scoped IRI (uses DynamoDB lookup)."""
+    # Extract project_id and project_subject_id from IRI
+    # Format: http://ods.nationwidechildrens.org/phebee/projects/{project_id}/{project_subject_id}
+    parts = project_subject_iri.rstrip('/').split('/')
+    if len(parts) < 2:
+        logger.error(f"Invalid project_subject_iri format: {project_subject_iri}")
         return None
-    
-    # Extract subject_id from the subject IRI
-    subject_id = subject["subject_iri"].split("/")[-1]
-    
-    # Get the full subject info with terms
-    return get_subject_info_by_id(subject_id, base_subject=subject)
 
+    project_subject_id = parts[-1]
+    project_id = parts[-2]
 
-def get_subject_info_by_id(subject_id: str, base_subject: dict = None):
-    """Get subject info using internal subject ID (direct to Iceberg)."""
-    # Query Iceberg for term links with evidence counts
-    hpo_version = get_current_term_source_version("hpo")
-    mondo_version = get_current_term_source_version("mondo")
+    # Look up subject_id from DynamoDB mapping
+    table_name = _get_table_name()
+    subject_id = get_subject_id(table_name, project_id, project_subject_id)
 
-    # Use the new Iceberg-based version with subject_id
-    terms = get_term_links_with_counts(subject_id, hpo_version=hpo_version, mondo_version=mondo_version)
-    
-    if base_subject:
-        # We already have subject metadata from SPARQL lookup
-        subject = base_subject.copy()
-        # Ensure subject_id is included for consistency
-        if "subject_id" not in subject:
-            subject["subject_id"] = subject["subject_iri"].split("/")[-1]
-    else:
-        # We only have subject_id, so create minimal subject info
+    if not subject_id:
+        logger.info(f"No subject found for project_id={project_id}, project_subject_id={project_subject_id}")
+        return None
+
+    # Get the full subject info with terms from Iceberg
+    subject = get_subject_info_by_id(subject_id)
+
+    # If subject exists in DynamoDB but has no terms yet, return it with empty terms
+    if subject is None:
         subject = {
             "subject_iri": f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}",
-            "subject_id": subject_id
+            "subject_id": subject_id,
+            "terms": []
         }
-    
-    subject["terms"] = terms
+
+    # Add project_subject_iri to response when queried via that path
+    subject["project_subject_iri"] = project_subject_iri
+
+    return subject
+
+
+def get_subject_info_by_id(subject_id: str):
+    """Get subject info using internal subject ID (direct to Iceberg)."""
+    # Query Iceberg for terms using pre-aggregated subject_terms_by_subject table
+    terms = query_subject_by_id(subject_id)
+
+    if not terms:
+        # No terms found - subject may not exist
+        return None
+
+    # Build subject info
+    subject = {
+        "subject_iri": f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}",
+        "subject_id": subject_id,
+        "terms": terms
+    }
+
     return subject
 
 
