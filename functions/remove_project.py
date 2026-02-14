@@ -43,28 +43,26 @@ def lambda_handler(event, context):
 
         subjects_to_unlink = []
         try:
+            # Query forward mappings: PK='PROJECT#{project_id}', SK='SUBJECT#{project_subject_id}'
             response = table.query(
-                IndexName='GSI1',
-                KeyConditionExpression='GSI1PK = :pk',
+                KeyConditionExpression='PK = :pk',
                 ExpressionAttributeValues={':pk': f'PROJECT#{project_id}'}
             )
 
             for item in response.get('Items', []):
-                # Parse PK: "SUBJECT#{subject_id}"
-                pk = item.get('PK', '')
-                if pk.startswith('SUBJECT#'):
-                    subject_id = pk.split('#', 1)[1]
-                    # Parse SK: "PROJECT#{project_id}#SUBJECT#{project_subject_id}"
-                    sk = item.get('SK', '')
-                    sk_parts = sk.split('#')
-                    if len(sk_parts) >= 4:
-                        project_subject_id = sk_parts[3]
+                # Parse SK: "SUBJECT#{project_subject_id}"
+                sk = item.get('SK', '')
+                if sk.startswith('SUBJECT#'):
+                    project_subject_id = sk.split('#', 1)[1]
+                    subject_id = item.get('subject_id', '')
+                    if subject_id:
                         subjects_to_unlink.append({
                             "subject_id": subject_id,
                             "project_subject_id": project_subject_id
                         })
 
             logger.info(f"Found {len(subjects_to_unlink)} subjects to unlink from project {project_id}")
+            logger.info(f"Subjects list: {subjects_to_unlink}")
         except Exception as e:
             logger.error(f"Error querying subjects for project {project_id}: {e}")
             # Continue with project deletion even if subject query fails
@@ -77,17 +75,20 @@ def lambda_handler(event, context):
             try:
                 logger.info(f"Unlinking subject {subject_id} (project_subject_id: {project_subject_id})")
 
-                # 2a. Delete DynamoDB mappings
-                with table.batch_writer() as batch:
-                    batch.delete_item(Key={'PK': f'PROJECT#{project_id}', 'SK': f'SUBJECT#{project_subject_id}'})
-                    batch.delete_item(Key={'PK': f'SUBJECT#{subject_id}', 'SK': f'PROJECT#{project_id}#SUBJECT#{project_subject_id}'})
-
-                # 2b. Check if this was the subject's last project mapping
+                # 2a. Check if this is the subject's last project mapping BEFORE deleting
                 response = table.query(
                     KeyConditionExpression='PK = :pk',
                     ExpressionAttributeValues={':pk': f'SUBJECT#{subject_id}'}
                 )
-                is_last_mapping = len(response.get('Items', [])) == 0
+                remaining_items = response.get('Items', [])
+                # Subject will be orphaned if only 1 mapping remains (the one we're about to delete)
+                is_last_mapping = len(remaining_items) == 1
+                logger.info(f"Subject {subject_id}: remaining_mappings={len(remaining_items)}, is_last_mapping={is_last_mapping}")
+
+                # 2b. Delete DynamoDB mappings
+                with table.batch_writer() as batch:
+                    batch.delete_item(Key={'PK': f'PROJECT#{project_id}', 'SK': f'SUBJECT#{project_subject_id}'})
+                    batch.delete_item(Key={'PK': f'SUBJECT#{subject_id}', 'SK': f'PROJECT#{project_id}#SUBJECT#{project_subject_id}'})
 
                 # 2c. If last mapping, cascade delete evidence
                 termlink_data_to_delete = []

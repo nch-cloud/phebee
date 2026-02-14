@@ -588,12 +588,17 @@ def update_subject_terms_for_evidence(
 
         # Update by_project_term table for ALL projects that have this subject
         # This ensures consistency since evidence is project-agnostic
-        project_ids_to_update = get_projects_for_subject(subject_id)
-        if not project_ids_to_update:
+        from phebee.utils.dynamodb import get_project_subjects, _get_table_name
+        table_name = _get_table_name()
+        project_subject_pairs = get_project_subjects(table_name, subject_id)
+        if not project_subject_pairs:
             raise ValueError(f"Subject {subject_id} has no associated projects in DynamoDB - data consistency error")
 
         # Update each project with the same evidence count
-        for pid in project_ids_to_update:
+        for pid, psid in project_subject_pairs:
+            # Build correct project_subject_iri for this project
+            proj_subject_iri = f"http://ods.nationwidechildrens.org/phebee/projects/{pid}/{psid}"
+
             # Use DELETE + INSERT pattern (no need to check if row exists first)
             delete_by_project = f"""
             DELETE FROM {database_name}.{by_project_term_table}
@@ -604,9 +609,9 @@ def update_subject_terms_for_evidence(
             INSERT INTO {database_name}.{by_project_term_table} VALUES (
                 '{pid}',
                 '{subject_id}',
-                '{subject_id}',
+                '{psid}',
                 '{subject_iri}',
-                '{project_subject_iri}',
+                '{proj_subject_iri}',
                 '{term_iri}',
                 '{term_id}',
                 CAST(NULL AS VARCHAR),
@@ -621,7 +626,7 @@ def update_subject_terms_for_evidence(
             _execute_athena_query(delete_by_project)
             _execute_athena_query(insert_by_project)
 
-        logger.info(f"Updated subject-terms analytical tables for termlink {termlink_id} across {len(project_ids_to_update)} project(s)")
+        logger.info(f"Updated subject-terms analytical tables for termlink {termlink_id} across {len(project_subject_pairs)} project(s)")
 
     except Exception as e:
         logger.error(f"Error updating subject-terms for evidence: {e}")
@@ -676,7 +681,8 @@ def remove_subject_terms_for_evidence(
             logger.info(f"Deleted by_project_term rows for termlink {termlink_id} (all projects)")
 
         else:
-            # Decrement evidence_count and update last_evidence_date using UPDATE
+            # Decrement evidence_count and update last_evidence_date using DELETE + INSERT
+            # Use same pattern as update_subject_terms_for_evidence for consistency
 
             # Query for the latest evidence date from remaining evidence
             evidence_table = os.environ['ICEBERG_EVIDENCE_TABLE']
@@ -687,36 +693,130 @@ def remove_subject_terms_for_evidence(
             """
             latest_result = query_iceberg_evidence(latest_date_query)
 
-            # Get the latest date, or use a default if no results
+            # Get the latest date
             if latest_result and latest_result[0].get('latest_date'):
                 last_date = latest_result[0]['latest_date']
-                last_date_sql = f"DATE '{last_date}'"
             else:
-                # If no evidence found, keep the existing first_evidence_date as last_evidence_date
-                last_date_sql = "first_evidence_date"
+                # If no evidence found, use today's date
+                from datetime import datetime
+                last_date = datetime.utcnow().date().isoformat()
 
-            # Update by_subject table
-            update_by_subject = f"""
-            UPDATE {database_name}.{by_subject_table}
-            SET evidence_count = {evidence_count_remaining},
-                last_evidence_date = {last_date_sql}
+            # Get existing data for by_subject table to preserve other fields
+            check_query_subject = f"""
+            SELECT subject_iri, term_iri, term_id, term_label, qualifiers, first_evidence_date
+            FROM {database_name}.{by_subject_table}
             WHERE subject_id = '{subject_id}' AND termlink_id = '{termlink_id}'
             """
-            _execute_athena_query(update_by_subject)
-            logger.info(f"Decremented by_subject evidence_count to {evidence_count_remaining} for termlink {termlink_id}")
+            existing_subject = query_iceberg_evidence(check_query_subject)
 
-            # Update by_project_term table for ALL projects
-            update_by_project = f"""
-            UPDATE {database_name}.{by_project_term_table}
-            SET evidence_count = {evidence_count_remaining},
-                last_evidence_date = {last_date_sql}
-            WHERE subject_id = '{subject_id}'
-              AND termlink_id = '{termlink_id}'
-            """
-            _execute_athena_query(update_by_project)
+            if existing_subject and len(existing_subject) > 0:
+                row = existing_subject[0]
+                subject_iri = row.get('subject_iri')
+                term_iri = row.get('term_iri')
+                term_id = row.get('term_id')
+                term_label = row.get('term_label')
+                first_date = row.get('first_evidence_date')
 
-            # Log which projects were updated (project_ids already retrieved at function start)
-            logger.info(f"Decremented by_project_term evidence_count to {evidence_count_remaining} across {len(project_ids)} project(s)")
+                # Parse qualifiers array
+                qualifiers_str = row.get('qualifiers')
+                qualifiers_sql = "ARRAY[]"
+                if qualifiers_str and qualifiers_str != '[]' and qualifiers_str != 'null':
+                    # Parse array format like ['negated', 'severity_moderate']
+                    qualifiers_str = qualifiers_str.strip('[]')
+                    if qualifiers_str:
+                        qualifiers_list = [q.strip().strip("'\"") for q in qualifiers_str.split(',')]
+                        escaped_qualifiers = [q.replace("'", "''") for q in qualifiers_list]
+                        qualifier_strings = [f"'{q}'" for q in escaped_qualifiers]
+                        qualifiers_sql = f"ARRAY[{', '.join(qualifier_strings)}]"
+
+                # Delete and reinsert for by_subject table
+                delete_by_subject = f"""
+                DELETE FROM {database_name}.{by_subject_table}
+                WHERE subject_id = '{subject_id}' AND termlink_id = '{termlink_id}'
+                """
+
+                insert_by_subject = f"""
+                INSERT INTO {database_name}.{by_subject_table} VALUES (
+                    '{subject_id}',
+                    '{subject_iri}',
+                    '{term_iri}',
+                    '{term_id}',
+                    {f"'{term_label}'" if term_label else 'CAST(NULL AS VARCHAR)'},
+                    {qualifiers_sql},
+                    {evidence_count_remaining},
+                    '{termlink_id}',
+                    DATE '{first_date}',
+                    DATE '{last_date}'
+                )
+                """
+
+                _execute_athena_query(delete_by_subject)
+                _execute_athena_query(insert_by_subject)
+                logger.info(f"Decremented by_subject evidence_count to {evidence_count_remaining} for termlink {termlink_id}")
+
+            # Update by_project_term table for ALL projects using DELETE + INSERT
+            from phebee.utils.dynamodb import get_project_subjects, _get_table_name
+            table_name = _get_table_name()
+            project_subject_pairs = get_project_subjects(table_name, subject_id)
+
+            for pid, psid in project_subject_pairs:
+                # Get existing data for this project
+                check_query_project = f"""
+                SELECT project_subject_iri, subject_iri, term_iri, term_id, term_label, qualifiers, first_evidence_date
+                FROM {database_name}.{by_project_term_table}
+                WHERE project_id = '{pid}' AND subject_id = '{subject_id}' AND termlink_id = '{termlink_id}'
+                """
+                existing_project = query_iceberg_evidence(check_query_project)
+
+                if existing_project and len(existing_project) > 0:
+                    proj_row = existing_project[0]
+                    proj_subject_iri_stored = proj_row.get('project_subject_iri')
+                    proj_subject_iri = proj_subject_iri_stored if proj_subject_iri_stored else f"http://ods.nationwidechildrens.org/phebee/projects/{pid}/{psid}"
+                    proj_term_iri = proj_row.get('term_iri')
+                    proj_term_id = proj_row.get('term_id')
+                    proj_term_label = proj_row.get('term_label')
+                    proj_first_date = proj_row.get('first_evidence_date')
+                    proj_subject_iri_base = proj_row.get('subject_iri')
+
+                    # Parse qualifiers
+                    proj_qualifiers_str = proj_row.get('qualifiers')
+                    proj_qualifiers_sql = "ARRAY[]"
+                    if proj_qualifiers_str and proj_qualifiers_str != '[]' and proj_qualifiers_str != 'null':
+                        proj_qualifiers_str = proj_qualifiers_str.strip('[]')
+                        if proj_qualifiers_str:
+                            proj_qualifiers_list = [q.strip().strip("'\"") for q in proj_qualifiers_str.split(',')]
+                            proj_escaped_qualifiers = [q.replace("'", "''") for q in proj_qualifiers_list]
+                            proj_qualifier_strings = [f"'{q}'" for q in proj_escaped_qualifiers]
+                            proj_qualifiers_sql = f"ARRAY[{', '.join(proj_qualifier_strings)}]"
+
+                    # Delete and reinsert for by_project_term table
+                    delete_by_project = f"""
+                    DELETE FROM {database_name}.{by_project_term_table}
+                    WHERE project_id = '{pid}' AND subject_id = '{subject_id}' AND termlink_id = '{termlink_id}'
+                    """
+
+                    insert_by_project = f"""
+                    INSERT INTO {database_name}.{by_project_term_table} VALUES (
+                        '{pid}',
+                        '{subject_id}',
+                        '{psid}',
+                        '{proj_subject_iri_base}',
+                        '{proj_subject_iri}',
+                        '{proj_term_iri}',
+                        '{proj_term_id}',
+                        {f"'{proj_term_label}'" if proj_term_label else 'CAST(NULL AS VARCHAR)'},
+                        {proj_qualifiers_sql},
+                        {evidence_count_remaining},
+                        '{termlink_id}',
+                        DATE '{proj_first_date}',
+                        DATE '{last_date}'
+                    )
+                    """
+
+                    _execute_athena_query(delete_by_project)
+                    _execute_athena_query(insert_by_project)
+
+            logger.info(f"Decremented by_project_term evidence_count to {evidence_count_remaining} across {len(project_subject_pairs)} project(s)")
 
     except Exception as e:
         logger.error(f"Error removing subject-terms for evidence: {e}")

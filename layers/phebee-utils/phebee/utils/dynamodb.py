@@ -147,7 +147,8 @@ def get_project_subjects(table_name: str, subject_id: str, region: str = 'us-eas
     try:
         response = table.query(
             KeyConditionExpression='PK = :pk',
-            ExpressionAttributeValues={':pk': f'SUBJECT#{subject_id}'}
+            ExpressionAttributeValues={':pk': f'SUBJECT#{subject_id}'},
+            ConsistentRead=True
         )
 
         pairs = []

@@ -142,6 +142,7 @@ def lambda_handler(event, context):
             "evidence_type": evidence_type,
             "subject_id": subject_id,
             "term_iri": term_iri,
+            "termlink_id": termlink_id,
             "creator": creator,
             "created_timestamp": created_timestamp
         }
