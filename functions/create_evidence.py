@@ -64,9 +64,26 @@ def lambda_handler(event, context):
         created_timestamp = now.isoformat()
         created_date = now.date().isoformat()
 
+        # Convert qualifiers dict to list format for hash generation
+        # Qualifiers can be provided as either a dict {"iri": true/false} or a list ["iri"]
+        qualifier_list = []
+        if qualifiers:
+            if isinstance(qualifiers, dict):
+                # Convert dict to list of "key:value" strings, filtering out false values
+                for qualifier_iri, qualifier_value in qualifiers.items():
+                    if qualifier_value not in [False, "false", "0", 0, 0.0]:
+                        # Include active qualifiers as "iri:true"
+                        qualifier_list.append(f"{qualifier_iri}:true")
+            elif isinstance(qualifiers, list):
+                # List format - assume already in proper format or just IRIs
+                qualifier_list = qualifiers
+            else:
+                logger.warning(f"Unexpected qualifiers type: {type(qualifiers)}")
+                qualifier_list = []
+
         # Compute termlink_id using the same logic as create_evidence_record
         subject_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"
-        termlink_id = generate_termlink_hash(subject_iri, term_iri, qualifiers or [])
+        termlink_id = generate_termlink_hash(subject_iri, term_iri, qualifier_list)
 
         # Create evidence record in Iceberg
         evidence_id = create_evidence_record(
@@ -82,7 +99,7 @@ def lambda_handler(event, context):
             clinical_note_id=clinical_note_id,
             span_start=span_start,
             span_end=span_end,
-            qualifiers=qualifiers,
+            qualifiers=qualifier_list,
             note_timestamp=note_timestamp,
             provider_type=provider_type,
             author_specialty=author_specialty,
@@ -96,13 +113,16 @@ def lambda_handler(event, context):
             creator_iri = f"http://ods.nationwidechildrens.org/phebee/creators/{creator_id}"
 
             # Convert qualifier strings to IRIs if needed
+            # qualifier_list is in format ["iri:true", "iri:true"]
             qualifier_iris = []
-            for q in (qualifiers or []):
-                if q.startswith('http://') or q.startswith('https://'):
-                    qualifier_iris.append(q)
+            for q in qualifier_list:
+                # Extract IRI from "iri:value" format (split from right to handle URLs with colons)
+                qualifier_iri = q.rsplit(":", 1)[0] if ":" in q else q
+                if qualifier_iri.startswith('http://') or qualifier_iri.startswith('https://'):
+                    qualifier_iris.append(qualifier_iri)
                 else:
                     # Assume qualifier is a short name, convert to IRI
-                    qualifier_iris.append(f"http://ods.nationwidechildrens.org/phebee/qualifier/{q}")
+                    qualifier_iris.append(f"http://ods.nationwidechildrens.org/phebee/qualifier/{qualifier_iri}")
 
             result = create_term_link(
                 subject_iri=subject_iri,
@@ -126,7 +146,7 @@ def lambda_handler(event, context):
                 subject_id=subject_id,
                 term_iri=term_iri,
                 termlink_id=termlink_id,
-                qualifiers=qualifiers or [],
+                qualifiers=qualifier_list,
                 created_date=created_date
             )
             logger.info(f"Updated subject-terms analytical tables for termlink {termlink_id}")

@@ -103,6 +103,12 @@ def cloudformation_stack(request, aws_session, profile_name):
     This fixture sets up the necessary CloudFormation stack before running tests.
     It yields the stack name so that tests can verify the stack's creation and resources.
     After all tests are run, the stack is deleted to clean up the environment.
+
+    Stack name resolution order:
+    1. --existing-stack command line argument
+    2. .phebee-test-stack file in project root (if exists)
+    3. Generate new stack name and deploy
+
     Yields:
         str: The name of the CloudFormation stack.
     """
@@ -111,6 +117,17 @@ def cloudformation_stack(request, aws_session, profile_name):
     cf_client = get_client("cloudformation")
 
     existing_stack = request.config.getoption("--existing-stack")
+
+    # If --existing-stack not provided, check for config file
+    if not existing_stack:
+        config_file_path = os.path.join(os.getcwd(), ".phebee-test-stack")
+        if os.path.exists(config_file_path):
+            with open(config_file_path, "r") as f:
+                stack_from_file = f.read().strip()
+                if stack_from_file:
+                    existing_stack = stack_from_file
+                    print(f"Using stack from .phebee-test-stack config file: {existing_stack}")
+
     config_env = request.config.getoption("--config-env")
     stack_uuid = str(uuid.uuid4())[-3:]
     stack_name = f"phebee-it-{stack_uuid}" if not existing_stack else existing_stack
@@ -273,6 +290,16 @@ def physical_resources(aws_session, cloudformation_stack):
             if not next_token:
                 break  # No more pages to retrieve, exit the loop
 
+        # Also fetch Stack Outputs (needed for State Machine ARNs, etc.)
+        outputs_response = cf_client.describe_stacks(StackName=cloudformation_stack)
+        outputs = outputs_response["Stacks"][0].get("Outputs", [])
+
+        for output in outputs:
+            output_key = output["OutputKey"]
+            output_value = output["OutputValue"]
+            # Add outputs to resource mapping (they're referenced by OutputKey)
+            resource_mapping[output_key] = output_value
+
         # Yield the complete resource mapping
         yield resource_mapping
 
@@ -327,22 +354,26 @@ def update_eco(request, cloudformation_stack, physical_resources):
 
 @pytest.fixture
 def test_project_id(cloudformation_stack):
+    import time
     lambda_client = get_client("lambda")
     project_id = f"test_project_{uuid.uuid4().hex[:8]}"
     payload = {"project_id": project_id, "project_label": "Lambda-Initiated Project"}
 
-    print(f"Test project id: {project_id}")
+    print(f"\n[TIMING] Test project id: {project_id}")
 
     # Create the project by invoking the deployed Lambda
+    create_start = time.time()
     create_response = lambda_client.invoke(
         FunctionName=f"{cloudformation_stack}-CreateProjectFunction",  # adjust if you've named it
         InvocationType="RequestResponse",
         Payload=json.dumps({"body": json.dumps(payload)}),
     )
+    create_elapsed = time.time() - create_start
+    print(f"[TIMING] Project creation took {create_elapsed:.2f} seconds")
 
     lambda_response = json.loads(create_response["Payload"].read().decode("utf-8"))
     assert create_response["StatusCode"] == 200, f"Invoke failed: {lambda_response}"
-    
+
     # Handle both direct response and API Gateway format
     if "statusCode" in lambda_response:
         assert lambda_response["statusCode"] == 200, f"Lambda failed: {lambda_response}"
@@ -350,21 +381,11 @@ def test_project_id(cloudformation_stack):
     else:
         # Direct Lambda response
         body = lambda_response
-    
+
     assert body.get("project_created") is True
 
     yield body.get("project_id")
-
-    # Teardown
-    delete_response = lambda_client.invoke(
-        FunctionName=f"{cloudformation_stack}-RemoveProjectFunction",
-        InvocationType="RequestResponse",
-        Payload=json.dumps({"body": json.dumps({"project_id": project_id})}),
-    )
-
-    result = json.loads(delete_response["Payload"].read().decode("utf-8"))
-    if delete_response["StatusCode"] != 200:
-        print(f"WARNING: Teardown failed: {result}")
+    # No teardown - cleanup deferred to end of session
 
 
 @pytest.fixture
@@ -585,7 +606,52 @@ def num_subjects(request):
     return request.config.getoption("--num-subjects")
 
 
-@pytest.fixture(scope="session") 
+@pytest.fixture(scope="session")
 def num_terms(request):
     """Number of terms/notes per subject for performance tests"""
     return request.config.getoption("--num-terms")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def cleanup_test_data(request, cloudformation_stack):
+    """
+    Session-scoped fixture that performs cleanup after all tests complete.
+    Wipes all test data from Neptune and Iceberg at the end of the session.
+    """
+    yield  # Let all tests run first
+
+    # Only run cleanup if not using an existing stack (to avoid wiping production data)
+    existing_stack = request.config.getoption("--existing-stack")
+    if not existing_stack:
+        # Check for config file
+        import os
+        config_file_path = os.path.join(os.getcwd(), ".phebee-test-stack")
+        if os.path.exists(config_file_path):
+            with open(config_file_path, "r") as f:
+                if f.read().strip():
+                    existing_stack = True
+
+    if existing_stack:
+        print("\n[CLEANUP] Skipping database cleanup for existing stack")
+        return
+
+    print("\n[CLEANUP] Wiping all test data from Neptune and Iceberg...")
+    import time
+    cleanup_start = time.time()
+
+    lambda_client = get_client("lambda")
+    try:
+        response = lambda_client.invoke(
+            FunctionName=f"{cloudformation_stack}-ResetDatabaseFunction",
+            InvocationType="RequestResponse",
+            Payload=json.dumps({}).encode("utf-8")
+        )
+        result = json.loads(response["Payload"].read().decode("utf-8"))
+        cleanup_elapsed = time.time() - cleanup_start
+
+        if response["StatusCode"] == 200:
+            print(f"[CLEANUP] Database cleanup completed in {cleanup_elapsed:.2f} seconds")
+        else:
+            print(f"[CLEANUP] WARNING: Database cleanup failed: {result}")
+    except Exception as e:
+        print(f"[CLEANUP] ERROR: Database cleanup failed with exception: {e}")

@@ -188,68 +188,57 @@ def test_create_project_already_exists(physical_resources):
             print(f"Warning: Cleanup failed: {e}")
 
 
-def test_create_project_missing_project_id(physical_resources):
+@pytest.mark.parametrize("payload,expected_error_keywords", [
+    pytest.param(
+        {"project_label": "Test Project"},
+        ["project_id", "missing", "required"],
+        id="missing_project_id"
+    ),
+    pytest.param(
+        {"project_id": "test-project-002"},
+        ["project_label", "missing", "required"],
+        id="missing_project_label"
+    ),
+    pytest.param(
+        {},
+        ["missing", "required"],
+        id="missing_both_fields"
+    ),
+    pytest.param(
+        {"project_id": "", "project_label": ""},
+        ["missing", "required", "empty"],
+        id="empty_strings"
+    ),
+])
+def test_create_project_validation_errors(physical_resources, payload, expected_error_keywords):
     """
-    Test 3: Missing Required Field - project_id
+    Tests 3-5, 9: Validation of required fields.
 
-    Verifies that omitting project_id results in a 400 error.
+    Verifies that missing or empty required fields result in 400 errors
+    with appropriate error messages.
+
+    Parameterized test cases:
+    - missing_project_id: Only project_label provided
+    - missing_project_label: Only project_id provided
+    - missing_both_fields: Empty payload
+    - empty_strings: Empty strings for both fields
     """
     lambda_client = get_client("lambda")
 
     response = lambda_client.invoke(
         FunctionName=physical_resources["CreateProjectFunction"],
-        Payload=json.dumps({
-            "project_label": "Test Project"
-        }).encode("utf-8")
+        Payload=json.dumps(payload).encode("utf-8")
     )
 
     result = json.loads(response["Payload"].read())
 
     assert result["statusCode"] == 400, f"Expected 400, got {result['statusCode']}"
     body = json.loads(result["body"])
-    assert "missing" in body["message"].lower() or "required" in body["message"].lower()
 
-
-def test_create_project_missing_project_label(physical_resources):
-    """
-    Test 4: Missing Required Field - project_label
-
-    Verifies that omitting project_label results in a 400 error.
-    """
-    lambda_client = get_client("lambda")
-
-    response = lambda_client.invoke(
-        FunctionName=physical_resources["CreateProjectFunction"],
-        Payload=json.dumps({
-            "project_id": "test-project-002"
-        }).encode("utf-8")
-    )
-
-    result = json.loads(response["Payload"].read())
-
-    assert result["statusCode"] == 400, f"Expected 400, got {result['statusCode']}"
-    body = json.loads(result["body"])
-    assert "missing" in body["message"].lower() or "required" in body["message"].lower()
-
-
-def test_create_project_missing_both_fields(physical_resources):
-    """
-    Test 5: Missing Both Required Fields
-
-    Verifies that an empty payload results in a 400 error.
-    """
-    lambda_client = get_client("lambda")
-
-    response = lambda_client.invoke(
-        FunctionName=physical_resources["CreateProjectFunction"],
-        Payload=json.dumps({}).encode("utf-8")
-    )
-
-    result = json.loads(response["Payload"].read())
-
-    assert result["statusCode"] == 400, f"Expected 400, got {result['statusCode']}"
-    body = json.loads(result["body"])
-    assert "missing" in body["message"].lower() or "required" in body["message"].lower()
+    # Check that at least one expected keyword is in the error message
+    message_lower = body["message"].lower()
+    assert any(keyword in message_lower for keyword in expected_error_keywords), \
+        f"Expected one of {expected_error_keywords} in error message: {body['message']}"
 
 
 def test_create_project_special_characters(physical_resources):
@@ -339,31 +328,6 @@ def test_create_project_long_id(physical_resources):
                 remove_project(long_id, physical_resources)
             except Exception as e:
                 print(f"Warning: Cleanup failed: {e}")
-
-
-def test_create_project_empty_strings(physical_resources):
-    """
-    Test 9: Empty String Values
-
-    Verifies that empty strings for project_id and project_label are
-    treated as missing fields and result in a 400 error.
-    """
-    lambda_client = get_client("lambda")
-
-    response = lambda_client.invoke(
-        FunctionName=physical_resources["CreateProjectFunction"],
-        Payload=json.dumps({
-            "project_id": "",
-            "project_label": ""
-        }).encode("utf-8")
-    )
-
-    result = json.loads(response["Payload"].read())
-
-    assert result["statusCode"] == 400, f"Expected 400, got {result['statusCode']}"
-    body = json.loads(result["body"])
-    assert "missing" in body["message"].lower() or "required" in body["message"].lower() \
-        or "empty" in body["message"].lower()
 
 
 def test_create_project_concurrent(physical_resources):

@@ -233,14 +233,11 @@ def test_remove_project_single_subject_cascade(
     # Remove project
     result = invoke_remove_project(project_id)
 
-    # Assertions
-    assert result["statusCode"] == 200
+    # Assertions - should succeed (failures now raise exceptions instead of silently succeeding)
+    assert result["statusCode"] == 200, f"Expected 200, got {result['statusCode']}: {result.get('body', '')}"
     body = json.loads(result["body"])
     assert "successfully removed" in body["message"].lower()
     assert project_id in body["message"]
-
-    # Wait for deletions to propagate
-    time.sleep(5)
 
     # Verify DynamoDB: query should be empty
     final_project_items = query_subjects_in_project(table_name, project_id)
@@ -318,13 +315,10 @@ def test_remove_project_multiple_subjects_cascade(
     # Remove project
     result = invoke_remove_project(project_id)
 
-    # Assertions
-    assert result["statusCode"] == 200
+    # Assertions - should succeed (failures now raise exceptions instead of silently succeeding)
+    assert result["statusCode"] == 200, f"Expected 200, got {result['statusCode']}: {result.get('body', '')}"
     body = json.loads(result["body"])
     assert "successfully removed" in body["message"].lower()
-
-    # Wait for deletions to propagate
-    time.sleep(5)
 
     # Verify DynamoDB: query empty
     final_project_items = query_subjects_in_project(table_name, project_id)
@@ -435,11 +429,8 @@ def test_remove_project_shared_subjects(
     # Remove project-A
     result = invoke_remove_project(project_a_id)
 
-    # Assertions
-    assert result["statusCode"] == 200
-
-    # Wait for deletions
-    time.sleep(5)
+    # Assertions - should succeed (failures now raise exceptions instead of silently succeeding)
+    assert result["statusCode"] == 200, f"Expected 200, got {result['statusCode']}: {result.get('body', '')}"
 
     # Verify project-A mappings deleted
     project_items_a_final = query_subjects_in_project(table_name, project_a_id)
@@ -513,68 +504,54 @@ def test_remove_project_not_found(invoke_remove_project, query_athena):
     assert len(project_items) == 0, "No subjects should exist for non-existent project"
 
 
-def test_remove_project_missing_project_id(physical_resources):
+@pytest.mark.parametrize("payload_type,expected_keywords", [
+    pytest.param("missing", ["project_id", "required"], id="missing_project_id"),
+    pytest.param("null", ["project_id"], id="null_project_id"),
+    pytest.param("empty", [], id="empty_string_project_id"),
+])
+def test_remove_project_validation_errors(physical_resources, invoke_remove_project, payload_type, expected_keywords):
     """
-    Test 5: Missing Required Field - project_id
+    Tests 5-7: Validation of required project_id field.
 
-    Invoke lambda without project_id parameter.
-    """
-    lambda_client = boto3.client("lambda")
-    function_name = physical_resources["RemoveProjectFunction"]
+    Verifies that missing, null, or empty project_id results in 400 error
+    (or 200 for empty string if treated as idempotent on empty).
 
-    # Invoke with empty payload
-    payload = {"body": json.dumps({})}
-    response = lambda_client.invoke(
-        FunctionName=function_name,
-        Payload=json.dumps(payload).encode("utf-8")
-    )
-
-    result = json.loads(response["Payload"].read())
-
-    # Assertions
-    assert result["statusCode"] == 400
-    body = json.loads(result["body"])
-    assert "project_id" in body["error"].lower()
-    assert "required" in body["error"].lower()
-
-
-def test_remove_project_null_project_id(physical_resources):
-    """
-    Test 6: Remove Project with Null project_id
-
-    Invoke lambda with null project_id.
+    Parameterized test cases:
+    - missing_project_id: No project_id in payload
+    - null_project_id: project_id is None
+    - empty_string_project_id: project_id is empty string
     """
     lambda_client = boto3.client("lambda")
     function_name = physical_resources["RemoveProjectFunction"]
 
-    # Invoke with null project_id
-    payload = {"body": json.dumps({"project_id": None})}
-    response = lambda_client.invoke(
-        FunctionName=function_name,
-        Payload=json.dumps(payload).encode("utf-8")
-    )
-
-    result = json.loads(response["Payload"].read())
-
-    # Assertions
-    assert result["statusCode"] == 400
-    body = json.loads(result["body"])
-    assert "project_id" in body["error"].lower()
-
-
-def test_remove_project_empty_string_id(invoke_remove_project):
-    """
-    Test 7: Remove Project with Empty String project_id
-
-    Invoke with empty string project_id.
-    Should return 400 (treated as missing) or 200 (treated as valid but empty).
-    """
-    # Invoke with empty string
-    result = invoke_remove_project("")
-
-    # Assertions: either 400 (validation error) or 200 (idempotent on empty)
-    assert result["statusCode"] in [400, 200]
-
-    if result["statusCode"] == 400:
+    if payload_type == "missing":
+        payload = {"body": json.dumps({})}
+        response = lambda_client.invoke(
+            FunctionName=function_name,
+            Payload=json.dumps(payload).encode("utf-8")
+        )
+        result = json.loads(response["Payload"].read())
+        assert result["statusCode"] == 400
         body = json.loads(result["body"])
-        assert "project_id" in body["error"].lower()
+        for keyword in expected_keywords:
+            assert keyword in body["error"].lower()
+
+    elif payload_type == "null":
+        payload = {"body": json.dumps({"project_id": None})}
+        response = lambda_client.invoke(
+            FunctionName=function_name,
+            Payload=json.dumps(payload).encode("utf-8")
+        )
+        result = json.loads(response["Payload"].read())
+        assert result["statusCode"] == 400
+        body = json.loads(result["body"])
+        for keyword in expected_keywords:
+            assert keyword in body["error"].lower()
+
+    elif payload_type == "empty":
+        # Empty string - either 400 (validation) or 200 (idempotent) is acceptable
+        result = invoke_remove_project("")
+        assert result["statusCode"] in [400, 200]
+        if result["statusCode"] == 400:
+            body = json.loads(result["body"])
+            assert "project_id" in body["error"].lower()

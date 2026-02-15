@@ -2,6 +2,7 @@ from aws_lambda_powertools import Metrics, Logger, Tracer
 
 from phebee.utils.neptune import reset_neptune_database
 from phebee.utils.dynamodb import reset_dynamodb_table
+from phebee.utils.iceberg import reset_iceberg_tables
 
 logger = Logger()
 tracer = Tracer()
@@ -14,6 +15,7 @@ def lambda_handler(event, context):
     try:
         reset_dynamodb_table()
         reset_neptune_database()
+        reset_iceberg_tables()
         return {"statusCode": 200, "success": True}
     except Exception as e:
         logger.error(e)

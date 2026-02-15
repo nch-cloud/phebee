@@ -255,7 +255,11 @@ def create_evidence_record(
             "annotation_metadata": "{}"
         },
         "qualifiers": [
-            {"qualifier_type": q, "qualifier_value": "true"} for q in (qualifiers or [])
+            {
+                "qualifier_type": q.rsplit(":", 1)[0] if ":" in q else q,
+                "qualifier_value": q.rsplit(":", 1)[1] if ":" in q else "true"
+            }
+            for q in (qualifiers or [])
         ] if qualifiers else None
     }
     
@@ -897,26 +901,46 @@ def get_evidence_for_termlink(
 ) -> List[Dict[str, Any]]:
     """
     Get evidence data for a specific term link from Iceberg.
-    
+
     Args:
         subject_id: The subject UUID
         term_iri: The term IRI
-        qualifiers: List of qualifier IRIs
-        
+        qualifiers: List of qualifier IRIs (the "true" qualifiers for this termlink)
+
     Returns:
-        List of evidence records
+        List of evidence records for the specific termlink
     """
     logger.info(f"Getting evidence for subject_id={subject_id}, term_iri={term_iri}, qualifiers={qualifiers}")
-    
-    # Build qualifier filter - simplified to not filter by qualifiers for now
-    # This allows us to get all evidence for the termlink regardless of qualifiers
-    qualifier_filter = ""
-    
+
+    # Normalize qualifiers to "iri:true" format for hash generation
+    # Qualifiers can be provided as either ["iri"] or ["iri:true"] format
+    # Handle URLs with colons by checking if last segment after rsplit is "true"/"false"
+    qualifier_list = []
+    if qualifiers:
+        for q in qualifiers:
+            # Check if it already has a :true/:false suffix
+            parts = q.rsplit(":", 1)
+            if len(parts) == 2 and parts[1] in ["true", "false"]:
+                # Already in "iri:value" format
+                qualifier_list.append(q)
+            else:
+                # Just the IRI, append ":true" to indicate it's an active qualifier
+                qualifier_list.append(f"{q}:true")
+
+    # Compute the termlink_id to filter by specific termlink
+    subject_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"
+    from phebee.utils.hash import generate_termlink_hash
+    termlink_hash = generate_termlink_hash(subject_iri, term_iri, qualifier_list)
+    # Note: termlink_id is stored as just the hash in the evidence table, not the full IRI
+    termlink_id = termlink_hash
+
+    logger.info(f"Computed termlink_id: {termlink_id}")
+
     database_name = os.environ['ICEBERG_DATABASE']
     table_name = os.environ['ICEBERG_EVIDENCE_TABLE']
-    
+
     query = f"""
-    SELECT 
+    SELECT
         evidence_id,
         run_id,
         batch_id,
@@ -936,9 +960,9 @@ def get_evidence_for_termlink(
         qualifiers,
         term_source
     FROM {database_name}.{table_name}
-    WHERE subject_id = '{subject_id}' 
+    WHERE subject_id = '{subject_id}'
       AND term_iri = '{term_iri}'
-      {qualifier_filter}
+      AND termlink_id = '{termlink_id}'
     ORDER BY created_timestamp
     """
     
@@ -1005,6 +1029,7 @@ def get_evidence_for_termlink(
                 "subject_id": row.get('subject_id'),
                 "encounter_id": row.get('encounter_id'),
                 "clinical_note_id": row.get('clinical_note_id'),
+                "termlink_id": row.get('termlink_id'),  # Include termlink_id
                 # Parse struct fields
                 "note_context": parse_struct_field(row.get('note_context')),
                 "creator": parse_struct_field(row.get('creator')),
@@ -1051,53 +1076,13 @@ def get_subject_term_info(
     if not evidence_data:
         logger.info("No evidence data found, returning None")
         return None
-    
-    # Create deterministic termlink ID using only true qualifiers
-    # Extract qualifier values from evidence data if available
-    qualifiers_dict = {}
-    if evidence_data and evidence_data[0].get('qualifiers'):
-        qualifiers_from_evidence = evidence_data[0]['qualifiers']
-        # Convert from array format to dictionary format
-        if isinstance(qualifiers_from_evidence, list):
-            # Convert array of {qualifier_type, qualifier_value} to dict
-            for qualifier in qualifiers_from_evidence:
-                if isinstance(qualifier, dict) and 'qualifier_type' in qualifier and 'qualifier_value' in qualifier:
-                    # Convert values to boolean - handle both string and numeric formats
-                    value = qualifier['qualifier_value']
-                    if isinstance(value, str):
-                        if value.lower() == 'true':
-                            qualifiers_dict[qualifier['qualifier_type']] = True
-                        elif value.lower() == 'false':
-                            qualifiers_dict[qualifier['qualifier_type']] = False
-                    elif isinstance(value, (int, float)):
-                        # Handle numeric values: 1.0 = True, 0.0 = False
-                        qualifiers_dict[qualifier['qualifier_type']] = bool(value)
-        elif isinstance(qualifiers_from_evidence, dict):
-            qualifiers_dict = qualifiers_from_evidence
-        else:
-            logger.warning(f"Expected qualifiers to be list or dict, got {type(qualifiers_from_evidence)}: {qualifiers_from_evidence}")
-    
-    # Build qualifier list with name:value format for non-falsey qualifiers
-    def normalize_qualifier_value(value):
-        if value in ["false", "0", 0, 0.0, False]:
-            return None  # Exclude falsey values
-        elif value in ["true", "1", 1, 1.0, True]:
-            return "true"
-        else:
-            return str(value)  # Keep other values as strings
-    
-    qualifier_list = []
-    for qualifier_type, qualifier_value in qualifiers_dict.items():
-        normalized_val = normalize_qualifier_value(qualifier_value)
-        if normalized_val:
-            qualifier_list.append(f"{qualifier_type}:{normalized_val}")
-    
-    # Sort for deterministic ordering
-    qualifier_list.sort()
-    
-    # Use shared hash function for consistency
+
+    # Use the termlink_id from the evidence records (already stored correctly)
+    # Note: All evidence in evidence_data should have the same termlink_id since we filtered by it
     subject_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"
-    termlink_hash = generate_termlink_hash(subject_iri, term_iri, qualifier_list)
+    termlink_hash = evidence_data[0].get('termlink_id')
+
+    # The termlink_id in evidence is stored as just the hash, construct full IRI
     termlink_iri = f"{subject_iri}/term-link/{termlink_hash}"
     
     # Create single termlink with all evidence
@@ -2296,3 +2281,78 @@ def _get_query_results(query_execution_id: str) -> List[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"Failed to get query results: {e}")
         raise
+
+
+def reset_iceberg_tables() -> bool:
+    """
+    Delete all data from all Iceberg tables (evidence, subject_terms_by_subject, subject_terms_by_project_term).
+    Used by reset_database to completely wipe Iceberg data.
+
+    Returns:
+        bool: True if all tables cleared successfully, False otherwise
+    """
+    database_name = os.environ.get('ICEBERG_DATABASE')
+    if not database_name:
+        raise ValueError("ICEBERG_DATABASE environment variable is required")
+
+    evidence_table = os.environ.get('ICEBERG_EVIDENCE_TABLE')
+    by_subject_table = os.environ.get('ICEBERG_SUBJECT_TERMS_BY_SUBJECT_TABLE')
+    by_project_term_table = os.environ.get('ICEBERG_SUBJECT_TERMS_BY_PROJECT_TERM_TABLE')
+
+    if not all([evidence_table, by_subject_table, by_project_term_table]):
+        raise ValueError("All Iceberg table environment variables must be set")
+
+    tables = [
+        (evidence_table, "evidence"),
+        (by_subject_table, "subject_terms_by_subject"),
+        (by_project_term_table, "subject_terms_by_project_term")
+    ]
+
+    athena_client = boto3.client('athena')
+
+    # Check if primary workgroup is managed
+    wg_cfg = athena_client.get_work_group(WorkGroup="primary")["WorkGroup"]["Configuration"]
+    managed_config = wg_cfg.get("ManagedQueryResultsConfiguration", {})
+    managed = managed_config.get("Enabled", False) if isinstance(managed_config, dict) else False
+
+    bucket_name = os.environ.get('PHEBEE_BUCKET_NAME') if not managed else None
+
+    for table_name, table_desc in tables:
+        delete_query = f"DELETE FROM {database_name}.{table_name}"
+
+        logger.info(f"Clearing Iceberg table: {table_desc}")
+
+        try:
+            params = {
+                "QueryString": delete_query,
+                "QueryExecutionContext": {"Database": database_name},
+                "WorkGroup": "primary"
+            }
+
+            if not managed:
+                params["ResultConfiguration"] = {"OutputLocation": f"s3://{bucket_name}/athena-results/"}
+
+            response = athena_client.start_query_execution(**params)
+            query_execution_id = response['QueryExecutionId']
+
+            # Wait for query completion
+            while True:
+                result = athena_client.get_query_execution(QueryExecutionId=query_execution_id)
+                status = result['QueryExecution']['Status']['State']
+
+                if status == 'SUCCEEDED':
+                    logger.info(f"Successfully cleared Iceberg table: {table_desc}")
+                    break
+                elif status in ['FAILED', 'CANCELLED']:
+                    error_msg = result['QueryExecution']['Status'].get('StateChangeReason', 'Unknown error')
+                    logger.error(f"Athena DELETE failed for {table_desc}: {error_msg}")
+                    return False
+
+                time.sleep(1)
+
+        except Exception as e:
+            logger.error(f"Failed to clear Iceberg table {table_desc}: {e}")
+            return False
+
+    logger.info("Successfully cleared all Iceberg tables")
+    return True

@@ -709,6 +709,7 @@ Resources:
           Region: !Sub ${AWS::Region}
           PheBeeDynamoTable: !Ref DynamoDBTable
           ICEBERG_DATABASE: !Ref IcebergDatabase
+          ICEBERG_SUBJECT_TERMS_BY_SUBJECT_TABLE: !Ref IcebergSubjectTermsBySubjectTable
           PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
       VpcConfig:
         SecurityGroupIds:
@@ -783,6 +784,13 @@ Resources:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
           Region: !Sub ${AWS::Region}
+          ICEBERG_DATABASE: !Ref IcebergDatabase
+          ICEBERG_EVIDENCE_TABLE: !Ref IcebergEvidenceTable
+          ICEBERG_SUBJECT_TERMS_BY_SUBJECT_TABLE: !Ref IcebergSubjectTermsBySubjectTable
+          ICEBERG_SUBJECT_TERMS_BY_PROJECT_TERM_TABLE: !Ref IcebergSubjectTermsByProjectTermTable
+          PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
+          PheBeeDynamoTable: !Ref DynamoDBTable
+          EVIDENCE_TABLE: !Sub ${AppName}_evidence
       VpcConfig:
         SecurityGroupIds:
           - !Ref PheBeeLambdaSecurityGroup
@@ -792,6 +800,9 @@ Resources:
       Policies:
         - !Ref PheBeeNeptuneReadPolicy
         - !Ref PheBeeNeptuneDeletePolicy
+        - !Ref PheBeeIcebergPolicy
+        - DynamoDBCrudPolicy:
+            TableName: !Ref DynamoDBTable
 
   CreateProjectFunction:
     Type: AWS::Serverless::Function
@@ -829,6 +840,12 @@ Resources:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
           Region: !Sub ${AWS::Region}
+          PheBeeDynamoTable: !Ref DynamoDBTable
+          ICEBERG_DATABASE: !Ref IcebergDatabase
+          ICEBERG_EVIDENCE_TABLE: !Ref IcebergEvidenceTable
+          ICEBERG_SUBJECT_TERMS_BY_PROJECT_TERM_TABLE: !Ref IcebergSubjectTermsByProjectTermTable
+          ICEBERG_SUBJECT_TERMS_BY_SUBJECT_TABLE: !Ref IcebergSubjectTermsBySubjectTable
+          PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
       VpcConfig:
         SecurityGroupIds:
           - !Ref PheBeeLambdaSecurityGroup
@@ -837,6 +854,10 @@ Resources:
           - !Ref SubnetId2
       Policies:
         - !Ref PheBeeNeptuneReadPolicy
+        - !Ref PheBeeNeptuneWritePolicy
+        - !Ref PheBeeDynamoDBReadPolicy
+        - !Ref PheBeeDynamoDBWritePolicy
+        - !Ref PheBeeIcebergPolicy
         - !Ref PheBeeNeptuneDeletePolicy
 
   ParsePhenopacketCollectionFunction:
@@ -889,6 +910,7 @@ Resources:
           Region: !Sub ${AWS::Region}
           PheBeeBus: !Ref PheBeeBus
           PheBeeBucketName: !Ref PheBeeBucket
+          PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
           PheBeeDynamoTable: !Ref DynamoDBTable
           ICEBERG_DATABASE: !Ref IcebergDatabase
           ICEBERG_SUBJECT_TERMS_BY_SUBJECT_TABLE: !Ref IcebergSubjectTermsBySubjectTable
@@ -921,6 +943,11 @@ Resources:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
           NeptuneClusterIdentifier: !Ref PheBeeNeptuneCluster
           PheBeeDynamoTable: !Ref DynamoDBTable
+          ICEBERG_DATABASE: !Ref IcebergDatabase
+          ICEBERG_EVIDENCE_TABLE: !Ref IcebergEvidenceTable
+          ICEBERG_SUBJECT_TERMS_BY_SUBJECT_TABLE: !Ref IcebergSubjectTermsBySubjectTable
+          ICEBERG_SUBJECT_TERMS_BY_PROJECT_TERM_TABLE: !Ref IcebergSubjectTermsByProjectTermTable
+          PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
           Region: !Sub ${AWS::Region}
       VpcConfig:
         SecurityGroupIds:
@@ -933,6 +960,7 @@ Resources:
         - !Ref PheBeeNeptuneReadPolicy
         - !Ref PheBeeDynamoDBWritePolicy
         - !Ref PheBeeDynamoDBReadPolicy
+        - !Ref PheBeeIcebergPolicy
 
   CreateEvidenceFunction:
     Type: AWS::Serverless::Function
@@ -947,11 +975,16 @@ Resources:
         Variables:
           ICEBERG_DATABASE: !Ref IcebergDatabase
           ICEBERG_EVIDENCE_TABLE: !Ref IcebergEvidenceTable
+          ICEBERG_SUBJECT_TERMS_BY_SUBJECT_TABLE: !Ref IcebergSubjectTermsBySubjectTable
+          ICEBERG_SUBJECT_TERMS_BY_PROJECT_TERM_TABLE: !Ref IcebergSubjectTermsByProjectTermTable
           PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
           EVIDENCE_TABLE: !Sub ${AppName}_evidence
+          PheBeeDynamoTable: !Ref DynamoDBTable
           Region: !Sub ${AWS::Region}
       Policies:
         - !Ref PheBeeIcebergPolicy
+        - DynamoDBCrudPolicy:
+            TableName: !Ref DynamoDBTable
 
   GetEvidenceFunction:
     Type: AWS::Serverless::Function
@@ -985,11 +1018,16 @@ Resources:
         Variables:
           ICEBERG_DATABASE: !Ref IcebergDatabase
           ICEBERG_EVIDENCE_TABLE: !Ref IcebergEvidenceTable
+          ICEBERG_SUBJECT_TERMS_BY_SUBJECT_TABLE: !Ref IcebergSubjectTermsBySubjectTable
+          ICEBERG_SUBJECT_TERMS_BY_PROJECT_TERM_TABLE: !Ref IcebergSubjectTermsByProjectTermTable
           PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
+          PheBeeDynamoTable: !Ref DynamoDBTable
           EVIDENCE_TABLE: !Sub ${AppName}_evidence
           Region: !Sub ${AWS::Region}
       Policies:
         - !Ref PheBeeIcebergPolicy
+        - DynamoDBCrudPolicy:
+            TableName: !Ref DynamoDBTable
 
   QueryEvidenceByRunFunction:
     Type: AWS::Serverless::Function
@@ -1221,6 +1259,7 @@ Resources:
           ICEBERG_SUBJECT_TERMS_BY_SUBJECT_TABLE: !Ref IcebergSubjectTermsBySubjectTable
           ICEBERG_SUBJECT_TERMS_BY_PROJECT_TERM_TABLE: !Ref IcebergSubjectTermsByProjectTermTable
           PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
+          PheBeeDynamoTable: !Ref DynamoDBTable
       Policies:
         - Statement:
             - Effect: Allow
@@ -1251,6 +1290,13 @@ Resources:
                 - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog"
                 - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/${IcebergDatabase}"
                 - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/${IcebergDatabase}/*"
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+                - dynamodb:Scan
+              Resource:
+                - !GetAtt DynamoDBTable.Arn
+                - !Sub "${DynamoDBTable.Arn}/index/*"
 
   MaterializeOntologyHierarchyFunction:
     Type: AWS::Serverless::Function

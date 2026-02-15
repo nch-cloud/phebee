@@ -256,53 +256,59 @@ def test_remove_evidence_not_found(invoke_remove_evidence, query_athena):
     assert len(evidence_check) == 0
 
 
-def test_remove_evidence_missing_evidence_id(physical_resources):
+@pytest.mark.parametrize("payload_type,expected_keywords", [
+    pytest.param("missing", ["evidence_id", "required"], id="missing_evidence_id"),
+    pytest.param("null", ["evidence_id"], id="null_evidence_id"),
+    pytest.param("empty", [], id="empty_string_evidence_id"),
+])
+def test_remove_evidence_validation_errors(physical_resources, payload_type, expected_keywords):
     """
-    Test 4: Missing Required Field - evidence_id
+    Tests 4-5, 8: Validation of required evidence_id field.
 
-    Invoke lambda without evidence_id parameter.
-    """
-    lambda_client = boto3.client("lambda")
-    remove_function = physical_resources["RemoveEvidenceFunction"]
+    Verifies that missing, null, or empty evidence_id results in 400 error
+    (or 404 for empty string, depending on implementation).
 
-    # Invoke with empty payload
-    payload = {"body": json.dumps({})}
-    response = lambda_client.invoke(
-        FunctionName=remove_function,
-        Payload=json.dumps(payload).encode("utf-8")
-    )
-
-    result = json.loads(response["Payload"].read())
-
-    # Assertions
-    assert result["statusCode"] == 400
-    body = json.loads(result["body"])
-    assert "evidence_id" in body["message"].lower()
-    assert "required" in body["message"].lower()
-
-
-def test_remove_evidence_null_evidence_id(physical_resources):
-    """
-    Test 5: Remove Evidence with Null evidence_id
-
-    Invoke lambda with null evidence_id.
+    Parameterized test cases:
+    - missing_evidence_id: No evidence_id in payload
+    - null_evidence_id: evidence_id is None
+    - empty_string_evidence_id: evidence_id is empty string
     """
     lambda_client = boto3.client("lambda")
     remove_function = physical_resources["RemoveEvidenceFunction"]
 
-    # Invoke with null evidence_id
-    payload = {"body": json.dumps({"evidence_id": None})}
-    response = lambda_client.invoke(
-        FunctionName=remove_function,
-        Payload=json.dumps(payload).encode("utf-8")
-    )
+    if payload_type == "missing":
+        payload = {"body": json.dumps({})}
+        response = lambda_client.invoke(
+            FunctionName=remove_function,
+            Payload=json.dumps(payload).encode("utf-8")
+        )
+        result = json.loads(response["Payload"].read())
+        assert result["statusCode"] == 400
+        body = json.loads(result["body"])
+        for keyword in expected_keywords:
+            assert keyword in body["message"].lower()
 
-    result = json.loads(response["Payload"].read())
+    elif payload_type == "null":
+        payload = {"body": json.dumps({"evidence_id": None})}
+        response = lambda_client.invoke(
+            FunctionName=remove_function,
+            Payload=json.dumps(payload).encode("utf-8")
+        )
+        result = json.loads(response["Payload"].read())
+        assert result["statusCode"] == 400
+        body = json.loads(result["body"])
+        for keyword in expected_keywords:
+            assert keyword in body["message"].lower()
 
-    # Assertions
-    assert result["statusCode"] == 400
-    body = json.loads(result["body"])
-    assert "evidence_id" in body["message"].lower()
+    elif payload_type == "empty":
+        # Empty string - either 400 (validation) or 404 (not found) is acceptable
+        payload = {"body": json.dumps({"evidence_id": ""})}
+        response = lambda_client.invoke(
+            FunctionName=remove_function,
+            Payload=json.dumps(payload).encode("utf-8")
+        )
+        result = json.loads(response["Payload"].read())
+        assert result["statusCode"] in [400, 404]
 
 
 def test_remove_evidence_distinct_termlinks(
@@ -432,36 +438,6 @@ def test_remove_evidence_idempotent(
         SELECT evidence_id FROM phebee.evidence WHERE evidence_id = '{evidence_id}'
     """)
     assert len(final_check) == 0, "Evidence should remain deleted"
-
-
-def test_remove_evidence_empty_string_id(physical_resources):
-    """
-    Test 8: Remove Evidence with Empty String evidence_id
-
-    Invoke with empty string evidence_id.
-    Should return 400 (treated as missing) or 404 (treated as non-existent).
-    """
-    lambda_client = boto3.client("lambda")
-    remove_function = physical_resources["RemoveEvidenceFunction"]
-
-    # Invoke with empty string
-    payload = {"body": json.dumps({"evidence_id": ""})}
-    response = lambda_client.invoke(
-        FunctionName=remove_function,
-        Payload=json.dumps(payload).encode("utf-8")
-    )
-
-    result = json.loads(response["Payload"].read())
-
-    # Assertions - allow 400 or 404
-    assert result["statusCode"] in [400, 404], \
-        f"Expected status 400 or 404, got {result['statusCode']}"
-
-    # Document the behavior
-    if result["statusCode"] == 400:
-        print("Empty string treated as missing parameter (400)")
-    else:
-        print("Empty string treated as non-existent evidence (404)")
 
 
 def test_remove_evidence_malformed_id(invoke_remove_evidence):

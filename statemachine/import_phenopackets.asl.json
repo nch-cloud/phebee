@@ -110,6 +110,18 @@
                 "subject_ids": "$[*].ProcessedData.subject_id"
             },
             "ResultPath": "$.Summary",
+            "Next": "MaterializeProjectSubjectTerms"
+        },
+        "MaterializeProjectSubjectTerms": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+                "FunctionName": "${MaterializeProjectSubjectTermsFunction}",
+                "Payload": {
+                    "project_id.$": "$$.Execution.Input.project_id"
+                }
+            },
+            "ResultPath": "$.MaterializationResult",
             "End": true
         }
     }
