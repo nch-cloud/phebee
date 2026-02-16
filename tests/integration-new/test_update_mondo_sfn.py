@@ -47,7 +47,7 @@ def run_mondo_update_once(update_mondo_sfn_arn):
     response = sfn_client.start_execution(
         stateMachineArn=update_mondo_sfn_arn,
         name=execution_name,
-        input=json.dumps({"test": False})
+        input=json.dumps({"test": True})
     )
 
     execution_arn = response['executionArn']

@@ -20,6 +20,83 @@ from phebee.constants import PHEBEE
 logger = logging.getLogger(__name__)
 
 
+def parse_athena_row_array(row_str, field_names):
+    """
+    Parse Athena ROW array format like [{value1, value2, value3}]
+    Returns list of dictionaries mapping field_names to values.
+
+    Args:
+        row_str: String representation of array of ROWs
+        field_names: List of field names in order they appear in the ROW
+
+    Returns:
+        List of dictionaries
+    """
+    if not row_str or row_str == 'null' or row_str == '[]':
+        return []
+
+    # Remove outer brackets
+    inner = row_str.strip()
+    if inner.startswith('['):
+        inner = inner[1:-1].strip()
+
+    rows = []
+    if inner:
+        # Split by }, { to handle multiple ROWs
+        if '}, {' in inner:
+            row_parts = inner.split('}, {')
+            row_parts = [part.strip('{}') for part in row_parts]
+        else:
+            # Single ROW, remove outer braces
+            row_parts = [inner.strip('{}')]
+
+        for part in row_parts:
+            if not part.strip():
+                continue
+
+            # Split on comma, respecting nested structures
+            values = []
+            current_value = ""
+            paren_depth = 0
+            bracket_depth = 0
+
+            for char in part:
+                if char == ',' and paren_depth == 0 and bracket_depth == 0:
+                    values.append(current_value.strip())
+                    current_value = ""
+                else:
+                    if char in '({':
+                        paren_depth += 1
+                    elif char in ')}':
+                        paren_depth -= 1
+                    elif char == '[':
+                        bracket_depth += 1
+                    elif char == ']':
+                        bracket_depth -= 1
+                    current_value += char
+
+            if current_value.strip():
+                values.append(current_value.strip())
+
+            # Map values to field names
+            row_dict = {}
+            for i, field_name in enumerate(field_names):
+                if i < len(values):
+                    value = values[i]
+                    # Clean up the value
+                    if value == 'null':
+                        row_dict[field_name] = None
+                    else:
+                        row_dict[field_name] = value
+                else:
+                    row_dict[field_name] = None
+
+            if row_dict:
+                rows.append(row_dict)
+
+    return rows
+
+
 def parse_athena_struct_array(struct_str):
     """
     Parse Athena struct array format like [{qualifier_type=negated, qualifier_value=true}]
@@ -27,13 +104,13 @@ def parse_athena_struct_array(struct_str):
     """
     if not struct_str or struct_str == 'null':
         return []
-    
+
     # Remove outer brackets
     if struct_str.startswith('[') and struct_str.endswith(']'):
         inner = struct_str[1:-1].strip()
     else:
         inner = struct_str.strip()
-    
+
     structs = []
     if inner:
         # Split by }, { to handle multiple structs
@@ -43,18 +120,18 @@ def parse_athena_struct_array(struct_str):
         else:
             # Single struct, remove outer braces
             struct_parts = [inner.strip('{}')]
-        
+
         for part in struct_parts:
             if not part.strip():
                 continue
-            
+
             # Parse key=value pairs
             struct_dict = {}
             # Split on comma, but be careful of commas within values
             pairs = []
             current_pair = ""
             paren_depth = 0
-            
+
             for char in part:
                 if char == ',' and paren_depth == 0:
                     pairs.append(current_pair.strip())
@@ -65,18 +142,18 @@ def parse_athena_struct_array(struct_str):
                     elif char in ')}]':
                         paren_depth -= 1
                     current_pair += char
-            
+
             if current_pair.strip():
                 pairs.append(current_pair.strip())
-            
+
             for pair in pairs:
                 if '=' in pair:
                     key, value = pair.split('=', 1)
                     struct_dict[key.strip()] = value.strip()
-            
+
             if struct_dict:
                 structs.append(struct_dict)
-    
+
     return structs
 
 
@@ -265,15 +342,25 @@ def create_evidence_record(
     
     # Insert into Iceberg table using Athena
     # Build structured values for complex types
-    note_context_value = "NULL"
+    note_context_value = "CAST(NULL AS ROW(note_type VARCHAR, note_date TIMESTAMP, provider_type VARCHAR, author_specialty VARCHAR))"
     if record.get('note_context'):
         nc = record['note_context']
-        timestamp_part = f"TIMESTAMP '{nc['note_date']}'" if nc.get('note_date') else 'NULL'
-        note_context_value = f"ROW('{nc.get('note_id', '')}', '{nc.get('note_type', '')}', {timestamp_part}, '{nc.get('encounter_id', '')}')"
+        timestamp_part = 'NULL'
+        if nc.get('note_timestamp'):
+            # Parse ISO 8601 timestamp and convert to Athena format (YYYY-MM-DD HH:MM:SS)
+            try:
+                # Handle both Z suffix and +00:00 timezone formats
+                ts_str = nc['note_timestamp'].replace('Z', '+00:00')
+                dt = datetime.fromisoformat(ts_str)
+                timestamp_part = f"TIMESTAMP '{dt.strftime('%Y-%m-%d %H:%M:%S')}'"
+            except Exception:
+                # If parsing fails, use NULL
+                timestamp_part = 'NULL'
+        note_context_value = f"ROW('{nc.get('note_type', '')}', {timestamp_part}, '{nc.get('provider_type', '')}', '{nc.get('author_specialty', '')}')"
     
     creator_value = f"ROW('{record['creator']['creator_id']}', '{record['creator']['creator_type']}', '{record['creator'].get('creator_name', '')}')"
     
-    text_annotation_value = "NULL"
+    text_annotation_value = "CAST(NULL AS ROW(span_start INTEGER, span_end INTEGER, annotation_metadata VARCHAR))"
     if record.get('text_annotation'):
         ta = record['text_annotation']
         annotation_metadata_json = ta.get('annotation_metadata', '{}')
@@ -288,13 +375,13 @@ def create_evidence_record(
         
         text_annotation_value = f"ROW({span_start_sql}, {span_end_sql}, '{escaped_metadata}')"
     
-    qualifiers_value = "NULL"
+    qualifiers_value = "CAST(NULL AS ARRAY(ROW(qualifier_type VARCHAR, qualifier_value VARCHAR)))"
     if record.get('qualifiers'):
         qual_rows = [f"ROW('{q['qualifier_type']}', '{q['qualifier_value']}')" for q in record['qualifiers']]
         qualifiers_value = f"ARRAY[{', '.join(qual_rows)}]"
     
     # Build term_source value
-    term_source_value = "NULL"
+    term_source_value = "CAST(NULL AS ROW(source VARCHAR, version VARCHAR, iri VARCHAR))"
     if term_source:
         source = term_source.get('source', '')
         version = term_source.get('version', '')
@@ -1297,6 +1384,13 @@ def query_subjects_by_project(
     where_clause = " AND ".join(where_clauses)
 
     # Query to get subjects with aggregated term data
+    # In Athena with Iceberg, OFFSET must come before LIMIT
+    # Only include OFFSET if > 0 to avoid potential issues with OFFSET 0
+    if offset > 0:
+        pagination_clause = f"OFFSET {offset} LIMIT {limit}"
+    else:
+        pagination_clause = f"LIMIT {limit}"
+
     query = f"""
     SELECT
         subject_id,
@@ -1310,8 +1404,7 @@ def query_subjects_by_project(
     WHERE {where_clause}
     GROUP BY subject_id, project_subject_id, subject_iri, project_subject_iri
     ORDER BY subject_id
-    LIMIT {limit}
-    OFFSET {offset}
+    {pagination_clause}
     """
 
     # Count query for total
@@ -1337,7 +1430,9 @@ def query_subjects_by_project(
 
             if terms_str and terms_str != '[]' and terms_str != 'null':
                 # Parse the array of ROW structures
-                terms_list = parse_athena_struct_array(terms_str)
+                # ROW format: (term_id, term_iri, term_label, qualifiers, evidence_count, termlink_id, first_evidence_date, last_evidence_date)
+                field_names = ['term_id', 'term_iri', 'term_label', 'qualifiers', 'evidence_count', 'termlink_id', 'first_evidence_date', 'last_evidence_date']
+                terms_list = parse_athena_row_array(terms_str, field_names)
                 for term_dict in terms_list:
                     # Parse qualifiers
                     qualifiers_str = term_dict.get('qualifiers')
@@ -1639,24 +1734,20 @@ def materialize_project(project_id: str, batch_size: int = 100) -> Dict[str, int
     project_subject_map = {}  # {subject_id: project_subject_id}
 
     try:
+        # Query forward mappings: PK='PROJECT#{project_id}', SK='SUBJECT#{project_subject_id}'
         response = table.query(
-            IndexName='GSI1',
-            KeyConditionExpression='GSI1PK = :pk',
+            KeyConditionExpression='PK = :pk',
             ExpressionAttributeValues={':pk': f'PROJECT#{project_id}'}
         )
 
         for item in response.get('Items', []):
-            # Parse PK: "SUBJECT#{subject_id}"
-            pk = item.get('PK', '')
-            if pk.startswith('SUBJECT#'):
-                subject_id = pk.split('#', 1)[1]
-                subject_ids.append(subject_id)
-
-                # Parse SK: "PROJECT#{project_id}#SUBJECT#{project_subject_id}"
-                sk = item.get('SK', '')
-                sk_parts = sk.split('#')
-                if len(sk_parts) >= 4:
-                    project_subject_id = sk_parts[3]
+            # Parse SK: "SUBJECT#{project_subject_id}"
+            sk = item.get('SK', '')
+            if sk.startswith('SUBJECT#'):
+                project_subject_id = sk.split('#', 1)[1]
+                subject_id = item.get('subject_id', '')
+                if subject_id:
+                    subject_ids.append(subject_id)
                     project_subject_map[subject_id] = project_subject_id
 
         logger.info(f"Found {len(subject_ids)} subjects in project {project_id}")
@@ -1715,7 +1806,7 @@ def materialize_project(project_id: str, batch_size: int = 100) -> Dict[str, int
                 END
             ) as active_qualifiers
         FROM {database_name}.{evidence_table}
-        CROSS JOIN UNNEST(COALESCE(qualifiers, ARRAY[])) AS t(q)
+        LEFT JOIN UNNEST(COALESCE(qualifiers, ARRAY[])) AS t(q) ON TRUE
         {subject_filter}
         GROUP BY subject_id, term_iri
     )
@@ -1771,7 +1862,7 @@ def materialize_project(project_id: str, batch_size: int = 100) -> Dict[str, int
             ) as active_qualifiers
         FROM {database_name}.{evidence_table} e
         JOIN subject_mapping m ON e.subject_id = m.subject_id
-        CROSS JOIN UNNEST(COALESCE(e.qualifiers, ARRAY[])) AS t(q)
+        LEFT JOIN UNNEST(COALESCE(e.qualifiers, ARRAY[])) AS t(q) ON TRUE
         GROUP BY e.subject_id, m.project_subject_id, e.term_iri
     )
     SELECT

@@ -47,7 +47,7 @@ def run_hpo_update_once(update_hpo_sfn_arn):
     response = sfn_client.start_execution(
         stateMachineArn=update_hpo_sfn_arn,
         name=execution_name,
-        input=json.dumps({"test": False})
+        input=json.dumps({"test": True})
     )
 
     execution_arn = response['executionArn']

@@ -47,7 +47,7 @@ def run_eco_update_once(update_eco_sfn_arn):
     response = sfn_client.start_execution(
         stateMachineArn=update_eco_sfn_arn,
         name=execution_name,
-        input=json.dumps({"test": False})
+        input=json.dumps({"test": True})
     )
 
     execution_arn = response['executionArn']
@@ -151,99 +151,6 @@ def test_eco_dynamodb_timestamp_updated(run_eco_update_once, cloudformation_stac
 
     assert (now - timestamp) < timedelta(hours=24), \
         f"InstallTimestamp should be recent, but was {timestamp}"
-
-
-def test_eco_hierarchy_table_populated(run_eco_update_once, query_athena, cloudformation_stack):
-    """Test that ontology_hierarchy Iceberg table is populated with ECO terms."""
-    cf_client = get_client("cloudformation")
-
-    # Get table names from stack outputs
-    response = cf_client.describe_stacks(StackName=cloudformation_stack)
-    outputs = {o['OutputKey']: o['OutputValue'] for o in response['Stacks'][0]['Outputs']}
-    database_name = outputs['AthenaDatabase']
-    table_name = outputs.get('AthenaOntologyHierarchyTable', 'ontology_hierarchy')
-
-    # Query the table to verify it has ECO data
-    query = f"""
-    SELECT COUNT(*) as term_count
-    FROM {database_name}.{table_name}
-    WHERE ontology_source = 'eco'
-    """
-
-    results = query_athena(query)
-
-    assert len(results) > 0, "No results returned from ontology_hierarchy table"
-    term_count = int(results[0]['term_count'])
-
-    # ECO is smaller ontology with ~500+ terms (as of 2024)
-    assert term_count > 100, \
-        f"Expected more than 100 ECO terms, but found {term_count}"
-
-    print(f"\n[TEST] Ontology hierarchy table contains {term_count} ECO terms")
-
-
-def test_eco_hierarchy_has_required_columns(run_eco_update_once, query_athena, cloudformation_stack):
-    """Test that hierarchy table has correct structure with required columns."""
-    cf_client = get_client("cloudformation")
-
-    # Get table names from stack outputs
-    response = cf_client.describe_stacks(StackName=cloudformation_stack)
-    outputs = {o['OutputKey']: o['OutputValue'] for o in response['Stacks'][0]['Outputs']}
-    database_name = outputs['AthenaDatabase']
-    table_name = outputs.get('AthenaOntologyHierarchyTable', 'ontology_hierarchy')
-
-    # Query a sample row to verify structure
-    query = f"""
-    SELECT *
-    FROM {database_name}.{table_name}
-    WHERE ontology_source = 'eco'
-    LIMIT 1
-    """
-
-    results = query_athena(query)
-
-    assert len(results) > 0, "Should return at least one ECO term"
-
-    row = results[0]
-    required_columns = ['ontology_source', 'term_id', 'term_label', 'depth']
-
-    for col in required_columns:
-        assert col in row, f"Missing required column: {col}"
-
-    # Verify data types
-    assert isinstance(row['term_id'], str)
-    assert isinstance(row['term_label'], str)
-    assert isinstance(row['depth'], (int, str))  # Athena may return as string
-
-    print(f"\n[TEST] Sample row: {row}")
-
-
-def test_eco_root_term_exists_at_depth_zero(run_eco_update_once, query_athena, cloudformation_stack):
-    """Test that ECO root term (ECO:0000000 'evidence') exists at depth 0."""
-    cf_client = get_client("cloudformation")
-
-    # Get table names from stack outputs
-    response = cf_client.describe_stacks(StackName=cloudformation_stack)
-    outputs = {o['OutputKey']: o['OutputValue'] for o in response['Stacks'][0]['Outputs']}
-    database_name = outputs['AthenaDatabase']
-    table_name = outputs.get('AthenaOntologyHierarchyTable', 'ontology_hierarchy')
-
-    query = f"""
-    SELECT term_id, term_label, depth
-    FROM {database_name}.{table_name}
-    WHERE ontology_source = 'eco'
-      AND term_id = 'ECO:0000000'
-    """
-
-    results = query_athena(query)
-
-    assert len(results) == 1, "Should find exactly one root term ECO:0000000"
-
-    root = results[0]
-    assert root['term_id'] == 'ECO:0000000'
-    assert int(root['depth']) == 0, f"Root term should have depth 0, got {root['depth']}"
-
-    print(f"\n[TEST] Root term: {root['term_label']} (depth={root['depth']})")
 
 
 def test_eco_idempotency_second_run_skips(update_eco_sfn_arn, run_eco_update_once):

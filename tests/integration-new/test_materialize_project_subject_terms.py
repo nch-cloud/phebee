@@ -261,7 +261,7 @@ def test_materialize_qualifiers_preserved(
     create_evidence_helper(
         subject_id=subject_uuid,
         term_iri=standard_hpo_terms["seizure"],
-        qualifiers='[{"qualifier_type": "negated", "qualifier_value": "true"}]'
+        qualifiers=["negated"]
     )
 
     # Materialize
