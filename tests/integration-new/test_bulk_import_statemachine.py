@@ -47,36 +47,61 @@ def golden_bulk_import_execution(physical_resources, standard_hpo_terms):
     run_id = f"golden-test-run-{int(time.time())}"
     s3_prefix = f"bulk-imports/test/{run_id}"
 
-    # Generate CSV data with 50 subjects, 200 evidence records (4 per subject)
-    csv_lines = [
-        "project_id,project_subject_id,term_iri,evidence_type,creator_id,creator_type,run_id,batch_id"
-    ]
-
+    # Generate JSONL data with 50 subjects, 200 evidence records (4 per subject)
     test_project_id = f"bulk-test-project-{uuid.uuid4().hex[:8]}"
+
+    jsonl_records = []
 
     for subj_idx in range(50):
         project_subject_id = f"bulk-subj-{subj_idx:03d}"
 
+        # Create 4 evidence records for this subject
+        evidence_list = []
         for ev_idx in range(4):
-            # Use seizure term for all evidence
-            term_iri = standard_hpo_terms["seizure"]
-            csv_lines.append(
-                f"{test_project_id},{project_subject_id},{term_iri},"
-                f"phenotype_assertion,bulk-importer,system,{run_id},batch-{subj_idx}"
-            )
+            evidence_list.append({
+                "type": "clinical_note",
+                "clinical_note_id": f"note-{subj_idx}-{ev_idx}",
+                "encounter_id": f"encounter-{subj_idx}",
+                "evidence_creator_id": "bulk-importer",
+                "evidence_creator_type": "automated",
+                "evidence_creator_name": "Bulk Import System",
+                "note_timestamp": "2024-01-15",
+                "note_type": "progress_note",
+                "provider_type": "physician",
+                "author_specialty": "internal_medicine",
+                "span_start": 10 + ev_idx * 10,
+                "span_end": 20 + ev_idx * 10,
+                "contexts": {
+                    "negated": 0.0,
+                    "family": 0.0,
+                    "hypothetical": 0.0
+                }
+            })
 
-    csv_content = "\n".join(csv_lines)
+        # Create one JSONL record per subject with all their evidence
+        jsonl_records.append({
+            "project_id": test_project_id,
+            "project_subject_id": project_subject_id,
+            "term_iri": standard_hpo_terms["seizure"],
+            "evidence": evidence_list,
+            "row_num": subj_idx + 1,
+            "batch_id": 0
+        })
 
-    # Upload CSV to S3
-    csv_key = f"{s3_prefix}/evidence.csv"
+    # Convert to JSONL format (newline-delimited JSON)
+    jsonl_content = "\n".join(json.dumps(record) for record in jsonl_records)
+
+    # Upload JSONL to S3 in /jsonl/ subdirectory with .json extension
+    jsonl_key = f"{s3_prefix}/jsonl/evidence.json"
     s3_client.put_object(
         Bucket=bucket_name,
-        Key=csv_key,
-        Body=csv_content.encode("utf-8")
+        Key=jsonl_key,
+        Body=jsonl_content.encode("utf-8"),
+        ContentType="application/x-ndjson"
     )
 
-    input_path = f"s3://{bucket_name}/{csv_key}"
-    print(f"[GOLDEN EXECUTION] Uploaded CSV to {input_path}")
+    input_path = f"s3://{bucket_name}/{s3_prefix}/jsonl"
+    print(f"[GOLDEN EXECUTION] Uploaded JSONL to {input_path}")
 
     # Start state machine execution
     execution_name = f"golden-bulk-import-{int(time.time())}"
@@ -86,8 +111,7 @@ def golden_bulk_import_execution(physical_resources, standard_hpo_terms):
         name=execution_name,
         input=json.dumps({
             "run_id": run_id,
-            "input_path": input_path,
-            "project_id": test_project_id
+            "input_path": input_path
         })
     )
 
@@ -240,10 +264,10 @@ def test_bulk_import_ttl_files_generated(golden_bulk_import_execution):
     s3_client = boto3.client("s3")
 
     bucket = golden_bulk_import_execution["s3_bucket"]
-    prefix = golden_bulk_import_execution["s3_prefix"]
+    run_id = golden_bulk_import_execution["run_id"]
 
-    # Check for TTL files in projects/ directory
-    projects_prefix = f"{prefix}/ttl/projects/"
+    # Check for TTL files in runs/{run_id}/neptune/projects/ directory
+    projects_prefix = f"runs/{run_id}/neptune/projects/"
     response = s3_client.list_objects_v2(
         Bucket=bucket,
         Prefix=projects_prefix,
@@ -343,20 +367,6 @@ def test_bulk_import_missing_run_id(physical_resources):
         time.sleep(10)
 
     pytest.fail("Execution did not fail within timeout")
-
-
-@pytest.mark.slow
-@pytest.mark.manual
-def test_bulk_import_large_scale():
-    """
-    Test 8: Large-scale import with 1000+ subjects.
-
-    MARKED AS MANUAL: This test takes 1-2 hours and should be run manually
-    for performance validation, not in regular CI/CD.
-
-    To run: pytest -m manual test_bulk_import_statemachine.py::test_bulk_import_large_scale
-    """
-    pytest.skip("Large-scale test - run manually with: pytest -m manual")
 
 
 @pytest.mark.slow
