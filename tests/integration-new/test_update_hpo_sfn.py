@@ -220,7 +220,22 @@ def test_hpo_hierarchy_has_required_columns(run_hpo_update_once, query_athena, c
 
 def test_hpo_root_term_exists_at_depth_zero(run_hpo_update_once, query_athena, cloudformation_stack):
     """Test that HPO root term (HP:0000001 'All') exists at depth 0."""
+    sfn_client = get_client("stepfunctions")
     cf_client = get_client("cloudformation")
+
+    # Get the HPO version from execution output
+    execution = sfn_client.describe_execution(executionArn=run_hpo_update_once)
+    output = json.loads(execution['output'])
+
+    # Extract version - it's either in hpo.Payload.version or hpo_version depending on execution path
+    if 'hpo_version' in output:
+        hpo_version = output['hpo_version']
+    elif 'hpo' in output and 'Payload' in output['hpo']:
+        hpo_version = output['hpo']['Payload'].get('version')
+    else:
+        pytest.fail("Could not extract HPO version from execution output")
+
+    print(f"\n[TEST] Testing HPO version: {hpo_version}")
 
     # Get table names from stack outputs
     response = cf_client.describe_stacks(StackName=cloudformation_stack)
@@ -232,12 +247,13 @@ def test_hpo_root_term_exists_at_depth_zero(run_hpo_update_once, query_athena, c
     SELECT term_id, term_label, depth
     FROM {database_name}.{table_name}
     WHERE ontology_source = 'hpo'
+      AND version = '{hpo_version}'
       AND term_id = 'HP:0000001'
     """
 
     results = query_athena(query)
 
-    assert len(results) == 1, "Should find exactly one root term HP:0000001"
+    assert len(results) == 1, f"Should find exactly one root term HP:0000001 for version {hpo_version}, found {len(results)}"
 
     root = results[0]
     assert root['term_id'] == 'HP:0000001'
