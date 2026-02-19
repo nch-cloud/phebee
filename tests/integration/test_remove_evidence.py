@@ -12,7 +12,6 @@ Tests verify:
 import json
 import pytest
 import boto3
-import time
 import uuid
 
 
@@ -39,26 +38,15 @@ def invoke_remove_evidence(physical_resources):
     return _invoke
 
 
-def wait_for_evidence_deletion(query_athena, evidence_id, max_wait=30):
-    """
-    Poll Athena until evidence is deleted (no longer appears in table).
-    Returns True if deleted, False if timeout.
-    """
-    start_time = time.time()
+def verify_evidence_deleted(query_athena, evidence_id):
+    """Verify evidence is deleted from Iceberg."""
+    results = query_athena(f"""
+        SELECT evidence_id
+        FROM phebee.evidence
+        WHERE evidence_id = '{evidence_id}'
+    """)
 
-    while time.time() - start_time < max_wait:
-        results = query_athena(f"""
-            SELECT evidence_id
-            FROM phebee.evidence
-            WHERE evidence_id = '{evidence_id}'
-        """)
-
-        if len(results) == 0:
-            return True  # Evidence successfully deleted
-
-        time.sleep(2)
-
-    return False
+    assert len(results) == 0, f"Evidence {evidence_id} should be deleted but still exists"
 
 
 def get_subject_terms_by_termlink(query_athena, subject_id, termlink_id):
@@ -95,8 +83,7 @@ def test_remove_evidence_with_remaining_evidence(
     create_evidence_helper,
     invoke_remove_evidence,
     query_athena,
-    standard_hpo_terms,
-    wait_for_subject_terms
+    standard_hpo_terms
 ):
     """
     Test 1: Remove Evidence Record (Happy Path - Evidence Remains)
@@ -123,14 +110,6 @@ def test_remove_evidence_with_remaining_evidence(
     # Get termlink_id from first evidence
     termlink_id = evidence_1["termlink_id"]
 
-    # Wait for all evidence to be created and subject_terms updated
-    wait_for_subject_terms(
-        subject_id=subject_uuid,
-        termlink_id=termlink_id,
-        project_id=test_project_id,
-        timeout=30
-    )
-
     # Verify initial evidence count = 3
     initial_count = count_evidence_for_termlink(query_athena, termlink_id)
     assert initial_count == 3, f"Expected 3 evidence records, found {initial_count}"
@@ -143,9 +122,8 @@ def test_remove_evidence_with_remaining_evidence(
     body = json.loads(result["body"])
     assert body["message"] == "Evidence deleted successfully"
 
-    # Wait for deletion to propagate
-    deleted = wait_for_evidence_deletion(query_athena, evidence_id_1, max_wait=30)
-    assert deleted, "Evidence was not deleted from Iceberg within timeout"
+    # Verify deletion
+    verify_evidence_deleted(query_athena, evidence_id_1)
 
     # Verify other 2 evidence records still exist
     remaining_count = count_evidence_for_termlink(query_athena, termlink_id)
@@ -162,7 +140,6 @@ def test_remove_evidence_with_remaining_evidence(
     assert len(evidence_3_exists) == 1, "Evidence 3 should still exist"
 
     # Verify analytical tables updated with decremented count
-    time.sleep(3)  # Allow time for analytical table update
     subject_terms = get_subject_terms_by_termlink(query_athena, subject_uuid, termlink_id)
     assert subject_terms is not None, "Subject terms row should still exist"
     assert int(subject_terms["evidence_count"]) == 2, \
@@ -174,8 +151,7 @@ def test_remove_evidence_last_evidence_cascade(
     create_evidence_helper,
     invoke_remove_evidence,
     query_athena,
-    standard_hpo_terms,
-    wait_for_subject_terms
+    standard_hpo_terms
 ):
     """
     Test 2: Remove Last Evidence for Term Link (Cascade to Neptune)
@@ -194,14 +170,6 @@ def test_remove_evidence_last_evidence_cascade(
     evidence_id = evidence["evidence_id"]
     termlink_id = evidence["termlink_id"]
 
-    # Wait for evidence creation and subject_terms update
-    wait_for_subject_terms(
-        subject_id=subject_uuid,
-        termlink_id=termlink_id,
-        project_id=test_project_id,
-        timeout=30
-    )
-
     # Verify evidence exists before deletion
     initial_count = count_evidence_for_termlink(query_athena, termlink_id)
     assert initial_count == 1, f"Expected 1 evidence record, found {initial_count}"
@@ -214,16 +182,14 @@ def test_remove_evidence_last_evidence_cascade(
     body = json.loads(result["body"])
     assert body["message"] == "Evidence deleted successfully"
 
-    # Wait for deletion
-    deleted = wait_for_evidence_deletion(query_athena, evidence_id, max_wait=30)
-    assert deleted, "Evidence was not deleted from Iceberg"
+    # Verify deletion
+    verify_evidence_deleted(query_athena, evidence_id)
 
     # Verify no evidence remains for termlink
     remaining_count = count_evidence_for_termlink(query_athena, termlink_id)
     assert remaining_count == 0, f"Expected 0 evidence records, found {remaining_count}"
 
     # Verify analytical table row removed (evidence_count = 0)
-    time.sleep(3)  # Allow time for analytical table update
     subject_terms = get_subject_terms_by_termlink(query_athena, subject_uuid, termlink_id)
     assert subject_terms is None, "Subject terms row should be deleted when evidence_count reaches 0"
 
@@ -316,8 +282,7 @@ def test_remove_evidence_distinct_termlinks(
     create_evidence_helper,
     invoke_remove_evidence,
     query_athena,
-    standard_hpo_terms,
-    wait_for_subject_terms
+    standard_hpo_terms
 ):
     """
     Test 6: Remove Evidence - Multiple Term Links for Same Term
@@ -351,10 +316,6 @@ def test_remove_evidence_distinct_termlinks(
     # Verify distinct termlinks
     assert termlink_a != termlink_b, "Termlinks should be distinct (different qualifiers)"
 
-    # Wait for both termlinks to appear in subject_terms
-    wait_for_subject_terms(subject_id=subject_uuid, termlink_id=termlink_a, project_id=test_project_id)
-    wait_for_subject_terms(subject_id=subject_uuid, termlink_id=termlink_b, project_id=test_project_id)
-
     # Verify initial counts
     count_a = count_evidence_for_termlink(query_athena, termlink_a)
     count_b = count_evidence_for_termlink(query_athena, termlink_b)
@@ -369,8 +330,8 @@ def test_remove_evidence_distinct_termlinks(
     assert result2["statusCode"] == 200
 
     # Wait for deletions
-    wait_for_evidence_deletion(query_athena, evidence_a1["evidence_id"])
-    wait_for_evidence_deletion(query_athena, evidence_a2["evidence_id"])
+    verify_evidence_deleted(query_athena, evidence_a1["evidence_id"])
+    verify_evidence_deleted(query_athena, evidence_a2["evidence_id"])
 
     # Verify termlink-A deleted
     count_a_final = count_evidence_for_termlink(query_athena, termlink_a)
@@ -381,7 +342,6 @@ def test_remove_evidence_distinct_termlinks(
     assert count_b_final == 2, f"Expected 2 evidence for termlink-B, found {count_b_final}"
 
     # Verify analytical tables
-    time.sleep(3)
     subject_terms_a = get_subject_terms_by_termlink(query_athena, subject_uuid, termlink_a)
     subject_terms_b = get_subject_terms_by_termlink(query_athena, subject_uuid, termlink_b)
 
@@ -396,8 +356,7 @@ def test_remove_evidence_idempotent(
     create_evidence_helper,
     invoke_remove_evidence,
     query_athena,
-    standard_hpo_terms,
-    wait_for_subject_terms
+    standard_hpo_terms
 ):
     """
     Test 7: Remove Evidence - Verify Idempotency (Delete Twice)
@@ -414,18 +373,14 @@ def test_remove_evidence_idempotent(
     evidence_id = evidence["evidence_id"]
     termlink_id = evidence["termlink_id"]
 
-    # Wait for creation
-    wait_for_subject_terms(subject_id=subject_uuid, termlink_id=termlink_id, project_id=test_project_id)
-
     # First deletion
     result1 = invoke_remove_evidence(evidence_id)
     assert result1["statusCode"] == 200
     body1 = json.loads(result1["body"])
     assert body1["message"] == "Evidence deleted successfully"
 
-    # Wait for deletion
-    deleted = wait_for_evidence_deletion(query_athena, evidence_id)
-    assert deleted, "Evidence should be deleted after first invocation"
+    # Verify deletion
+    verify_evidence_deleted(query_athena, evidence_id)
 
     # Second deletion (idempotency test)
     result2 = invoke_remove_evidence(evidence_id)
@@ -481,9 +436,6 @@ def test_remove_evidence_for_deleted_subject(
     evidence = create_evidence_helper(subject_id=subject_uuid, term_iri=term_iri)
     evidence_id = evidence["evidence_id"]
 
-    # Wait for creation to propagate
-    time.sleep(3)
-
     # Delete evidence (succeeds regardless of subject state)
     result = invoke_remove_evidence(evidence_id)
 
@@ -493,8 +445,7 @@ def test_remove_evidence_for_deleted_subject(
     assert body["message"] == "Evidence deleted successfully"
 
     # Verify evidence deleted
-    deleted = wait_for_evidence_deletion(query_athena, evidence_id)
-    assert deleted, "Evidence should be deleted as independent entity"
+    verify_evidence_deleted(query_athena, evidence_id)
 
 
 def test_remove_evidence_termlink_id_extraction(
@@ -502,8 +453,7 @@ def test_remove_evidence_termlink_id_extraction(
     create_evidence_helper,
     invoke_remove_evidence,
     query_athena,
-    standard_hpo_terms,
-    wait_for_subject_terms
+    standard_hpo_terms
 ):
     """
     Test 11: Remove Evidence - Verify termlink_id Extraction
@@ -525,9 +475,6 @@ def test_remove_evidence_termlink_id_extraction(
     evidence_id = evidence["evidence_id"]
     termlink_id = evidence["termlink_id"]
 
-    # Wait for creation
-    wait_for_subject_terms(subject_id=subject_uuid, termlink_id=termlink_id, project_id=test_project_id)
-
     # Verify evidence exists with correct termlink_id
     evidence_check = query_athena(f"""
         SELECT termlink_id
@@ -541,11 +488,9 @@ def test_remove_evidence_termlink_id_extraction(
     result = invoke_remove_evidence(evidence_id)
     assert result["statusCode"] == 200
 
-    # Wait for deletion
-    deleted = wait_for_evidence_deletion(query_athena, evidence_id)
-    assert deleted
+    # Verify deletion
+    verify_evidence_deleted(query_athena, evidence_id)
 
     # Verify analytical table row removed (correct termlink used)
-    time.sleep(3)
     subject_terms = get_subject_terms_by_termlink(query_athena, subject_uuid, termlink_id)
     assert subject_terms is None, "Row should be deleted (correct termlink_id was used)"

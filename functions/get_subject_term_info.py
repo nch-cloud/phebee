@@ -21,12 +21,14 @@ def lambda_handler(event, context):
         if not subject_id:
             return {
                 "statusCode": 400,
+                "headers": {"Content-Type": "application/json"},
                 "body": json.dumps({"message": "Missing required field: subject_id"})
             }
 
         if not term_iri:
             return {
                 "statusCode": 400,
+                "headers": {"Content-Type": "application/json"},
                 "body": json.dumps({"message": "Missing required field: term_iri"})
             }
 
@@ -37,11 +39,13 @@ def lambda_handler(event, context):
         if not result:
             return {
                 "statusCode": 404,
+                "headers": {"Content-Type": "application/json"},
                 "body": json.dumps({"message": "Term not found for subject"})
             }
 
         return {
             "statusCode": 200,
+            "headers": {"Content-Type": "application/json"},
             "body": json.dumps(result)
         }
 
@@ -49,5 +53,6 @@ def lambda_handler(event, context):
         logger.error(f"Error in get_subject_term_info: {str(e)}", exc_info=True)
         return {
             "statusCode": 500,
+            "headers": {"Content-Type": "application/json"},
             "body": json.dumps({"message": f"Internal server error: {str(e)}"})
         }

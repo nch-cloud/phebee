@@ -14,7 +14,6 @@ Tests cover:
 import json
 import pytest
 import boto3
-import time
 
 
 @pytest.fixture(scope="module")
@@ -301,8 +300,7 @@ def test_get_evidence_immutability(shared_evidence_records, invoke_get_evidence)
     assert result1["statusCode"] == 200
     body1 = json.loads(result1["body"])
 
-    # Wait and retrieve again
-    time.sleep(2)
+    # Retrieve again
     result2 = invoke_get_evidence(evidence_id)
     assert result2["statusCode"] == 200
     body2 = json.loads(result2["body"])

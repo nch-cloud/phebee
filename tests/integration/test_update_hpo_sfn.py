@@ -31,52 +31,15 @@ def update_hpo_sfn_arn(cloudformation_stack):
 
 
 @pytest.fixture(scope="module")
-def run_hpo_update_once(update_hpo_sfn_arn):
+def run_hpo_update_once(hpo_update_execution):
     """
-    Run the HPO update state machine once per test module.
+    Use the session-level HPO update fixture.
 
     Returns the execution ARN for test verification.
-    This fixture ensures HPO data is available for all tests.
     """
-    sfn_client = get_client("stepfunctions")
-
-    # Start execution
-    execution_name = f"test-hpo-update-{int(time.time())}"
-    print(f"\n[HPO UPDATE] Starting execution: {execution_name}")
-
-    response = sfn_client.start_execution(
-        stateMachineArn=update_hpo_sfn_arn,
-        name=execution_name,
-        input=json.dumps({"test": True})
-    )
-
-    execution_arn = response['executionArn']
-    print(f"[HPO UPDATE] Execution ARN: {execution_arn}")
-
-    # Wait for completion (can take 15-45 minutes)
-    print("[HPO UPDATE] Waiting for execution to complete (this may take 15-45 minutes)...")
-    start_time = time.time()
-
-    while True:
-        execution = sfn_client.describe_execution(executionArn=execution_arn)
-        status = execution['status']
-
-        elapsed = int(time.time() - start_time)
-        print(f"[HPO UPDATE] Status: {status} (elapsed: {elapsed//60}m {elapsed%60}s)")
-
-        if status == 'SUCCEEDED':
-            duration = time.time() - start_time
-            print(f"[HPO UPDATE] Execution completed successfully in {duration//60:.0f}m {duration%60:.0f}s")
-            break
-        elif status == 'FAILED':
-            error = execution.get('cause', 'Unknown error')
-            pytest.fail(f"HPO update failed: {error}")
-        elif status in ['TIMED_OUT', 'ABORTED']:
-            pytest.fail(f"HPO update {status}")
-
-        time.sleep(30)  # Check every 30 seconds
-
-    return execution_arn
+    if not hpo_update_execution:
+        pytest.fail("HPO update failed or was not run")
+    return hpo_update_execution
 
 
 def test_update_hpo_execution_succeeds(run_hpo_update_once, update_hpo_sfn_arn):
@@ -220,32 +183,43 @@ def test_hpo_hierarchy_has_required_columns(run_hpo_update_once, query_athena, c
 
 def test_hpo_root_term_exists_at_depth_zero(run_hpo_update_once, query_athena, cloudformation_stack):
     """Test that HPO root term (HP:0000001 'All') exists at depth 0."""
-    sfn_client = get_client("stepfunctions")
+    dynamodb = get_client("dynamodb")
     cf_client = get_client("cloudformation")
 
-    # Get the HPO version from execution output
-    execution = sfn_client.describe_execution(executionArn=run_hpo_update_once)
-    output = json.loads(execution['output'])
+    # Get the latest HPO version from DynamoDB
+    response = cf_client.describe_stacks(StackName=cloudformation_stack)
+    outputs = {o['OutputKey']: o['OutputValue'] for o in response['Stacks'][0]['Outputs']}
+    table_name = outputs['DynamoDBTableName']
 
-    # Extract version - it's either in hpo.Payload.version or hpo_version depending on execution path
-    if 'hpo_version' in output:
-        hpo_version = output['hpo_version']
-    elif 'hpo' in output and 'Payload' in output['hpo']:
-        hpo_version = output['hpo']['Payload'].get('version')
-    else:
-        pytest.fail("Could not extract HPO version from execution output")
+    # Query for all SOURCE~hpo records
+    ddb_response = dynamodb.query(
+        TableName=table_name,
+        KeyConditionExpression='PK = :pk',
+        ExpressionAttributeValues={
+            ':pk': {'S': 'SOURCE~hpo'}
+        }
+    )
+
+    assert ddb_response['Count'] > 0, "DynamoDB should have SOURCE~hpo records"
+
+    # Find the most recent record by InstallTimestamp
+    items = ddb_response['Items']
+    items_with_install = [item for item in items if 'InstallTimestamp' in item]
+    assert len(items_with_install) > 0, "Should have at least one record with InstallTimestamp"
+
+    # Sort by InstallTimestamp descending and get the most recent
+    latest = sorted(items_with_install, key=lambda x: x['InstallTimestamp']['S'], reverse=True)[0]
+    hpo_version = latest['Version']['S']
 
     print(f"\n[TEST] Testing HPO version: {hpo_version}")
 
     # Get table names from stack outputs
-    response = cf_client.describe_stacks(StackName=cloudformation_stack)
-    outputs = {o['OutputKey']: o['OutputValue'] for o in response['Stacks'][0]['Outputs']}
     database_name = outputs['AthenaDatabase']
-    table_name = outputs.get('AthenaOntologyHierarchyTable', 'ontology_hierarchy')
+    hierarchy_table = outputs.get('AthenaOntologyHierarchyTable', 'ontology_hierarchy')
 
     query = f"""
     SELECT term_id, term_label, depth
-    FROM {database_name}.{table_name}
+    FROM {database_name}.{hierarchy_table}
     WHERE ontology_source = 'hpo'
       AND version = '{hpo_version}'
       AND term_id = 'HP:0000001'

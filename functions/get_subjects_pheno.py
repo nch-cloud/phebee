@@ -16,6 +16,14 @@ s3_client = get_client("s3")
 
 
 def lambda_handler(event, context):
+    """
+    Query subjects in a project with their phenotypes.
+
+    IMPORTANT: This endpoint queries the materialized subject_terms_by_project_term table,
+    which only includes subjects that have evidence/phenotypes. Subjects without any
+    evidence will NOT appear in results. This is by design for performance - the
+    materialized table enables efficient term-based queries and subject retrieval.
+    """
     logger.info("Event: %s", event)
 
     body = extract_body(event)
@@ -30,9 +38,8 @@ def lambda_handler(event, context):
 
     term_iri = body.get("term_iri")
     term_source = body.get("term_source", "hpo")
-    term_source_version = body.get(
-        "term_source_version", get_current_term_source_version(term_source)
-    )
+    # Don't default to a specific version - let query functions use latest from Iceberg tables
+    term_source_version = body.get("term_source_version")
 
     hpo_version = get_current_term_source_version("hpo")
     mondo_version = get_current_term_source_version("mondo")
@@ -71,11 +78,14 @@ def lambda_handler(event, context):
             term_id = term_iri.split('/')[-1]
 
     # Query Iceberg analytical tables directly
+    # Note: This queries subject_terms_by_project_term, which only includes subjects
+    # with evidence. Subjects without any phenotypes/evidence will not appear in results.
     offset = int(cursor) if cursor else 0
     result = query_subjects_by_project(
         project_id=project_id,
         term_id=term_id,
         term_source=term_source,
+        term_source_version=term_source_version,
         include_child_terms=include_child_terms,
         include_qualified=include_qualified,
         project_subject_ids=project_subject_ids,

@@ -69,13 +69,13 @@ def lambda_handler(event, context):
         qualifier_list = []
         if qualifiers:
             if isinstance(qualifiers, dict):
-                # Convert dict to list of "key:value" strings, filtering out false values
+                # Convert dict to list of IRIs, filtering out false values
+                # Just use the IRI itself (presence implies active)
                 for qualifier_iri, qualifier_value in qualifiers.items():
                     if qualifier_value not in [False, "false", "0", 0, 0.0]:
-                        # Include active qualifiers as "iri:true"
-                        qualifier_list.append(f"{qualifier_iri}:true")
+                        qualifier_list.append(qualifier_iri)
             elif isinstance(qualifiers, list):
-                # List format - assume already in proper format or just IRIs
+                # List format - use as-is (presence implies active)
                 qualifier_list = qualifiers
             else:
                 logger.warning(f"Unexpected qualifiers type: {type(qualifiers)}")
@@ -113,16 +113,14 @@ def lambda_handler(event, context):
             creator_iri = f"http://ods.nationwidechildrens.org/phebee/creators/{creator_id}"
 
             # Convert qualifier strings to IRIs if needed
-            # qualifier_list is in format ["iri:true", "iri:true"]
+            # qualifier_list is already in plain IRI format (no :true suffix)
             qualifier_iris = []
             for q in qualifier_list:
-                # Extract IRI from "iri:value" format (split from right to handle URLs with colons)
-                qualifier_iri = q.rsplit(":", 1)[0] if ":" in q else q
-                if qualifier_iri.startswith('http://') or qualifier_iri.startswith('https://'):
-                    qualifier_iris.append(qualifier_iri)
+                if q.startswith('http://') or q.startswith('https://'):
+                    qualifier_iris.append(q)
                 else:
                     # Assume qualifier is a short name, convert to IRI
-                    qualifier_iris.append(f"http://ods.nationwidechildrens.org/phebee/qualifier/{qualifier_iri}")
+                    qualifier_iris.append(f"http://ods.nationwidechildrens.org/phebee/qualifier/{q}")
 
             result = create_term_link(
                 subject_iri=subject_iri,

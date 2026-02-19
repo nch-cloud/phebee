@@ -15,7 +15,6 @@ Neptune term link creation is logged but non-blocking.
 import pytest
 import json
 import uuid
-import time
 from phebee.utils.aws import get_client
 
 
@@ -55,41 +54,31 @@ def create_evidence(subject_id: str, term_iri: str, creator_id: str,
     return result
 
 
-def wait_for_iceberg_evidence(query_athena, evidence_id: str, timeout: int = 60) -> dict:
-    """
-    Wait for evidence to appear in Iceberg via Athena.
+def get_evidence_from_iceberg(query_athena, evidence_id: str) -> dict:
+    """Get evidence record from Iceberg via Athena."""
+    results = query_athena(f"""
+        SELECT
+            evidence_id,
+            run_id,
+            batch_id,
+            evidence_type,
+            subject_id,
+            term_iri,
+            termlink_id,
+            creator.creator_id as creator_id,
+            creator.creator_type as creator_type,
+            encounter_id,
+            clinical_note_id,
+            created_timestamp,
+            created_date
+        FROM phebee.evidence
+        WHERE evidence_id = '{evidence_id}'
+    """)
 
-    Iceberg writes may have a small delay, so poll until evidence appears.
-    Returns core fields that are always present.
-    """
-    start_time = time.time()
+    if not results:
+        raise AssertionError(f"Evidence {evidence_id} not found in Iceberg")
 
-    while time.time() - start_time < timeout:
-        results = query_athena(f"""
-            SELECT
-                evidence_id,
-                run_id,
-                batch_id,
-                evidence_type,
-                subject_id,
-                term_iri,
-                termlink_id,
-                creator.creator_id as creator_id,
-                creator.creator_type as creator_type,
-                encounter_id,
-                clinical_note_id,
-                created_timestamp,
-                created_date
-            FROM phebee.evidence
-            WHERE evidence_id = '{evidence_id}'
-        """)
-
-        if results:
-            return results[0]
-
-        time.sleep(2)
-
-    raise TimeoutError(f"Evidence {evidence_id} not found in Iceberg after {timeout}s")
+    return results[0]
 
 
 def count_evidence_for_termlink(query_athena, termlink_id: str) -> int:
@@ -102,12 +91,64 @@ def count_evidence_for_termlink(query_athena, termlink_id: str) -> int:
     return int(results[0]["count"]) if results else 0
 
 
+def get_subject_terms(query_athena, subject_uuid: str, termlink_id: str, project_id: str):
+    """
+    Query subject_terms tables for a specific termlink.
+
+    Returns:
+        tuple: (by_subject_record, by_project_record)
+    """
+    # Query subject_terms_by_subject table
+    by_subject_results = query_athena(f"""
+        SELECT subject_id, term_iri, termlink_id, qualifiers, evidence_count,
+               first_evidence_date, last_evidence_date
+        FROM phebee.subject_terms_by_subject
+        WHERE subject_id = '{subject_uuid}' AND termlink_id = '{termlink_id}'
+    """)
+    assert len(by_subject_results) > 0, \
+        f"Expected subject_terms_by_subject row for {subject_uuid}/{termlink_id}"
+    by_subject = by_subject_results[0]
+
+    # Query subject_terms_by_project_term table
+    by_project_results = query_athena(f"""
+        SELECT project_id, subject_id, term_iri, termlink_id, qualifiers,
+               evidence_count, first_evidence_date, last_evidence_date
+        FROM phebee.subject_terms_by_project_term
+        WHERE project_id = '{project_id}' AND subject_id = '{subject_uuid}'
+          AND termlink_id = '{termlink_id}'
+    """)
+    assert len(by_project_results) > 0, \
+        f"Expected subject_terms_by_project_term row for {project_id}/{subject_uuid}/{termlink_id}"
+    by_project = by_project_results[0]
+
+    return by_subject, by_project
+
+
+def get_evidence(evidence_id: str, physical_resources: dict):
+    """Helper to invoke GetEvidenceFunction."""
+    lambda_client = get_client("lambda")
+
+    payload = {"evidence_id": evidence_id}
+
+    response = lambda_client.invoke(
+        FunctionName=physical_resources["GetEvidenceFunction"],
+        Payload=json.dumps(payload).encode("utf-8")
+    )
+
+    result = json.loads(response["Payload"].read())
+
+    if result.get("statusCode") == 200:
+        return json.loads(result["body"])
+    else:
+        raise Exception(f"GetEvidence failed: {result}")
+
+
 # ============================================================================
 # Test Cases
 # ============================================================================
 
 def test_create_evidence_minimal(physical_resources, test_subject, test_project_id, query_athena,
-                                  standard_hpo_terms, wait_for_subject_terms):
+                                  standard_hpo_terms):
     """
     Test 1: Create Evidence Record (Happy Path - Minimal Fields)
 
@@ -142,7 +183,7 @@ def test_create_evidence_minimal(physical_resources, test_subject, test_project_
     evidence_id = body["evidence_id"]
 
     # Iceberg verification: Wait for evidence to appear and verify fields
-    evidence_record = wait_for_iceberg_evidence(query_athena, evidence_id)
+    evidence_record = get_evidence_from_iceberg(query_athena, evidence_id)
 
     assert evidence_record["evidence_id"] == evidence_id
     assert evidence_record["subject_id"] == subject_uuid
@@ -153,11 +194,7 @@ def test_create_evidence_minimal(physical_resources, test_subject, test_project_
 
     # Subject-terms verification: First evidence should create row with count=1
     termlink_id = evidence_record["termlink_id"]
-    by_subject, by_project = wait_for_subject_terms(
-        subject_id=subject_uuid,
-        termlink_id=termlink_id,
-        project_id=test_project_id
-    )
+    by_subject, by_project = get_subject_terms(query_athena, subject_uuid, termlink_id, test_project_id)
 
     # Verify by_subject table
     assert by_subject["subject_id"] == subject_uuid
@@ -255,7 +292,7 @@ def test_create_evidence_full_fields(physical_resources, test_subject, query_ath
 
 
 def test_create_evidence_multiple_same_termlink(physical_resources, test_subject, test_project_id,
-                                                 query_athena, standard_hpo_terms, wait_for_subject_terms):
+                                                 query_athena, standard_hpo_terms):
     """
     Test 3: Multiple Evidence Records for Same Term Link
 
@@ -284,7 +321,7 @@ def test_create_evidence_multiple_same_termlink(physical_resources, test_subject
         evidence_ids.append(body["evidence_id"])
 
         # Extract termlink_id from Iceberg
-        evidence_record = wait_for_iceberg_evidence(query_athena, body["evidence_id"])
+        evidence_record = get_evidence_from_iceberg(query_athena, body["evidence_id"])
         termlink_ids.append(evidence_record["termlink_id"])
 
     # Assertions: All evidence records share same termlink_id
@@ -299,11 +336,7 @@ def test_create_evidence_multiple_same_termlink(physical_resources, test_subject
     assert count == 3, f"Expected 3 evidence records for termlink, found {count}"
 
     # Subject-terms verification: Count should be 3 in both tables
-    by_subject, by_project = wait_for_subject_terms(
-        subject_id=subject_uuid,
-        termlink_id=termlink_id,
-        project_id=test_project_id
-    )
+    by_subject, by_project = get_subject_terms(query_athena, subject_uuid, termlink_id, test_project_id)
 
     assert int(by_subject["evidence_count"]) == 3, \
         f"Expected evidence_count=3 in by_subject table, got {by_subject['evidence_count']}"
@@ -316,7 +349,7 @@ def test_create_evidence_multiple_same_termlink(physical_resources, test_subject
 
 
 def test_create_evidence_qualifier_standardization(physical_resources, test_subject, test_project_id,
-                                                   query_athena, standard_hpo_terms, wait_for_subject_terms):
+                                                   query_athena, standard_hpo_terms):
     """
     Test 21: Qualifier Standardization with true/false Format (CRITICAL)
 
@@ -343,7 +376,7 @@ def test_create_evidence_qualifier_standardization(physical_resources, test_subj
     evidence_id = body["evidence_id"]
 
     # Iceberg verification: Qualifiers stored as array
-    evidence_record = wait_for_iceberg_evidence(query_athena, evidence_id)
+    evidence_record = get_evidence_from_iceberg(query_athena, evidence_id)
 
     # Note: The qualifier format in Iceberg depends on how PyIceberg/Athena represents arrays
     # The actual standardization to {"negated": "true"} format happens in GetEvidence
@@ -356,11 +389,7 @@ def test_create_evidence_qualifier_standardization(physical_resources, test_subj
 
     # Subject-terms verification: Qualifiers stored in both tables
     termlink_id = evidence_record["termlink_id"]
-    by_subject, by_project = wait_for_subject_terms(
-        subject_id=subject_uuid,
-        termlink_id=termlink_id,
-        project_id=test_project_id
-    )
+    by_subject, by_project = get_subject_terms(query_athena, subject_uuid, termlink_id, test_project_id)
 
     # Verify qualifiers are present in both tables
     # Note: Athena may return arrays as strings like "[negated, family]"
@@ -406,8 +435,8 @@ def test_create_evidence_qualifier_hash_consistency(physical_resources, test_sub
     body2 = json.loads(result2["body"])
 
     # Get evidence records from Iceberg
-    evidence1 = wait_for_iceberg_evidence(query_athena, body1["evidence_id"])
-    evidence2 = wait_for_iceberg_evidence(query_athena, body2["evidence_id"])
+    evidence1 = get_evidence_from_iceberg(query_athena, body1["evidence_id"])
+    evidence2 = get_evidence_from_iceberg(query_athena, body2["evidence_id"])
 
     # CRITICAL: Same termlink_id despite different qualifier order
     assert evidence1["termlink_id"] == evidence2["termlink_id"], \
@@ -422,7 +451,7 @@ def test_create_evidence_qualifier_hash_consistency(physical_resources, test_sub
 
 
 def test_create_evidence_different_qualifiers_different_hash(physical_resources, test_subject, test_project_id,
-                                                              query_athena, standard_hpo_terms, wait_for_subject_terms):
+                                                              query_athena, standard_hpo_terms):
     """
     Test 23: Different Qualifiers Produce Different termlink_ids (CRITICAL)
 
@@ -457,8 +486,8 @@ def test_create_evidence_different_qualifiers_different_hash(physical_resources,
     body1 = json.loads(result1["body"])
     body2 = json.loads(result2["body"])
 
-    evidence1 = wait_for_iceberg_evidence(query_athena, body1["evidence_id"])
-    evidence2 = wait_for_iceberg_evidence(query_athena, body2["evidence_id"])
+    evidence1 = get_evidence_from_iceberg(query_athena, body1["evidence_id"])
+    evidence2 = get_evidence_from_iceberg(query_athena, body2["evidence_id"])
 
     # CRITICAL: Different qualifiers produce different termlink_ids
     assert evidence1["termlink_id"] != evidence2["termlink_id"], \
@@ -471,16 +500,12 @@ def test_create_evidence_different_qualifiers_different_hash(physical_resources,
     assert count2 == 1
 
     # Subject-terms verification: Both termlinks should have separate rows
-    by_subject1, by_project1 = wait_for_subject_terms(
-        subject_id=subject_uuid,
-        termlink_id=evidence1["termlink_id"],
-        project_id=test_project_id
+    by_subject1, by_project1 = get_subject_terms(
+        query_athena, subject_uuid, evidence1["termlink_id"], test_project_id
     )
 
-    by_subject2, by_project2 = wait_for_subject_terms(
-        subject_id=subject_uuid,
-        termlink_id=evidence2["termlink_id"],
-        project_id=test_project_id
+    by_subject2, by_project2 = get_subject_terms(
+        query_athena, subject_uuid, evidence2["termlink_id"], test_project_id
     )
 
     # Verify both termlinks exist as separate rows
@@ -530,8 +555,8 @@ def test_create_evidence_empty_qualifiers_hash(physical_resources, test_subject,
     body1 = json.loads(result1["body"])
     body2 = json.loads(result2["body"])
 
-    evidence1 = wait_for_iceberg_evidence(query_athena, body1["evidence_id"])
-    evidence2 = wait_for_iceberg_evidence(query_athena, body2["evidence_id"])
+    evidence1 = get_evidence_from_iceberg(query_athena, body1["evidence_id"])
+    evidence2 = get_evidence_from_iceberg(query_athena, body2["evidence_id"])
 
     # CRITICAL: Empty and missing qualifiers produce same termlink_id
     assert evidence1["termlink_id"] == evidence2["termlink_id"], \
@@ -543,7 +568,7 @@ def test_create_evidence_empty_qualifiers_hash(physical_resources, test_subject,
 
 
 def test_create_evidence_multi_project_update(physical_resources, test_project_id, query_athena,
-                                                standard_hpo_terms, wait_for_subject_terms):
+                                                standard_hpo_terms):
     """
     Test: Evidence Updates All Projects with Subject
 
@@ -616,20 +641,16 @@ def test_create_evidence_multi_project_update(physical_resources, test_project_i
         evidence_id = evidence_body["evidence_id"]
 
         # Get termlink_id from evidence
-        evidence_record = wait_for_iceberg_evidence(query_athena, evidence_id)
+        evidence_record = get_evidence_from_iceberg(query_athena, evidence_id)
         termlink_id = evidence_record["termlink_id"]
 
         # Verify subject_terms updated for BOTH projects
-        by_subject, by_project_1 = wait_for_subject_terms(
-            subject_id=subject_uuid,
-            termlink_id=termlink_id,
-            project_id=test_project_id
+        by_subject, by_project_1 = get_subject_terms(
+            query_athena, subject_uuid, termlink_id, test_project_id
         )
 
-        _, by_project_2 = wait_for_subject_terms(
-            subject_id=subject_uuid,
-            termlink_id=termlink_id,
-            project_id=project_id_2
+        _, by_project_2 = get_subject_terms(
+            query_athena, subject_uuid, termlink_id, project_id_2
         )
 
         # Both projects should have the evidence
@@ -731,8 +752,129 @@ def test_create_evidence_subject_not_exists(physical_resources, query_athena, st
     evidence_id = body["evidence_id"]
 
     # Iceberg verification: Evidence record exists
-    evidence_record = wait_for_iceberg_evidence(query_athena, evidence_id)
+    evidence_record = get_evidence_from_iceberg(query_athena, evidence_id)
     assert evidence_record["subject_id"] == nonexistent_subject_id
 
     # Document: This is expected behavior - evidence creation is independent
     # of subject existence validation
+
+
+def test_create_evidence_with_term_source(physical_resources, test_subject, query_athena, standard_hpo_terms):
+    """
+    Test: Evidence Creation with Full term_source Metadata
+
+    Verifies that term_source (ontology version metadata) is properly stored
+    and retrievable via GetEvidence. Term source includes source name, version, and IRI.
+    """
+    subject_uuid, project_subject_iri = test_subject
+    term_iri = standard_hpo_terms["seizure"]
+
+    # Action: Create evidence with full term_source
+    result = create_evidence(
+        subject_id=subject_uuid,
+        term_iri=term_iri,
+        creator_id="test-creator",
+        creator_type="human",
+        term_source={
+            "source": "hpo",
+            "version": "2024-01-01",
+            "iri": "http://purl.obolibrary.org/obo/hp.owl"
+        },
+        physical_resources=physical_resources
+    )
+
+    # Assertions: Verify evidence creation response
+    assert result["statusCode"] == 201
+    body = json.loads(result["body"])
+    evidence_id = body["evidence_id"]
+    assert body["subject_id"] == subject_uuid
+    assert body["term_iri"] == term_iri
+
+    # Wait for evidence in Iceberg
+    get_evidence_from_iceberg(query_athena, evidence_id)
+
+    # GetEvidence verification: term_source is present and correct
+    retrieved_evidence = get_evidence(evidence_id, physical_resources)
+
+    assert "term_source" in retrieved_evidence
+    term_source = retrieved_evidence["term_source"]
+    assert term_source["source"] == "hpo"
+    assert term_source["version"] == "2024-01-01"
+    assert term_source["iri"] == "http://purl.obolibrary.org/obo/hp.owl"
+
+
+def test_create_evidence_without_term_source(physical_resources, test_subject, query_athena, standard_hpo_terms):
+    """
+    Test: Evidence Creation without term_source (Optional Field)
+
+    Verifies that evidence can be created without term_source metadata,
+    confirming that term_source is an optional field.
+    """
+    subject_uuid, project_subject_iri = test_subject
+    term_iri = standard_hpo_terms["abnormal_heart_morphology"]
+
+    # Action: Create evidence without term_source
+    result = create_evidence(
+        subject_id=subject_uuid,
+        term_iri=term_iri,
+        creator_id="test-creator",
+        creator_type="human",
+        # term_source intentionally omitted
+        physical_resources=physical_resources
+    )
+
+    # Assertions: Verify evidence creation succeeds without term_source
+    assert result["statusCode"] == 201
+    body = json.loads(result["body"])
+    evidence_id = body["evidence_id"]
+    assert body["subject_id"] == subject_uuid
+
+    # Wait for evidence in Iceberg
+    get_evidence_from_iceberg(query_athena, evidence_id)
+
+    # GetEvidence verification: term_source is not present
+    retrieved_evidence = get_evidence(evidence_id, physical_resources)
+
+    # Verify term_source is absent or null (optional field)
+    assert "term_source" not in retrieved_evidence or retrieved_evidence.get("term_source") is None
+
+
+def test_create_evidence_partial_term_source(physical_resources, test_subject, query_athena, standard_hpo_terms):
+    """
+    Test: Evidence Creation with Partial term_source
+
+    Verifies that evidence can be created with partial term_source metadata
+    (only source field), and that missing fields are handled correctly.
+    """
+    subject_uuid, project_subject_iri = test_subject
+    term_iri = standard_hpo_terms["abnormality_of_head"]
+
+    # Action: Create evidence with partial term_source (only source)
+    result = create_evidence(
+        subject_id=subject_uuid,
+        term_iri=term_iri,
+        creator_id="test-creator",
+        creator_type="human",
+        term_source={
+            "source": "mondo"
+        },
+        physical_resources=physical_resources
+    )
+
+    # Assertions: Verify evidence creation succeeds with partial term_source
+    assert result["statusCode"] == 201
+    body = json.loads(result["body"])
+    evidence_id = body["evidence_id"]
+
+    # Wait for evidence in Iceberg
+    get_evidence_from_iceberg(query_athena, evidence_id)
+
+    # GetEvidence verification: term_source is present with only provided field
+    retrieved_evidence = get_evidence(evidence_id, physical_resources)
+
+    assert "term_source" in retrieved_evidence
+    term_source = retrieved_evidence["term_source"]
+    assert term_source["source"] == "mondo"
+    # version and iri should be absent or null/empty
+    assert term_source.get("version") is None or term_source.get("version") == ""
+    assert term_source.get("iri") is None or term_source.get("iri") == ""

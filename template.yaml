@@ -750,6 +750,7 @@ Resources:
       CodeUri: functions
       Handler: create_subject.lambda_handler
       MemorySize: 512
+      Timeout: 900
       Layers:
         - !Ref PheBeeUtilsLayer
       Environment:
@@ -758,6 +759,11 @@ Resources:
           Region: !Sub ${AWS::Region}
           PheBeeBus: !Ref PheBeeBus
           PheBeeDynamoTable: !Ref DynamoDBTable
+          ICEBERG_DATABASE: !Ref IcebergDatabase
+          ICEBERG_EVIDENCE_TABLE: !Ref IcebergEvidenceTable
+          ICEBERG_SUBJECT_TERMS_BY_SUBJECT_TABLE: !Ref IcebergSubjectTermsBySubjectTable
+          ICEBERG_SUBJECT_TERMS_BY_PROJECT_TERM_TABLE: !Ref IcebergSubjectTermsByProjectTermTable
+          PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
       VpcConfig:
         SecurityGroupIds:
           - !Ref PheBeeLambdaSecurityGroup
@@ -768,6 +774,7 @@ Resources:
         - !Ref PheBeeNeptuneReadPolicy
         - !Ref PheBeeNeptuneWritePolicy
         - !Ref PheBeePutEventsPolicy
+        - !Ref PheBeeIcebergPolicy
         - DynamoDBCrudPolicy:
             TableName: !Ref DynamoDBTable
 
@@ -980,9 +987,18 @@ Resources:
           PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
           EVIDENCE_TABLE: !Sub ${AppName}_evidence
           PheBeeDynamoTable: !Ref DynamoDBTable
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
           Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
       Policies:
         - !Ref PheBeeIcebergPolicy
+        - !Ref PheBeeNeptuneReadPolicy
+        - !Ref PheBeeNeptuneWritePolicy
         - DynamoDBCrudPolicy:
             TableName: !Ref DynamoDBTable
 
@@ -1916,6 +1932,7 @@ Resources:
         CreateSubjectFunctionArn: !Ref CreateSubjectFunction
         PrepareEvidencePayloadFunctionArn: !Ref PrepareEvidencePayloadFunction
         CreateEvidenceFunctionArn: !Ref CreateEvidenceFunction
+        MaterializeProjectSubjectTermsFunction: !GetAtt MaterializeProjectSubjectTermsFunction.Arn
       Type: STANDARD
       Policies:
         - !Ref PheBeeStepFunctionPolicy
@@ -1931,6 +1948,7 @@ Resources:
               - !GetAtt ProcessPhenopacketFunction.Arn
               - !GetAtt PrepareEvidencePayloadFunction.Arn
               - !GetAtt CreateEvidenceFunction.Arn
+              - !GetAtt MaterializeProjectSubjectTermsFunction.Arn
           - Effect: Allow
             Action:
               - states:StartExecution
@@ -2137,6 +2155,10 @@ Outputs:
 
   UpdateECOSFNArn:
     Value: !Ref UpdateECOSFN
+
+  ImportPhenopacketsSFNArn:
+    Value: !Ref ImportPhenopacketsSFN
+    Description: ARN of the ImportPhenopackets state machine
 
   CreateProjectFunctionArn:
     Value: !Ref CreateProjectFunction

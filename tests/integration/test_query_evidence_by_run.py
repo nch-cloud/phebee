@@ -299,9 +299,9 @@ def test_query_evidence_creator_struct_parsed(
         subject_id=subject_uuid,
         term_iri=standard_hpo_terms["seizure"],
         run_id=run_id,
-        creator_id="test-creator-123",
-        creator_type="automated",
-        creator_name="Test Creator"
+        evidence_creator_id="test-creator-123",
+        evidence_creator_type="automated",
+        evidence_creator_name="Test Creator"
     )
 
     result = invoke_query_evidence_by_run(run_id, cloudformation_stack)

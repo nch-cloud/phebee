@@ -181,7 +181,6 @@ def test_remove_project_single_subject_cascade(
     create_evidence_helper,
     query_athena,
     standard_hpo_terms,
-    wait_for_subject_terms,
     invoke_remove_project
 ):
     """
@@ -208,9 +207,6 @@ def test_remove_project_single_subject_cascade(
     term_iri = standard_hpo_terms["seizure"]
     evidence = create_evidence_helper(subject_id=subject_uuid, term_iri=term_iri)
     termlink_id = evidence["termlink_id"]
-
-    # Wait for subject_terms to update
-    wait_for_subject_terms(subject_id=subject_uuid, termlink_id=termlink_id, project_id=project_id)
 
     # Get DynamoDB table name
     table_name = os.environ.get('PheBeeDynamoTable')
@@ -268,7 +264,6 @@ def test_remove_project_multiple_subjects_cascade(
     create_evidence_helper,
     query_athena,
     standard_hpo_terms,
-    wait_for_subject_terms,
     invoke_remove_project
 ):
     """
@@ -301,7 +296,6 @@ def test_remove_project_multiple_subjects_cascade(
         term_iri = standard_hpo_terms["seizure"]
         evidence = create_evidence_helper(subject_id=subject_uuid, term_iri=term_iri)
         termlink_id = evidence["termlink_id"]
-        wait_for_subject_terms(subject_id=subject_uuid, termlink_id=termlink_id, project_id=project_id)
 
     # Get DynamoDB table name
     table_name = os.environ.get('PheBeeDynamoTable')
@@ -355,7 +349,6 @@ def test_remove_project_shared_subjects(
     create_evidence_helper,
     query_athena,
     standard_hpo_terms,
-    wait_for_subject_terms,
     invoke_remove_project
 ):
     """
@@ -410,12 +403,9 @@ def test_remove_project_shared_subjects(
 
     evidence_1 = create_evidence_helper(subject_id=subject_1_uuid, term_iri=term_iri)
     termlink_id_1 = evidence_1["termlink_id"]
-    wait_for_subject_terms(subject_id=subject_1_uuid, termlink_id=termlink_id_1, project_id=project_a_id)
-    wait_for_subject_terms(subject_id=subject_1_uuid, termlink_id=termlink_id_1, project_id=project_b_id)
 
     evidence_2 = create_evidence_helper(subject_id=subject_2_uuid, term_iri=term_iri)
     termlink_id_2 = evidence_2["termlink_id"]
-    wait_for_subject_terms(subject_id=subject_2_uuid, termlink_id=termlink_id_2, project_id=project_a_id)
 
     # Get DynamoDB table name
     table_name = os.environ.get('PheBeeDynamoTable')

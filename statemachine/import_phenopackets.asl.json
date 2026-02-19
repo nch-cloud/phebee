@@ -85,7 +85,7 @@
                     "CreateEvidenceMap": {
                         "Type": "Map",
                         "ItemsPath": "$.PreparedEvidence.Payload.fixed_evidence_payload",
-                        "MaxConcurrency": 32,
+                        "MaxConcurrency": 5,
                         "ItemProcessor": {
                             "StartAt": "CreateEvidence",
                             "States": {
@@ -105,11 +105,8 @@
                     }
                 }
             },
-            "MaxConcurrency": 32,
-            "ResultSelector": {
-                "subject_ids": "$[*].ProcessedData.subject_id"
-            },
-            "ResultPath": "$.Summary",
+            "MaxConcurrency": 10,
+            "ResultPath": null,
             "Next": "MaterializeProjectSubjectTerms"
         },
         "MaterializeProjectSubjectTerms": {

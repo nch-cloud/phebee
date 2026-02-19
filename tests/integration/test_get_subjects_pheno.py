@@ -9,7 +9,6 @@ import pytest
 import json
 import boto3
 import uuid
-import time
 import gzip
 import base64
 from typing import Dict, List
@@ -52,27 +51,9 @@ def invoke_get_subjects_pheno(physical_resources):
 
 
 @pytest.fixture
-def create_subject_with_evidence(physical_resources, test_project_id, create_evidence_helper, wait_for_subject_terms, query_athena):
-    """Helper to create a subject with evidence and wait for indexing."""
+def create_subject_with_evidence(physical_resources, test_project_id, create_evidence_helper, query_athena):
+    """Helper to create a subject with evidence."""
     lambda_client = boto3.client("lambda")
-
-    def wait_for_iceberg_evidence(evidence_id: str, timeout: int = 60) -> dict:
-        """Wait for evidence to appear in Iceberg via Athena."""
-        start_time = time.time()
-
-        while time.time() - start_time < timeout:
-            results = query_athena(f"""
-                SELECT evidence_id, termlink_id
-                FROM phebee.evidence
-                WHERE evidence_id = '{evidence_id}'
-            """)
-
-            if results:
-                return results[0]
-
-            time.sleep(2)
-
-        raise TimeoutError(f"Evidence {evidence_id} not found in Iceberg after {timeout}s")
 
     def _create(project_subject_id=None, term_iri="http://purl.obolibrary.org/obo/HP_0001249", qualifiers=None, evidence_count=1):
         """Create a subject with specified evidence.
@@ -113,24 +94,24 @@ def create_subject_with_evidence(physical_resources, test_project_id, create_evi
             evidence = create_evidence_helper(
                 subject_id=subject_uuid,
                 term_iri=term_iri,
-                qualifiers=qualifiers or []
+                qualifiers=qualifiers or [],
+                evidence_creator_id="test-creator",
+                evidence_creator_type="automated"
             )
-            # Wait for evidence to appear in Iceberg to get termlink_id
-            evidence_record = wait_for_iceberg_evidence(evidence["evidence_id"])
-            termlink_ids.append(evidence_record["termlink_id"])
-
-        # Wait for subject_terms tables to update (using first termlink_id)
-        wait_for_subject_terms(
-            subject_id=subject_uuid,
-            termlink_id=termlink_ids[0],
-            project_id=test_project_id
-        )
+            # Get termlink_id from evidence table via Athena
+            results = query_athena(f"""
+                SELECT termlink_id
+                FROM phebee.evidence
+                WHERE evidence_id = '{evidence["evidence_id"]}'
+            """)
+            if results:
+                termlink_ids.append(results[0]["termlink_id"])
 
         return {
             "subject_uuid": subject_uuid,
             "project_subject_id": project_subject_id,
             "project_id": test_project_id,
-            "termlink_id": termlink_ids[0]
+            "termlink_id": termlink_ids[0] if termlink_ids else None
         }
 
     return _create

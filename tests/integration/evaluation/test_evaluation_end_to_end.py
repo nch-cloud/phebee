@@ -27,7 +27,7 @@ import pytest
 import requests
 
 
-pytestmark = [pytest.mark.integration, pytest.mark.api]
+pytestmark = [pytest.mark.integration, pytest.mark.api, pytest.mark.evaluation]
 
 
 # -----------------------------
@@ -82,13 +82,16 @@ def _s3_put_jsonl(bucket: str, key: str, records: List[Dict[str, Any]]) -> None:
     )
 
 
-def _start_sfn_execution(state_machine_arn: str, run_id: str, input_path: str) -> str:
+def _start_sfn_execution(state_machine_arn: str, run_id: str, input_path: str, project_id: Optional[str] = None) -> str:
     sfn = boto3.client("stepfunctions")
     execution_name = f"phebee-eval-{run_id}-{uuid.uuid4().hex[:8]}"
+    sfn_input = {"run_id": run_id, "input_path": input_path}
+    if project_id:
+        sfn_input["project_id"] = project_id
     resp = sfn.start_execution(
         stateMachineArn=state_machine_arn,
         name=execution_name,
-        input=json.dumps({"run_id": run_id, "input_path": input_path}),
+        input=json.dumps(sfn_input),
     )
     return resp["executionArn"]
 
@@ -167,9 +170,9 @@ class TermSource:
 
 
 def _mk_term_source_hpo() -> TermSource:
-    # Synthetic but realistic-ish defaults for evaluation.
-    # Version string should match your HPO release identifier convention.
-    version = os.environ.get("PHEBEE_EVAL_HPO_VERSION", "2025-10-22")
+    # Use the latest HPO version that exists in the repo
+    # Can be overridden via PHEBEE_EVAL_HPO_VERSION environment variable
+    version = os.environ.get("PHEBEE_EVAL_HPO_VERSION", "v2026-02-16")
     iri = os.environ.get(
         "PHEBEE_EVAL_HPO_VERSION_IRI",
         f"http://purl.obolibrary.org/obo/hp/releases/{version}/hp.owl",
@@ -200,10 +203,10 @@ def generate_synthetic_jsonl_records(
     if term_source is None:
         term_source = _mk_term_source_hpo()
 
-    # Parent term for descendant expansion queries (very general HPO node)
-    parent_term = "http://purl.obolibrary.org/obo/HP_0000118"  # Phenotypic abnormality
-    # Child term asserted in evidence (descendant of HP_0000118)
-    child_term = "http://purl.obolibrary.org/obo/HP_0001627"   # Abnormality of the cardiovascular system
+    # Parent term for descendant expansion queries
+    parent_term = "http://purl.obolibrary.org/obo/HP_0000707"  # Abnormality of the nervous system
+    # Child term asserted in evidence (descendant of HP_0000707)
+    child_term = "http://purl.obolibrary.org/obo/HP_0001250"   # Seizure
 
     records: List[Dict[str, Any]] = []
     row_num = 0
@@ -309,7 +312,7 @@ def _split_batches(records: List[Dict[str, Any]], batch_size: int) -> List[List[
 
 def api_post(api_base_url: str, path: str, payload: Dict[str, Any], sigv4_auth: Any) -> Dict[str, Any]:
     resp = requests.post(f"{api_base_url}{path}", json=payload, auth=sigv4_auth)
-    _assert_status(resp, [200])
+    _assert_status(resp, [200, 201])
     return _json(resp)
 
 
@@ -326,7 +329,7 @@ def evaluation_run_id() -> str:
     return f"eval-run-{uuid.uuid4().hex[:10]}-{_now_ms()}"
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def term_source_hpo() -> TermSource:
     return _mk_term_source_hpo()
 
@@ -366,6 +369,66 @@ def evaluation_dataset_small(eval_project_id: str, term_source_hpo: TermSource) 
     return eval_project_id, records
 
 
+@pytest.fixture(scope="module")
+def golden_evaluation_import(physical_resources, hpo_update_execution, term_source_hpo):
+    """
+    Module-scoped fixture that executes ONE complete bulk import for evaluation tests.
+
+    This "golden" execution is reused by multiple tests to verify different aspects
+    without running the expensive workflow multiple times.
+
+    Returns dict with execution details and dataset information for verification.
+    """
+    if not hpo_update_execution:
+        pytest.skip("HPO update required for ontology hierarchy queries")
+
+    print("\n[GOLDEN EVALUATION IMPORT] Starting module-scoped import...")
+
+    # Create a unique project for this golden import
+    project_id = f"eval-golden-{uuid.uuid4().hex[:8]}"
+    run_id = f"eval-golden-run-{uuid.uuid4().hex[:10]}-{_now_ms()}"
+
+    # Generate evaluation dataset
+    records = generate_synthetic_jsonl_records(
+        project_id=project_id,
+        n_subjects=5,
+        terms_per_subject=3,
+        evidence_per_term=2,
+        include_mixed_sources_on_first_term=True,
+        include_qualified_term=True,
+        term_source=term_source_hpo,
+    )
+
+    print(f"[GOLDEN EVALUATION IMPORT] Generated {len(records)} records for project {project_id}")
+
+    # Create project via API (if available)
+    # For now, skip project creation and let bulk import handle it via project_id parameter
+
+    # Run bulk ingest
+    print(f"[GOLDEN EVALUATION IMPORT] Starting bulk ingest...")
+    t0 = time.time()
+    ingest = _run_bulk_ingest(
+        physical_resources=physical_resources,
+        run_id=run_id,
+        records=records,
+    )
+    t_ingest = time.time() - t0
+
+    if ingest["describe_execution"]["status"] != "SUCCEEDED":
+        pytest.fail(f"Golden evaluation import failed: {ingest['describe_execution']}")
+
+    print(f"[GOLDEN EVALUATION IMPORT] Completed in {t_ingest:.2f}s")
+
+    return {
+        "project_id": project_id,
+        "run_id": run_id,
+        "records": records,
+        "ingest": ingest,
+        "term_source": term_source_hpo,
+        "duration_seconds": t_ingest,
+    }
+
+
 def _run_bulk_ingest(
     *,
     physical_resources: Dict[str, Any],
@@ -388,8 +451,11 @@ def _run_bulk_ingest(
         key = f"{s3_prefix}/batch-{i:05d}.json"
         _s3_put_jsonl(bucket, key, batch)
 
+    # Extract project_id from first record (all records should have same project_id)
+    project_id = records[0].get("project_id") if records else None
+
     input_path = f"s3://{bucket}/{s3_prefix}"
-    execution_arn = _start_sfn_execution(sm, run_id=run_id, input_path=input_path)
+    execution_arn = _start_sfn_execution(sm, run_id=run_id, input_path=input_path, project_id=project_id)
     desc = _wait_for_sfn(execution_arn, timeout_s=timeout_s)
     return {
         "bucket": bucket,
@@ -435,9 +501,26 @@ def test_r7_shared_subject_representation_project_scoped_identifiers(api_base_ur
             sigv4_auth,
         )
         subject_iri = resp_a["subject"]["iri"]
+        subject_uuid = subject_iri.split("/")[-1]
         assert subject_iri, "Expected a subject IRI"
 
-        # Link a new project_subject_id in project B to the *same* underlying subject via known_project_*
+        # Create evidence for the subject in project A
+        # This tests that evidence created BEFORE linking appears in both projects
+        api_post(
+            api_base_url,
+            "/evidence/create",
+            {
+                "subject_id": subject_uuid,
+                "term_iri": "http://purl.obolibrary.org/obo/HP_0001249",  # Seizure
+                "evidence_type": "clinical_note",
+                "creator_id": "test-creator",
+                "creator_type": "human"
+            },
+            sigv4_auth,
+        )
+
+        # Link the same subject to project B with a different project_subject_id
+        # This should trigger re-materialization so the evidence above appears in project B queries
         resp_b = api_post(
             api_base_url,
             "/subject/create",
@@ -458,9 +541,19 @@ def test_r7_shared_subject_representation_project_scoped_identifiers(api_base_ur
         assert all(s.get("project_subject_id") != subj_b for s in body_a), "Project B subject_id leaked into project A results"
 
         # Query project B: should only expose project B identifiers (no leakage of subj_a)
-        qb = api_post(api_base_url, "/subjects/query", {"project_id": project_b, "limit": 100}, sigv4_auth)
-        body_b = qb.get("body", [])
-        assert any(s.get("project_subject_id") == subj_b for s in body_b), "Expected subj_b in project B query"
+        # Retry loop to handle Iceberg eventual consistency after materialization
+        body_b = []
+        for attempt in range(10):
+            qb = api_post(api_base_url, "/subjects/query", {"project_id": project_b, "limit": 100}, sigv4_auth)
+            body_b = qb.get("body", [])
+            if any(s.get("project_subject_id") == subj_b for s in body_b):
+                break
+            if attempt < 9:
+                print(f"[R7] Attempt {attempt + 1}/10: subj_b not yet visible in project B, retrying in 2s...")
+                time.sleep(2)
+
+        assert any(s.get("project_subject_id") == subj_b for s in body_b), \
+            f"Expected subj_b in project B query after 10 attempts. Got {len(body_b)} subjects: {[s.get('project_subject_id') for s in body_b]}"
         assert all(s.get("project_subject_id") != subj_a for s in body_b), "Project A subject_id leaked into project B results"
 
         # Both projects should point to the same underlying Subject IRI
@@ -481,12 +574,11 @@ def test_r7_shared_subject_representation_project_scoped_identifiers(api_base_ur
             print(f"[WARN] Failed to remove project B {project_b}: {e}")
 
 def test_eval_ingest_and_core_api_behaviors(
-    physical_resources,
     api_base_url,
     sigv4_auth,
-    evaluation_run_id,
-    evaluation_dataset_small,
-    term_source_hpo,
+    golden_evaluation_import,
+    aws_session,
+    cloudformation_stack,
 ):
     """
     Covers:
@@ -495,23 +587,23 @@ def test_eval_ingest_and_core_api_behaviors(
       - R7 project scoping sanity checks (project_id required, scoped queries)
       - R4 evidence/provenance visibility via /term-link (shape-level)
       - R5 multi-source evidence (human + automated) *within a single TermLink*
+
+    Uses golden_evaluation_import to avoid redundant bulk imports.
     """
-    project_id, records = evaluation_dataset_small
+    project_id = golden_evaluation_import["project_id"]
+    records = golden_evaluation_import["records"]
+    term_source_hpo = golden_evaluation_import["term_source"]
 
-    # 1) Bulk ingest
-    t0 = time.time()
-    ingest = _run_bulk_ingest(physical_resources=physical_resources, run_id=evaluation_run_id, records=records)
-    t_ingest = time.time() - t0
-    assert ingest["describe_execution"]["status"] == "SUCCEEDED", ingest["describe_execution"]
-
-    n_records = len(records)
-    # Manuscript-friendly metric logging
-    print(f"[EVAL] Ingestion: run_id={evaluation_run_id} records={n_records} seconds={t_ingest:.2f} recs_per_sec={(n_records / t_ingest):.2f}")
+    # Log metrics from golden import
+    print(f"[EVAL] Ingestion (shared golden import): records={len(records)} seconds={golden_evaluation_import['duration_seconds']:.2f}")
 
     # 2) Descendant expansion (R2)
+    # We asserted child term (Seizure) in evidence, now query for parent (Abnormality of nervous system)
     parent_term = next(r["_eval_parent_term_for_descendant_test"] for r in records if r.get("_eval_parent_term_for_descendant_test"))
-    # include_child_terms=True should match because we asserted a child term
-    body_true = api_post(
+
+    # Query parent with include_child_terms=True - should find subjects with child term
+    # Don't specify term_source_version - let it use the latest version
+    body_with_expansion = api_post(
         api_base_url,
         "/subjects/query",
         {
@@ -520,15 +612,15 @@ def test_eval_ingest_and_core_api_behaviors(
             "include_child_terms": True,
             "include_qualified": True,
             "term_source": term_source_hpo.source,
-            "term_source_version": term_source_hpo.version,
             "limit": 50,
         },
         sigv4_auth,
     )
-    assert body_true.get("n_subjects", 0) >= 1, f"Expected >=1 subject with descendant expansion, got: {body_true}"
+    assert body_with_expansion.get("n_subjects", 0) >= 1, \
+        f"Expected >=1 subject with descendant expansion (parent={parent_term}), got: {body_with_expansion}"
 
-    # include_child_terms=False should *not* match if parent itself wasn't asserted
-    body_false = api_post(
+    # Query parent with include_child_terms=False - should find 0 subjects (parent itself wasn't asserted)
+    body_no_expansion = api_post(
         api_base_url,
         "/subjects/query",
         {
@@ -537,16 +629,17 @@ def test_eval_ingest_and_core_api_behaviors(
             "include_child_terms": False,
             "include_qualified": True,
             "term_source": term_source_hpo.source,
-            "term_source_version": term_source_hpo.version,
             "limit": 50,
         },
         sigv4_auth,
     )
-    assert body_false.get("n_subjects", 0) <= body_true.get("n_subjects", 0)
+    # Without expansion, should not match (since we only asserted the child, not the parent)
+    assert body_no_expansion.get("n_subjects", 0) == 0, \
+        f"Expected 0 subjects without expansion (parent not asserted), got: {body_no_expansion}"
 
     # 3) Qualifier-aware filtering (R2)
     # Our generator adds a negated record for subject 1, term 0. We filter by the child term itself.
-    child_term = "http://purl.obolibrary.org/obo/HP_0001627"
+    child_term = "http://purl.obolibrary.org/obo/HP_0001250"  # Seizure
     without_qualified = api_post(
         api_base_url,
         "/subjects/query",
@@ -556,7 +649,6 @@ def test_eval_ingest_and_core_api_behaviors(
             "include_child_terms": False,
             "include_qualified": False,
             "term_source": term_source_hpo.source,
-            "term_source_version": term_source_hpo.version,
             "limit": 100,
         },
         sigv4_auth,
@@ -570,7 +662,6 @@ def test_eval_ingest_and_core_api_behaviors(
             "include_child_terms": False,
             "include_qualified": True,
             "term_source": term_source_hpo.source,
-            "term_source_version": term_source_hpo.version,
             "limit": 100,
         },
         sigv4_auth,
@@ -579,8 +670,8 @@ def test_eval_ingest_and_core_api_behaviors(
 
     # 4) Subject-centric term retrieval (Section 7)
     # Use the first subject from the broader result set.
-    subjects = body_true.get("body", [])
-    assert subjects, f"No subjects returned: {body_true}"
+    subjects = body_with_expansion.get("body", [])
+    assert subjects, f"No subjects returned: {body_with_expansion}"
     project_subject_iri = subjects[0]["project_subject_iri"]
     subject_iri = subjects[0]["subject_iri"]  # Keep for term-info endpoint
 
@@ -602,41 +693,70 @@ def test_eval_ingest_and_core_api_behaviors(
     )
     assert "term_links" in term_info and term_info["term_links"], f"Unexpected /subject/term-info: {term_info}"
 
-    # 5) Evidence drill-in (R4/R5)
-    termlink_iri = term_info["term_links"][0]["termlink_iri"]
-    tl = api_post(api_base_url, "/term-link", {"termlink_iri": termlink_iri}, sigv4_auth)
-    assert "evidence" in tl and isinstance(tl["evidence"], list), f"Unexpected /term-link response: {tl}"
+    # 5) Evidence drill-in (R4/R5) - Query evidence via Athena
+    # Get Athena configuration from stack outputs
+    cf_client = aws_session.client("cloudformation")
+    response = cf_client.describe_stacks(StackName=cloudformation_stack)
+    outputs = {output["OutputKey"]: output["OutputValue"] for output in response["Stacks"][0].get("Outputs", [])}
+
+    db = outputs.get("AthenaDatabase")
+    evidence_table = outputs.get("AthenaEvidenceTable")
+    out = outputs.get("AthenaResultsLocation")
+    wg = outputs.get("AthenaWorkgroup", "primary")
+
+    termlink_id = term_info["term_links"][0]["termlink_iri"].split("/")[-1]
+
+    # Query evidence for this termlink
+    q_evidence = f"""
+    SELECT
+        evidence_id,
+        run_id,
+        evidence_type,
+        assertion_type,
+        created_timestamp,
+        creator.creator_type as creator_type
+    FROM {db}.{evidence_table}
+    WHERE subject_id = '{subject_uuid}'
+      AND term_iri = '{term_iri}'
+      AND termlink_id = '{termlink_id}'
+    ORDER BY created_timestamp
+    """
+    cols, rows, elapsed = _athena_query(q_evidence, database=db, output_location=out, workgroup=wg)
+    assert rows, f"No evidence found for termlink"
 
     # R4: provenance-ish fields exist (best-effort; API may evolve)
-    ev0 = tl["evidence"][0]
-    for k in ["evidence_id", "run_id", "evidence_type", "assertion_type", "created_timestamp"]:
-        assert k in ev0, f"Missing {k} in evidence item: {ev0.keys()}"
+    assert "evidence_id" in cols and "run_id" in cols and "evidence_type" in cols
+    assert "created_timestamp" in cols, f"Missing timestamp in evidence query results: {cols}"
 
     # R5: if this is the first termlink created with mixed evidence, we should see both creator types.
+    creator_type_idx = cols.index("creator_type") if "creator_type" in cols else None
     creator_types = set()
-    for e in tl["evidence"]:
-        creator = e.get("creator") or {}
-        ct = creator.get("creator_type")
-        if ct:
-            creator_types.add(ct)
+    if creator_type_idx is not None:
+        for row in rows:
+            ct = row[creator_type_idx]
+            if ct:
+                creator_types.add(ct)
     # If the termlink we picked isn't the mixed one, this may be only {'automated'}.
     # We enforce R5 in a separate targeted test below (strict).
-    print(f"[EVAL] termlink={termlink_iri} creator_types={sorted(list(creator_types))}")
+    print(f"[EVAL] termlink={termlink_id} creator_types={sorted(list(creator_types))}")
 
 
 def test_r5_multi_source_evidence_within_single_termlink(
-    physical_resources,
     api_base_url,
     sigv4_auth,
-    evaluation_run_id,
-    evaluation_dataset_small,
+    golden_evaluation_import,
+    aws_session,
+    cloudformation_stack,
 ):
     """
     Strict R5 check (without requiring API filtering knobs):
     - Ensure a single TermLink can have evidence from both automated and human creators.
+
+    Uses golden_evaluation_import to avoid redundant bulk imports.
     """
-    project_id, records = evaluation_dataset_small
-    
+    project_id = golden_evaluation_import["project_id"]
+    records = golden_evaluation_import["records"]
+
     # Debug: Check if manual evidence was generated
     first_record = records[0]  # First subject
     first_term_evidence = first_record["evidence"]
@@ -644,13 +764,10 @@ def test_r5_multi_source_evidence_within_single_termlink(
     for i, evidence in enumerate(first_term_evidence):
         print(f"DEBUG: Evidence {i}: creator_type={evidence.get('evidence_creator_type')}, creator_id={evidence.get('evidence_creator_id')}")
 
-    ingest = _run_bulk_ingest(physical_resources=physical_resources, run_id=evaluation_run_id, records=records)
-    assert ingest["describe_execution"]["status"] == "SUCCEEDED"
-
     # We know subject 0, term 0 was generated with mixed sources.
     subject_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/"
     # We don't know the final subject UUID; discover via subjects/query for the child term.
-    child_term = "http://purl.obolibrary.org/obo/HP_0001627"
+    child_term = "http://purl.obolibrary.org/obo/HP_0001250"
     body = api_post(
         api_base_url,
         "/subjects/query",
@@ -669,11 +786,35 @@ def test_r5_multi_source_evidence_within_single_termlink(
     # Extract just the UUID from the subject_iri for the term-info endpoint
     subject_uuid = target["subject_iri"].split("/")[-1]
     term_info = api_post(api_base_url, "/subject/term-info", {"subject_id": subject_uuid, "term_iri": child_term, "qualifiers": qualifiers}, sigv4_auth)
-    tl_iri = term_info["term_links"][0]["termlink_iri"]
+    termlink_id = term_info["term_links"][0]["termlink_iri"].split("/")[-1]
 
-    tl = api_post(api_base_url, "/term-link", {"termlink_iri": tl_iri}, sigv4_auth)
-    print(f"DEBUG: term-link response: {tl}")
-    creator_types = { (e.get("creator") or {}).get("creator_type") for e in tl.get("evidence", []) }
+    # Query evidence via Athena to verify multi-source
+    cf_client = aws_session.client("cloudformation")
+    response = cf_client.describe_stacks(StackName=cloudformation_stack)
+    outputs = {output["OutputKey"]: output["OutputValue"] for output in response["Stacks"][0].get("Outputs", [])}
+
+    db = outputs.get("AthenaDatabase")
+    evidence_table = outputs.get("AthenaEvidenceTable")
+    out = outputs.get("AthenaResultsLocation")
+    wg = outputs.get("AthenaWorkgroup", "primary")
+
+    q_evidence = f"""
+    SELECT creator.creator_type as creator_type
+    FROM {db}.{evidence_table}
+    WHERE subject_id = '{subject_uuid}'
+      AND term_iri = '{child_term}'
+      AND termlink_id = '{termlink_id}'
+    """
+    cols, rows, elapsed = _athena_query(q_evidence, database=db, output_location=out, workgroup=wg)
+
+    creator_types = set()
+    if "creator_type" in cols:
+        creator_type_idx = cols.index("creator_type")
+        for row in rows:
+            ct = row[creator_type_idx]
+            if ct:
+                creator_types.add(ct)
+
     creator_types.discard(None)
     print(f"DEBUG: found creator_types: {creator_types}")
 
@@ -685,21 +826,20 @@ def test_r6_idempotent_termlinks_across_reingest(
     physical_resources,
     api_base_url,
     sigv4_auth,
-    evaluation_run_id,
-    evaluation_dataset_small,
+    golden_evaluation_import,
 ):
     """
     R6/R9: Re-ingesting the same data should not create duplicate TermLinks for the same
     (source, term, qualifiers) combination. Evidence may accumulate.
+
+    Uses golden_evaluation_import as the first ingest, then does a second ingest to test idempotency.
     """
-    project_id, records = evaluation_dataset_small
+    # Use golden import as first ingest
+    project_id = golden_evaluation_import["project_id"]
+    records = golden_evaluation_import["records"]
 
-    # First ingest
-    ingest1 = _run_bulk_ingest(physical_resources=physical_resources, run_id=evaluation_run_id, records=records)
-    assert ingest1["describe_execution"]["status"] == "SUCCEEDED"
-
-    # Discover a representative termlink via API
-    child_term = "http://purl.obolibrary.org/obo/HP_0001627"
+    # Discover a representative termlink via API from the first (golden) ingest
+    child_term = "http://purl.obolibrary.org/obo/HP_0001250"
     body = api_post(api_base_url, "/subjects/query", {"project_id": project_id, "term_iri": child_term, "include_child_terms": False, "include_qualified": True, "limit": 50}, sigv4_auth)
     target = next((s for s in body["body"] if s.get("project_subject_id") == "eval-subj-00000"), body["body"][0])
     project_subject_iri = target["project_subject_iri"]
@@ -708,14 +848,14 @@ def test_r6_idempotent_termlinks_across_reingest(
     term_entry = next(t for t in subj["terms"] if t["term_iri"] == child_term)
     qualifiers = term_entry.get("qualifiers", [])
 
-    # Extract just the UUID from the subject_iri for the term-info endpoint  
+    # Extract just the UUID from the subject_iri for the term-info endpoint
     subject_uuid = subj_iri.split("/")[-1]
     term_info_1 = api_post(api_base_url, "/subject/term-info", {"subject_id": subject_uuid, "term_iri": child_term, "qualifiers": qualifiers}, sigv4_auth)
     assert len(term_info_1["term_links"]) == 1
     tl_iri_1 = term_info_1["term_links"][0]["termlink_iri"]
 
     # Second ingest (same records; different run_id to preserve evidence)
-    ingest2_run = f"{evaluation_run_id}-reingest"
+    ingest2_run = f"{golden_evaluation_import['run_id']}-reingest"
     ingest2 = _run_bulk_ingest(physical_resources=physical_resources, run_id=ingest2_run, records=records)
     assert ingest2["describe_execution"]["status"] == "SUCCEEDED"
 
@@ -730,20 +870,18 @@ def test_r9_incremental_update_adds_new_term(
     physical_resources,
     api_base_url,
     sigv4_auth,
-    evaluation_run_id,
-    evaluation_dataset_small,
+    golden_evaluation_import,
 ):
     """
     R9: Demonstrate an incremental update scenario (new term appears after second ingest).
+
+    Uses golden_evaluation_import as the first ingest, then does an incremental update.
     """
-    project_id, records = evaluation_dataset_small
+    # Use golden import as first ingest
+    project_id = golden_evaluation_import["project_id"]
 
-    # First ingest
-    ingest1 = _run_bulk_ingest(physical_resources=physical_resources, run_id=evaluation_run_id, records=records)
-    assert ingest1["describe_execution"]["status"] == "SUCCEEDED"
-
-    # Pick a target subject
-    child_term = "http://purl.obolibrary.org/obo/HP_0001627"
+    # Pick a target subject from the golden import
+    child_term = "http://purl.obolibrary.org/obo/HP_0001250"
     body = api_post(api_base_url, "/subjects/query", {"project_id": project_id, "term_iri": child_term, "include_child_terms": False, "include_qualified": True, "limit": 50}, sigv4_auth)
     target = next((s for s in body["body"] if s.get("project_subject_id") == "eval-subj-00002"), body["body"][0])
     project_subject_iri = target["project_subject_iri"]
@@ -779,7 +917,7 @@ def test_r9_incremental_update_adds_new_term(
         "batch_id": 1,
     }
 
-    ingest2_run = f"{evaluation_run_id}-inc"
+    ingest2_run = f"{golden_evaluation_import['run_id']}-inc"
     ingest2 = _run_bulk_ingest(physical_resources=physical_resources, run_id=ingest2_run, records=[inc_record], s3_prefix=f"evaluation/{ingest2_run}/jsonl", batch_size=1)
     assert ingest2["describe_execution"]["status"] == "SUCCEEDED"
 
@@ -794,20 +932,18 @@ def test_r9_incremental_update_adds_new_term(
 def test_r11_api_latency_p50_p95(
     api_base_url,
     sigv4_auth,
-    physical_resources,
-    evaluation_run_id,
-    evaluation_dataset_small,
+    golden_evaluation_import,
 ):
     """
     R11: Basic interactive performance check for a small representative workload.
     (For large-scale runs, execute a separate perf job and report numbers in the manuscript.)
+
+    Uses golden_evaluation_import to avoid redundant bulk imports.
     """
-    project_id, records = evaluation_dataset_small
-    ingest = _run_bulk_ingest(physical_resources=physical_resources, run_id=evaluation_run_id, records=records)
-    assert ingest["describe_execution"]["status"] == "SUCCEEDED"
+    project_id = golden_evaluation_import["project_id"]
 
     # Discover a subject IRI once
-    child_term = "http://purl.obolibrary.org/obo/HP_0001627"
+    child_term = "http://purl.obolibrary.org/obo/HP_0001250"
     q = api_post(api_base_url, "/subjects/query", {"project_id": project_id, "term_iri": child_term, "include_child_terms": False, "include_qualified": True, "limit": 50}, sigv4_auth)
     project_subject_iri = q["body"][0]["project_subject_iri"]
 
@@ -837,9 +973,7 @@ def test_r11_api_latency_p50_p95(
 
 
 def test_r10_batch_access_via_athena_queries(
-    physical_resources,
-    evaluation_run_id,
-    evaluation_dataset_small,
+    golden_evaluation_import,
     aws_session,
     cloudformation_stack,
 ):
@@ -847,12 +981,13 @@ def test_r10_batch_access_via_athena_queries(
     R10: Validate batch/lakehouse access patterns directly via Athena over Iceberg.
 
     This test gets Athena configuration from CloudFormation stack outputs.
+    Uses golden_evaluation_import to avoid redundant bulk imports.
     """
     # Get Athena configuration from stack outputs
     cf_client = aws_session.client("cloudformation")
     response = cf_client.describe_stacks(StackName=cloudformation_stack)
     outputs = {output["OutputKey"]: output["OutputValue"] for output in response["Stacks"][0].get("Outputs", [])}
-    
+
     db = outputs.get("AthenaDatabase")
     table = outputs.get("AthenaEvidenceTable")
     out = outputs.get("AthenaResultsLocation")
@@ -864,9 +999,8 @@ def test_r10_batch_access_via_athena_queries(
             f"AthenaDatabase={db}, AthenaEvidenceTable={table}, AthenaResultsLocation={out}"
         )
 
-    project_id, records = evaluation_dataset_small
-    ingest = _run_bulk_ingest(physical_resources=physical_resources, run_id=evaluation_run_id, records=records)
-    assert ingest["describe_execution"]["status"] == "SUCCEEDED"
+    project_id = golden_evaluation_import["project_id"]
+    evaluation_run_id = golden_evaluation_import["run_id"]
 
     # 1) Cohort aggregation: term distribution for this run_id (top terms)
     q1 = f"""
@@ -894,21 +1028,21 @@ def test_r10_batch_access_via_athena_queries(
 
 
 def test_r1_term_source_struct_exposed_in_evidence(
-    physical_resources,
     api_base_url,
     sigv4_auth,
-    evaluation_run_id,
-    evaluation_dataset_small,
+    golden_evaluation_import,
+    aws_session,
+    cloudformation_stack,
 ):
     """
     R1: Once implemented, evidence responses should expose explicit term source/version/IRI
     (or allow retrieval via batch queries).
-    """
-    project_id, records = evaluation_dataset_small
-    ingest = _run_bulk_ingest(physical_resources=physical_resources, run_id=evaluation_run_id, records=records)
-    assert ingest["describe_execution"]["status"] == "SUCCEEDED"
 
-    child_term = "http://purl.obolibrary.org/obo/HP_0001627"
+    Uses golden_evaluation_import to avoid redundant bulk imports.
+    """
+    project_id = golden_evaluation_import["project_id"]
+
+    child_term = "http://purl.obolibrary.org/obo/HP_0001250"
     body = api_post(api_base_url, "/subjects/query", {"project_id": project_id, "term_iri": child_term, "include_child_terms": False, "include_qualified": True, "limit": 50}, sigv4_auth)
     target = next((s for s in body["body"] if s.get("project_subject_id") == "eval-subj-00000"), body["body"][0])
     project_subject_iri = target["project_subject_iri"]
@@ -917,25 +1051,53 @@ def test_r1_term_source_struct_exposed_in_evidence(
     term_entry = next(t for t in subj["terms"] if t["term_iri"] == child_term)
     qualifiers = term_entry.get("qualifiers", [])
     # Extract just the UUID from the subject_iri for the term-info endpoint
-    subject_uuid = subj_iri.split("/")[-1] 
+    subject_uuid = subj_iri.split("/")[-1]
     term_info = api_post(api_base_url, "/subject/term-info", {"subject_id": subject_uuid, "term_iri": child_term, "qualifiers": qualifiers}, sigv4_auth)
-    tl_iri = term_info["term_links"][0]["termlink_iri"]
+    termlink_id = term_info["term_links"][0]["termlink_iri"].split("/")[-1]
 
-    tl = api_post(api_base_url, "/term-link", {"termlink_iri": tl_iri}, sigv4_auth)
-    ev0 = tl["evidence"][0]
+    # Query evidence via Athena to check term_source struct
+    cf_client = aws_session.client("cloudformation")
+    response = cf_client.describe_stacks(StackName=cloudformation_stack)
+    outputs = {output["OutputKey"]: output["OutputValue"] for output in response["Stacks"][0].get("Outputs", [])}
 
-    ts = ev0.get("term_source")
-    assert isinstance(ts, dict), f"Expected term_source struct on evidence; got {ts}"
-    for k in ("source", "version", "iri"):
-        assert ts.get(k), f"Missing term_source.{k} in evidence item"
+    db = outputs.get("AthenaDatabase")
+    evidence_table = outputs.get("AthenaEvidenceTable")
+    out = outputs.get("AthenaResultsLocation")
+    wg = outputs.get("AthenaWorkgroup", "primary")
+
+    q_evidence = f"""
+    SELECT
+        term_source.source as term_source_source,
+        term_source.version as term_source_version,
+        term_source.iri as term_source_iri
+    FROM {db}.{evidence_table}
+    WHERE subject_id = '{subject_uuid}'
+      AND term_iri = '{child_term}'
+      AND termlink_id = '{termlink_id}'
+    LIMIT 1
+    """
+    cols, rows, elapsed = _athena_query(q_evidence, database=db, output_location=out, workgroup=wg)
+    assert rows, "No evidence found"
+
+    # Verify term_source fields
+    assert "term_source_source" in cols, f"Missing term_source.source in query results: {cols}"
+    assert "term_source_version" in cols, f"Missing term_source.version in query results: {cols}"
+    assert "term_source_iri" in cols, f"Missing term_source.iri in query results: {cols}"
+
+    # Check first row has values
+    source_idx = cols.index("term_source_source")
+    version_idx = cols.index("term_source_version")
+    iri_idx = cols.index("term_source_iri")
+
+    assert rows[0][source_idx], f"term_source.source is empty"
+    assert rows[0][version_idx], f"term_source.version is empty"
+    assert rows[0][iri_idx], f"term_source.iri is empty"
 
 
 def test_r3_minimal_phenopacket_mapping_smoke(
     api_base_url,
     sigv4_auth,
-    physical_resources,
-    evaluation_run_id,
-    evaluation_dataset_small,
+    golden_evaluation_import,
 ):
     """
     R3 (partial, test-backed): create a minimal Phenopacket-shaped payload from API outputs.
@@ -943,11 +1105,9 @@ def test_r3_minimal_phenopacket_mapping_smoke(
     This does not require a Phenopackets export endpoint; it validates that the data needed
     for a standards-aligned exchange payload is present and can be serialized cleanly.
 
-    If your repo includes an existing Phenopackets integration test/util, replace this with that call.
+    Uses golden_evaluation_import to avoid redundant bulk imports.
     """
-    project_id, records = evaluation_dataset_small
-    ingest = _run_bulk_ingest(physical_resources=physical_resources, run_id=evaluation_run_id, records=records)
-    assert ingest["describe_execution"]["status"] == "SUCCEEDED"
+    project_id = golden_evaluation_import["project_id"]
 
     # Find one subject
     q = api_post(api_base_url, "/subjects/query", {"project_id": project_id, "limit": 10}, sigv4_auth)

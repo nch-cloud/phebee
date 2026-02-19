@@ -49,7 +49,7 @@ def get_subject(subject_id: str = None, project_subject_iri: str = None, physica
 # ============================================================================
 
 def test_get_subject_by_id_success(physical_resources, test_subject, test_project_id, query_athena,
-                                     standard_hpo_terms, wait_for_subject_terms, create_evidence_helper):
+                                     standard_hpo_terms, create_evidence_helper):
     """
     Test 1: Get Subject by subject_id (Happy Path)
 
@@ -68,21 +68,6 @@ def test_get_subject_by_id_success(physical_resources, test_subject, test_projec
 
     # Create 1 evidence for term2
     evidence3 = create_evidence_helper(subject_id=subject_uuid, term_iri=term2)
-
-    # Wait for subject_terms to be populated (using first termlink)
-    # Query evidence to get termlink_id
-    evidence_results = query_athena(f"""
-        SELECT termlink_id FROM phebee.evidence
-        WHERE evidence_id = '{evidence1["evidence_id"]}'
-    """)
-    termlink_id1 = evidence_results[0]["termlink_id"]
-
-    # Wait for first term to appear in subject_terms
-    wait_for_subject_terms(
-        subject_id=subject_uuid,
-        termlink_id=termlink_id1,
-        project_id=test_project_id
-    )
 
     # Action: Get subject by subject_id
     result = get_subject(subject_id=subject_uuid, physical_resources=physical_resources)
@@ -120,7 +105,7 @@ def test_get_subject_by_id_success(physical_resources, test_subject, test_projec
 
 
 def test_get_subject_by_project_iri_success(physical_resources, test_subject, test_project_id,
-                                              standard_hpo_terms, query_athena, create_evidence_helper, wait_for_subject_terms):
+                                              standard_hpo_terms, query_athena, create_evidence_helper):
     """
     Test 2: Get Subject by project_subject_iri (Happy Path)
 
@@ -132,20 +117,6 @@ def test_get_subject_by_project_iri_success(physical_resources, test_subject, te
     # Setup: Create evidence
     term_iri = standard_hpo_terms["seizure"]
     evidence = create_evidence_helper(subject_id=subject_uuid, term_iri=term_iri)
-
-    # Wait for subject_terms to be populated
-    # Get termlink_id
-    evidence_results = query_athena(f"""
-        SELECT termlink_id FROM phebee.evidence
-        WHERE evidence_id = '{evidence["evidence_id"]}'
-    """)
-    termlink_id = evidence_results[0]["termlink_id"]
-
-    wait_for_subject_terms(
-        subject_id=subject_uuid,
-        termlink_id=termlink_id,
-        project_id=test_project_id
-    )
 
     # Action: Get subject by project_subject_iri
     result = get_subject(project_subject_iri=project_subject_iri, physical_resources=physical_resources)
@@ -278,7 +249,7 @@ def test_get_subject_both_parameters_provided(physical_resources, test_subject):
 
 def test_get_subject_with_qualified_terms(physical_resources, test_subject, test_project_id,
                                            standard_hpo_terms, create_evidence_helper,
-                                           query_athena, wait_for_subject_terms):
+                                           query_athena):
     """
     Test 8: Get Subject with Qualified Terms
 
@@ -300,19 +271,6 @@ def test_get_subject_with_qualified_terms(physical_resources, test_subject, test
         term_iri=term_iri
         # No qualifiers
     )
-
-    # Get termlink_ids for both
-    results = query_athena(f"""
-        SELECT evidence_id, termlink_id FROM phebee.evidence
-        WHERE evidence_id IN ('{evidence1["evidence_id"]}', '{evidence2["evidence_id"]}')
-    """)
-
-    termlink1 = next(r["termlink_id"] for r in results if r["evidence_id"] == evidence1["evidence_id"])
-    termlink2 = next(r["termlink_id"] for r in results if r["evidence_id"] == evidence2["evidence_id"])
-
-    # Wait for both to appear in subject_terms
-    wait_for_subject_terms(subject_id=subject_uuid, termlink_id=termlink1, project_id=test_project_id)
-    wait_for_subject_terms(subject_id=subject_uuid, termlink_id=termlink2, project_id=test_project_id)
 
     # Action: Get subject
     result = get_subject(subject_id=subject_uuid, physical_resources=physical_resources)
@@ -340,7 +298,7 @@ def test_get_subject_with_qualified_terms(physical_resources, test_subject, test
 
 def test_get_subject_evidence_count_aggregation(physical_resources, test_subject, test_project_id,
                                                  standard_hpo_terms, create_evidence_helper,
-                                                 query_athena, wait_for_subject_terms):
+                                                 query_athena):
     """
     Test 9: Get Subject with Multiple Evidence per Term Link
 
@@ -355,18 +313,6 @@ def test_get_subject_evidence_count_aggregation(physical_resources, test_subject
     for _ in range(5):
         evidence = create_evidence_helper(subject_id=subject_uuid, term_iri=term_iri)
         evidence_ids.append(evidence["evidence_id"])
-
-    # Get termlink_id (all should be same)
-    results = query_athena(f"""
-        SELECT DISTINCT termlink_id FROM phebee.evidence
-        WHERE evidence_id IN ('{"','".join(evidence_ids)}')
-    """)
-
-    assert len(results) == 1, "All evidence should share same termlink_id"
-    termlink_id = results[0]["termlink_id"]
-
-    # Wait for subject_terms to update with count=5
-    wait_for_subject_terms(subject_id=subject_uuid, termlink_id=termlink_id, project_id=test_project_id)
 
     # Action: Get subject
     result = get_subject(subject_id=subject_uuid, physical_resources=physical_resources)
@@ -424,7 +370,7 @@ def test_get_subject_incomplete_project_iri(physical_resources, test_project_id)
 
 def test_get_subject_termlink_id_consistency(physical_resources, test_subject, test_project_id,
                                               standard_hpo_terms, create_evidence_helper,
-                                              query_athena, wait_for_subject_terms):
+                                              query_athena):
     """
     Test 19: Verify termlink_id Consistency
 
@@ -448,13 +394,6 @@ def test_get_subject_termlink_id_consistency(physical_resources, test_subject, t
         WHERE evidence_id = '{evidence["evidence_id"]}'
     """)
     expected_termlink_id = evidence_results[0]["termlink_id"]
-
-    # Wait for subject_terms
-    wait_for_subject_terms(
-        subject_id=subject_uuid,
-        termlink_id=expected_termlink_id,
-        project_id=test_project_id
-    )
 
     # Action: Get subject
     result = get_subject(subject_id=subject_uuid, physical_resources=physical_resources)

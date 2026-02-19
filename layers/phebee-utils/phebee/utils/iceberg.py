@@ -7,6 +7,7 @@ from .hash import generate_evidence_hash, generate_termlink_hash
 import json
 import logging
 import os
+import random
 import re
 import time
 import uuid
@@ -333,8 +334,8 @@ def create_evidence_record(
         },
         "qualifiers": [
             {
-                "qualifier_type": q.rsplit(":", 1)[0] if ":" in q else q,
-                "qualifier_value": q.rsplit(":", 1)[1] if ":" in q else "true"
+                "qualifier_type": q,
+                "qualifier_value": "true"
             }
             for q in (qualifiers or [])
         ] if qualifiers else None
@@ -411,51 +412,73 @@ def create_evidence_record(
     )
     """
     
-    try:
-        # Execute INSERT using Athena
-        
-        athena_client = boto3.client('athena')
-        
-        # Check if primary workgroup is managed
-        wg_cfg = athena_client.get_work_group(WorkGroup="primary")["WorkGroup"]["Configuration"]
-        managed_config = wg_cfg.get("ManagedQueryResultsConfiguration", {})
-        managed = managed_config.get("Enabled", False) if isinstance(managed_config, dict) else False
+    # Retry logic with exponential backoff for Iceberg commit conflicts
+    max_retries = 5
+    base_delay = 0.5  # 500ms base delay
 
-        database_name = os.environ.get('ICEBERG_DATABASE')
-        if not database_name:
-            raise ValueError("ICEBERG_DATABASE environment variable is required")
+    for attempt in range(max_retries):
+        try:
+            # Execute INSERT using Athena
 
-        params = {
-            "QueryString": insert_query,
-            "QueryExecutionContext": {"Database": database_name},
-            "WorkGroup": "primary"
-        }
+            athena_client = boto3.client('athena')
 
-        if not managed:
-            bucket_name = os.environ.get('PHEBEE_BUCKET_NAME')
-            params["ResultConfiguration"] = {"OutputLocation": f"s3://{bucket_name}/athena-results/"}
+            # Check if primary workgroup is managed
+            wg_cfg = athena_client.get_work_group(WorkGroup="primary")["WorkGroup"]["Configuration"]
+            managed_config = wg_cfg.get("ManagedQueryResultsConfiguration", {})
+            managed = managed_config.get("Enabled", False) if isinstance(managed_config, dict) else False
 
-        response = athena_client.start_query_execution(**params)
-        
-        query_execution_id = response['QueryExecutionId']
-        
-        # Wait for query completion
-        while True:
-            result = athena_client.get_query_execution(QueryExecutionId=query_execution_id)
-            status = result['QueryExecution']['Status']['State']
-            
+            database_name = os.environ.get('ICEBERG_DATABASE')
+            if not database_name:
+                raise ValueError("ICEBERG_DATABASE environment variable is required")
+
+            params = {
+                "QueryString": insert_query,
+                "QueryExecutionContext": {"Database": database_name},
+                "WorkGroup": "primary"
+            }
+
+            if not managed:
+                bucket_name = os.environ.get('PHEBEE_BUCKET_NAME')
+                params["ResultConfiguration"] = {"OutputLocation": f"s3://{bucket_name}/athena-results/"}
+
+            response = athena_client.start_query_execution(**params)
+
+            query_execution_id = response['QueryExecutionId']
+
+            # Wait for query completion
+            while True:
+                result = athena_client.get_query_execution(QueryExecutionId=query_execution_id)
+                status = result['QueryExecution']['Status']['State']
+
+                if status == 'SUCCEEDED':
+                    break
+                elif status in ['FAILED', 'CANCELLED']:
+                    error_msg = result['QueryExecution']['Status'].get('StateChangeReason', 'Unknown error')
+
+                    # Check if this is a retryable Iceberg commit error
+                    if 'ICEBERG_COMMIT_ERROR' in error_msg and attempt < max_retries - 1:
+                        # Exponential backoff with jitter
+                        delay = base_delay * (2 ** attempt) + random.uniform(0, 0.5)
+                        logger.warning(f"Iceberg commit conflict on attempt {attempt + 1}/{max_retries}, retrying in {delay:.2f}s: {error_msg}")
+                        time.sleep(delay)
+                        break  # Break inner loop to retry
+                    else:
+                        # Non-retryable error or final attempt
+                        raise Exception(f"Athena INSERT failed: {error_msg}")
+
+                time.sleep(1)
+
+            # If we succeeded, break out of retry loop
             if status == 'SUCCEEDED':
+                logger.info(f"Created evidence record: {evidence_id}")
                 break
-            elif status in ['FAILED', 'CANCELLED']:
-                error_msg = result['QueryExecution']['Status'].get('StateChangeReason', 'Unknown error')
-                raise Exception(f"Athena INSERT failed: {error_msg}")
-            
-            time.sleep(1)
-        
-        logger.info(f"Created evidence record: {evidence_id}")
-    except Exception as e:
-        logger.error(f"Failed to insert evidence record {evidence_id}: {e}")
-        raise
+
+        except Exception as e:
+            # Only retry for Iceberg commit errors
+            if 'ICEBERG_COMMIT_ERROR' not in str(e) or attempt >= max_retries - 1:
+                logger.error(f"Failed to insert evidence record {evidence_id}: {e}")
+                raise
+            # Otherwise continue to next retry attempt
     
     return evidence_id
 
@@ -992,27 +1015,19 @@ def get_evidence_for_termlink(
     Args:
         subject_id: The subject UUID
         term_iri: The term IRI
-        qualifiers: List of qualifier IRIs (the "true" qualifiers for this termlink)
+        qualifiers: List of qualifier names (short names like 'negated', not IRIs)
 
     Returns:
         List of evidence records for the specific termlink
     """
     logger.info(f"Getting evidence for subject_id={subject_id}, term_iri={term_iri}, qualifiers={qualifiers}")
 
-    # Normalize qualifiers to "iri:true" format for hash generation
-    # Qualifiers can be provided as either ["iri"] or ["iri:true"] format
-    # Handle URLs with colons by checking if last segment after rsplit is "true"/"false"
+    # Normalize qualifiers for hash generation
+    # Qualifiers provided as list of short names - convert to name:true format for hash
     qualifier_list = []
     if qualifiers:
-        for q in qualifiers:
-            # Check if it already has a :true/:false suffix
-            parts = q.rsplit(":", 1)
-            if len(parts) == 2 and parts[1] in ["true", "false"]:
-                # Already in "iri:value" format
-                qualifier_list.append(q)
-            else:
-                # Just the IRI, append ":true" to indicate it's an active qualifier
-                qualifier_list.append(f"{q}:true")
+        # Convert short names like ['negated'] to ['negated:true'] format expected by hash function
+        qualifier_list = [f"{q}:true" if ':' not in q else q for q in qualifiers]
 
     # Compute the termlink_id to filter by specific termlink
     subject_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"
@@ -1142,12 +1157,12 @@ def get_subject_term_info(
 ) -> Dict[str, Any] | None:
     """
     Get detailed term link information for a specific term on a subject from Iceberg.
-    
+
     Args:
         subject_id: The subject ID (not IRI)
         term_iri: The specific term IRI
-        qualifiers: List of qualifier IRIs (optional)
-    
+        qualifiers: List of qualifier names (short names like 'negated', not IRIs)
+
     Returns:
         Dict with term details and term_links array, or None if not found
     """
@@ -1293,6 +1308,7 @@ def query_subjects_by_project(
     project_id: str,
     term_id: str = None,
     term_source: str = None,
+    term_source_version: str = None,
     include_child_terms: bool = True,
     include_qualified: bool = True,
     project_subject_ids: list = None,
@@ -1309,6 +1325,7 @@ def query_subjects_by_project(
         project_id: The project ID
         term_id: Optional term ID to filter by (e.g., "HP:0001234")
         term_source: Ontology source ("hpo" or "mondo") - inferred from term_id if not provided
+        term_source_version: Optional ontology version - if not provided, uses latest version
         include_child_terms: If True, expand term_id to include all descendants (default True)
         include_qualified: If False, exclude terms with negated/hypothetical/family qualifiers (default True)
         project_subject_ids: Optional list of specific project_subject_ids to filter by
@@ -1343,7 +1360,8 @@ def query_subjects_by_project(
         if include_child_terms:
             # Expand to include all descendant terms using hierarchy table
             try:
-                descendant_ids = query_term_descendants(term_id, ontology_source=term_source)
+                logger.info(f"Querying descendants for {term_id}, ontology_source={term_source}, version={term_source_version}")
+                descendant_ids = query_term_descendants(term_id, ontology_source=term_source, version=term_source_version)
                 if descendant_ids:
                     # Extract just the term_id from results
                     term_ids = [d['term_id'] for d in descendant_ids]
@@ -1353,12 +1371,13 @@ def query_subjects_by_project(
                     # Build IN clause
                     term_list = "', '".join(term_ids)
                     where_clauses.append(f"term_id IN ('{term_list}')")
-                    logger.info(f"Expanded {term_id} to {len(term_ids)} descendant terms")
+                    logger.info(f"Expanded {term_id} to {len(term_ids)} descendant terms: {term_ids[:5]}..." if len(term_ids) > 5 else f"Expanded {term_id} to {len(term_ids)} descendant terms: {term_ids}")
                 else:
                     # No descendants found, just use exact match
+                    logger.warning(f"No descendants found for {term_id} (ontology_source={term_source}, version={term_source_version}), falling back to exact match")
                     where_clauses.append(f"term_id = '{term_id}'")
             except Exception as e:
-                logger.warning(f"Error querying term descendants for {term_id}: {e}")
+                logger.warning(f"Error querying term descendants for {term_id} (ontology_source={term_source}, version={term_source_version}): {e}")
                 # Fall back to exact match
                 where_clauses.append(f"term_id = '{term_id}'")
         else:
@@ -1368,11 +1387,15 @@ def query_subjects_by_project(
     # Build qualifier filter
     if not include_qualified:
         # Exclude terms with negated, hypothetical, or family qualifiers
+        # Check both short names (legacy) and full IRIs (current) for backward compatibility
         where_clauses.append("""
             NOT (
                 CONTAINS(qualifiers, 'negated') OR
+                CONTAINS(qualifiers, 'http://ods.nationwidechildrens.org/phebee/qualifier/negated') OR
                 CONTAINS(qualifiers, 'hypothetical') OR
-                CONTAINS(qualifiers, 'family')
+                CONTAINS(qualifiers, 'http://ods.nationwidechildrens.org/phebee/qualifier/hypothetical') OR
+                CONTAINS(qualifiers, 'family') OR
+                CONTAINS(qualifiers, 'http://ods.nationwidechildrens.org/phebee/qualifier/family')
             )
         """)
 
@@ -1925,6 +1948,231 @@ def materialize_project(project_id: str, batch_size: int = 100) -> Dict[str, int
         raise
 
 
+def materialize_subject_terms(subject_id: str) -> Dict[str, int]:
+    """
+    Materialize subject-term associations for a single subject across all projects.
+
+    This function is called when:
+    1. A subject is linked to a new project (need to make existing evidence visible in new project)
+    2. Evidence is added/removed for a subject (need to update materialized views)
+
+    Since evidence is project-agnostic, this function:
+    1. Queries DynamoDB to get all projects this subject belongs to
+    2. Deletes existing materialized records for this subject
+    3. Re-materializes by_subject_table (project-agnostic) for this subject
+    4. Re-materializes by_project_term_table for all projects this subject belongs to
+
+    Args:
+        subject_id: The subject UUID
+
+    Returns:
+        Dict with statistics: projects_affected, terms_materialized
+    """
+    from phebee.utils.dynamodb import _get_table_name
+    import boto3
+
+    database_name = os.environ['ICEBERG_DATABASE']
+    evidence_table = os.environ['ICEBERG_EVIDENCE_TABLE']
+    by_subject_table = os.environ['ICEBERG_SUBJECT_TERMS_BY_SUBJECT_TABLE']
+    by_project_term_table = os.environ['ICEBERG_SUBJECT_TERMS_BY_PROJECT_TERM_TABLE']
+
+    logger.info(f"Materializing subject {subject_id}")
+
+    # Step 1: Get all projects this subject belongs to from DynamoDB
+    table_name = _get_table_name()
+    dynamodb = boto3.resource('dynamodb', region_name='us-east-2')
+    table = dynamodb.Table(table_name)
+
+    project_mappings = {}  # {project_id: project_subject_id}
+
+    try:
+        # Query reverse mappings: PK='SUBJECT#{subject_id}'
+        response = table.query(
+            KeyConditionExpression='PK = :pk',
+            ExpressionAttributeValues={':pk': f'SUBJECT#{subject_id}'}
+        )
+
+        for item in response.get('Items', []):
+            # Parse SK: "PROJECT#{project_id}#SUBJECT#{project_subject_id}"
+            sk = item.get('SK', '')
+            if sk.startswith('PROJECT#'):
+                parts = sk.split('#')
+                if len(parts) >= 4:
+                    project_id = parts[1]
+                    project_subject_id = parts[3]
+                    project_mappings[project_id] = project_subject_id
+
+        logger.info(f"Subject {subject_id} belongs to {len(project_mappings)} projects: {list(project_mappings.keys())}")
+
+    except Exception as e:
+        logger.error(f"Error querying DynamoDB for subject projects: {e}")
+        raise
+
+    if not project_mappings:
+        logger.warning(f"No project mappings found for subject {subject_id}")
+        return {"projects_affected": 0, "terms_materialized": 0}
+
+    # Step 2: Delete existing records for this subject from by_subject_table
+    delete_by_subject = f"""
+    DELETE FROM {database_name}.{by_subject_table}
+    WHERE subject_id = '{subject_id}'
+    """
+
+    try:
+        _execute_athena_query(delete_by_subject)
+        logger.info(f"Deleted existing by_subject records for subject {subject_id}")
+    except Exception as e:
+        logger.warning(f"Error deleting from by_subject: {e}")
+
+    # Step 3: Delete existing records for this subject from by_project_term_table
+    delete_by_project = f"""
+    DELETE FROM {database_name}.{by_project_term_table}
+    WHERE subject_id = '{subject_id}'
+    """
+
+    try:
+        _execute_athena_query(delete_by_project)
+        logger.info(f"Deleted existing by_project_term records for subject {subject_id}")
+    except Exception as e:
+        logger.warning(f"Error deleting from by_project_term: {e}")
+
+    # Step 4: Build aggregation query for by_subject_table (project-agnostic)
+    aggregate_by_subject = f"""
+    WITH aggregated AS (
+        SELECT
+            subject_id,
+            CONCAT('http://ods.nationwidechildrens.org/phebee/subjects/', subject_id) as subject_iri,
+            term_iri,
+            COUNT(*) as evidence_count,
+            MIN(created_date) as first_evidence_date,
+            MAX(created_date) as last_evidence_date,
+            ARBITRARY(termlink_id) as termlink_id,
+            ARRAY_AGG(DISTINCT
+                CASE
+                    WHEN q.qualifier_value IN ('true', '1') THEN q.qualifier_type
+                    ELSE NULL
+                END
+            ) as active_qualifiers
+        FROM {database_name}.{evidence_table}
+        LEFT JOIN UNNEST(COALESCE(qualifiers, ARRAY[])) AS t(q) ON TRUE
+        WHERE subject_id = '{subject_id}'
+        GROUP BY subject_id, term_iri
+    )
+    SELECT
+        subject_id,
+        subject_iri,
+        term_iri,
+        REGEXP_REPLACE(
+            REGEXP_REPLACE(term_iri, '.*/obo/', ''),
+            '_', ':'
+        ) as term_id,
+        CAST(NULL AS VARCHAR) as term_label,
+        FILTER(active_qualifiers, x -> x IS NOT NULL) as qualifiers,
+        evidence_count,
+        termlink_id,
+        first_evidence_date,
+        last_evidence_date
+    FROM aggregated
+    """
+
+    # Step 5: Build aggregation query for by_project_term_table (project-specific)
+    # Create mapping CTE for all projects this subject belongs to
+    mapping_values = []
+    for project_id, project_subject_id in project_mappings.items():
+        mapping_values.append(f"('{project_id}', '{subject_id}', '{project_subject_id}')")
+
+    mapping_cte = f"""
+    subject_mapping AS (
+        SELECT project_id, subject_id, project_subject_id
+        FROM (VALUES {', '.join(mapping_values)}) AS t(project_id, subject_id, project_subject_id)
+    ),
+    """
+
+    aggregate_by_project = f"""
+    WITH {mapping_cte}
+    aggregated AS (
+        SELECT
+            m.project_id,
+            e.subject_id,
+            m.project_subject_id,
+            CONCAT('http://ods.nationwidechildrens.org/phebee/subjects/', e.subject_id) as subject_iri,
+            CONCAT('http://ods.nationwidechildrens.org/phebee/projects/', m.project_id, '/', m.project_subject_id) as project_subject_iri,
+            e.term_iri,
+            COUNT(*) as evidence_count,
+            MIN(e.created_date) as first_evidence_date,
+            MAX(e.created_date) as last_evidence_date,
+            ARBITRARY(e.termlink_id) as termlink_id,
+            ARRAY_AGG(DISTINCT
+                CASE
+                    WHEN q.qualifier_value IN ('true', '1') THEN q.qualifier_type
+                    ELSE NULL
+                END
+            ) as active_qualifiers
+        FROM {database_name}.{evidence_table} e
+        JOIN subject_mapping m ON e.subject_id = m.subject_id
+        LEFT JOIN UNNEST(COALESCE(e.qualifiers, ARRAY[])) AS t(q) ON TRUE
+        GROUP BY m.project_id, e.subject_id, m.project_subject_id, e.term_iri
+    )
+    SELECT
+        project_id,
+        subject_id,
+        project_subject_id,
+        subject_iri,
+        project_subject_iri,
+        term_iri,
+        REGEXP_REPLACE(
+            REGEXP_REPLACE(term_iri, '.*/obo/', ''),
+            '_', ':'
+        ) as term_id,
+        CAST(NULL AS VARCHAR) as term_label,
+        FILTER(active_qualifiers, x -> x IS NOT NULL) as qualifiers,
+        evidence_count,
+        termlink_id,
+        first_evidence_date,
+        last_evidence_date
+    FROM aggregated
+    """
+
+    try:
+        # Step 6: Insert into by_subject_table (project-agnostic)
+        insert_by_subject_query = f"""
+        INSERT INTO {database_name}.{by_subject_table}
+        {aggregate_by_subject}
+        """
+        _execute_athena_query(insert_by_subject_query)
+        logger.info(f"Inserted by_subject records for subject {subject_id}")
+
+        # Step 7: Insert into by_project_term_table (project-specific for all projects)
+        insert_by_project_query = f"""
+        INSERT INTO {database_name}.{by_project_term_table}
+        {aggregate_by_project}
+        """
+        _execute_athena_query(insert_by_project_query)
+        logger.info(f"Inserted by_project_term records for subject {subject_id} across {len(project_mappings)} projects")
+
+        # Step 8: Get statistics
+        stats_query = f"""
+        SELECT
+            COUNT(DISTINCT project_id) as projects,
+            COUNT(*) as terms
+        FROM {database_name}.{by_project_term_table}
+        WHERE subject_id = '{subject_id}'
+        """
+
+        stats_results = query_iceberg_evidence(stats_query)
+        stats = {
+            "projects_affected": int(stats_results[0]['projects']) if stats_results else 0,
+            "terms_materialized": int(stats_results[0]['terms']) if stats_results else 0
+        }
+
+        logger.info(f"Materialized subject {subject_id}: {stats}")
+        return stats
+
+    except Exception as e:
+        logger.error(f"Error materializing subject {subject_id}: {e}")
+        raise
+
+
 def delete_subject_terms(subject_id: str, project_id: str = None, include_by_subject: bool = True) -> bool:
     """
     Delete subject-term records for a specific subject.
@@ -2188,7 +2436,7 @@ def query_term_ancestors(
         version_query = f"""
         SELECT version
         FROM {database_name}.{table_name}
-        WHERE ontology_source = '{ontology_source}'
+        WHERE LOWER(ontology_source) = LOWER('{ontology_source}')
         GROUP BY version
         ORDER BY version DESC
         LIMIT 1
@@ -2280,7 +2528,7 @@ def query_term_descendants(
         version_query = f"""
         SELECT version
         FROM {database_name}.{table_name}
-        WHERE ontology_source = '{ontology_source}'
+        WHERE LOWER(ontology_source) = LOWER('{ontology_source}')
         GROUP BY version
         ORDER BY version DESC
         LIMIT 1
@@ -2302,19 +2550,23 @@ def query_term_descendants(
             return []
 
     # Query descendants - all terms that have this term in their ancestor_term_ids
+    # Use case-insensitive comparison for ontology_source (stored as lowercase: hpo, mondo)
     query = f"""
     SELECT term_id, term_label, depth
     FROM {database_name}.{table_name}
-    WHERE ontology_source = '{ontology_source}'
+    WHERE LOWER(ontology_source) = LOWER('{ontology_source}')
       AND version = '{version}'
       AND CONTAINS(ancestor_term_ids, '{term_id}')
       AND term_id != '{term_id}'
     ORDER BY depth ASC
     """
 
+    logger.info(f"Querying descendants: term_id={term_id}, ontology_source={ontology_source} (searching case-insensitive), version={version}, database={database_name}, table={table_name}")
+
     try:
         query_execution_id = _execute_athena_query(query, wait_for_completion=True)
         results = _get_query_results(query_execution_id)
+        logger.info(f"Found {len(results)} descendants for {term_id}")
 
         if not results:
             logger.info(f"No descendants found for term {term_id} in {ontology_source} version {version}")

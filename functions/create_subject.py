@@ -10,6 +10,7 @@ from phebee.utils.sparql import (
 )
 from phebee.utils.neptune import execute_update
 from phebee.utils.dynamodb import _get_table_name, get_subject_id
+from phebee.utils.iceberg import materialize_subject_terms
 import boto3
 
 logger = Logger()
@@ -333,7 +334,15 @@ def lambda_handler(event, context):
                 logger.error(f"Failed to clean up DynamoDB mapping: {cleanup_error}")
             raise
 
-        # Success - fire event
+        # Success - re-materialize subject BEFORE firing event
+        # This ensures subject is fully queryable in new project when event consumers are notified
+        try:
+            logger.info(f"Re-materializing subject {subject_id} after linking to project {project_id}")
+            materialize_subject_terms(subject_id)
+        except Exception as e:
+            logger.error(f"Failed to materialize subject after linking (non-critical): {e}")
+
+        # Fire event after materialization completes
         try:
             fire_event(
                 SUBJECT_LINKED,
