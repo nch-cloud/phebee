@@ -38,11 +38,20 @@ def lambda_handler(event, context):
 
     term_iri = body.get("term_iri")
     term_source = body.get("term_source", "hpo")
-    # Don't default to a specific version - let query functions use latest from Iceberg tables
+    # Get user-specified version (if provided) or use latest from DynamoDB
     term_source_version = body.get("term_source_version")
 
+    # Fetch latest versions from DynamoDB (used for phenopackets and as default for queries)
     hpo_version = get_current_term_source_version("hpo")
     mondo_version = get_current_term_source_version("mondo")
+
+    # If user didn't specify version, use the latest from DynamoDB based on term_source
+    # This avoids redundant Athena queries to discover the latest version
+    if not term_source_version:
+        if term_source == "hpo":
+            term_source_version = hpo_version
+        elif term_source == "mondo":
+            term_source_version = mondo_version
 
     project_subject_ids = body.get("project_subject_ids")
 
@@ -64,7 +73,7 @@ def lambda_handler(event, context):
             f"Query term '{term_iri}' with include_child_terms=true would match all subjects. "
             f"Use an unfiltered query (omit term_iri) or set include_child_terms=false instead."
         )
-    
+
     # Pagination parameters
     limit = body.get("limit", 1000)
     cursor = body.get("cursor")

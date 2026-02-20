@@ -5,6 +5,11 @@ from typing import Dict, List, Set, Tuple, Optional
 from botocore.exceptions import ClientError
 
 
+# Cache for term source versions to avoid repeated DynamoDB queries
+# Persists across warm Lambda invocations
+_TERM_SOURCE_VERSION_CACHE = {}
+
+
 def _get_table_name():
     return os.environ["PheBeeDynamoTable"]
 
@@ -68,7 +73,17 @@ def get_current_term_source_version(source_name: str, dynamodb=None):
     """
     Returns the most recent installed 'Version' for a given source, based on InstallTimestamp.
     Ignores records without InstallTimestamp.
+
+    Results are cached at module level to avoid repeated DynamoDB queries across
+    warm Lambda invocations. Ontology versions only change when new versions are installed.
     """
+    global _TERM_SOURCE_VERSION_CACHE
+
+    # Check cache first
+    if source_name in _TERM_SOURCE_VERSION_CACHE:
+        return _TERM_SOURCE_VERSION_CACHE[source_name]
+
+    # Cache miss - query DynamoDB
     source_records = get_source_records(source_name, dynamodb)
 
     sorted_records = sorted(
@@ -77,10 +92,14 @@ def get_current_term_source_version(source_name: str, dynamodb=None):
         reverse=True,
     )
 
-    if not sorted_records:
-        return None
+    version = None
+    if sorted_records:
+        version = sorted_records[0]["Version"]["S"]
 
-    return sorted_records[0]["Version"]["S"]
+    # Cache the result (even if None)
+    _TERM_SOURCE_VERSION_CACHE[source_name] = version
+
+    return version
 
 
 # ---------------------------

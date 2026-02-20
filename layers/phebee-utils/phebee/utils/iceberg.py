@@ -20,6 +20,31 @@ from phebee.constants import PHEBEE
 
 logger = logging.getLogger(__name__)
 
+# Cache for Athena workgroup configuration to avoid rate limiting
+_WORKGROUP_CONFIG_CACHE = {}
+
+
+def _get_workgroup_config_cached(athena_client, workgroup="primary"):
+    """
+    Get Athena workgroup configuration with caching to avoid rate limiting.
+
+    Args:
+        athena_client: boto3 Athena client
+        workgroup: Workgroup name (default: "primary")
+
+    Returns:
+        tuple: (is_managed: bool, config: dict)
+    """
+    global _WORKGROUP_CONFIG_CACHE
+
+    if workgroup not in _WORKGROUP_CONFIG_CACHE:
+        wg_cfg = athena_client.get_work_group(WorkGroup=workgroup)["WorkGroup"]["Configuration"]
+        managed_config = wg_cfg.get("ManagedQueryResultsConfiguration", {})
+        is_managed = managed_config.get("Enabled", False) if isinstance(managed_config, dict) else False
+        _WORKGROUP_CONFIG_CACHE[workgroup] = (is_managed, wg_cfg)
+
+    return _WORKGROUP_CONFIG_CACHE[workgroup]
+
 
 def parse_athena_row_array(row_str, field_names):
     """
@@ -192,11 +217,9 @@ def query_iceberg_evidence(query: str) -> List[Dict[str, Any]]:
     
     try:
         athena_client = boto3.client('athena')
-        
-        # Check if primary workgroup is managed
-        wg_cfg = athena_client.get_work_group(WorkGroup="primary")["WorkGroup"]["Configuration"]
-        managed_config = wg_cfg.get("ManagedQueryResultsConfiguration", {})
-        managed = managed_config.get("Enabled", False) if isinstance(managed_config, dict) else False
+
+        # Check if primary workgroup is managed (cached to avoid rate limiting)
+        managed, wg_cfg = _get_workgroup_config_cached(athena_client)
 
         database_name = os.environ.get('ICEBERG_DATABASE')
         if not database_name:
@@ -422,10 +445,8 @@ def create_evidence_record(
 
             athena_client = boto3.client('athena')
 
-            # Check if primary workgroup is managed
-            wg_cfg = athena_client.get_work_group(WorkGroup="primary")["WorkGroup"]["Configuration"]
-            managed_config = wg_cfg.get("ManagedQueryResultsConfiguration", {})
-            managed = managed_config.get("Enabled", False) if isinstance(managed_config, dict) else False
+            # Check if primary workgroup is managed (cached to avoid rate limiting)
+            managed, wg_cfg = _get_workgroup_config_cached(athena_client)
 
             database_name = os.environ.get('ICEBERG_DATABASE')
             if not database_name:
@@ -962,10 +983,8 @@ def delete_evidence_record(evidence_id: str) -> bool:
 
         athena_client = boto3.client('athena')
 
-        # Check if primary workgroup is managed
-        wg_cfg = athena_client.get_work_group(WorkGroup="primary")["WorkGroup"]["Configuration"]
-        managed_config = wg_cfg.get("ManagedQueryResultsConfiguration", {})
-        managed = managed_config.get("Enabled", False) if isinstance(managed_config, dict) else False
+        # Check if primary workgroup is managed (cached to avoid rate limiting)
+        managed, wg_cfg = _get_workgroup_config_cached(athena_client)
 
         database_name = os.environ.get('ICEBERG_DATABASE')
         if not database_name:
@@ -1665,10 +1684,8 @@ def _execute_athena_query(query: str, wait_for_completion: bool = True) -> str:
     if not database_name:
         raise ValueError("ICEBERG_DATABASE environment variable is required")
 
-    # Check if primary workgroup is managed
-    wg_cfg = athena_client.get_work_group(WorkGroup="primary")["WorkGroup"]["Configuration"]
-    managed_config = wg_cfg.get("ManagedQueryResultsConfiguration", {})
-    managed = managed_config.get("Enabled", False) if isinstance(managed_config, dict) else False
+    # Check if primary workgroup is managed (cached to avoid rate limiting)
+    managed, wg_cfg = _get_workgroup_config_cached(athena_client)
 
     params = {
         "QueryString": query,
@@ -2669,10 +2686,8 @@ def reset_iceberg_tables() -> bool:
 
     athena_client = boto3.client('athena')
 
-    # Check if primary workgroup is managed
-    wg_cfg = athena_client.get_work_group(WorkGroup="primary")["WorkGroup"]["Configuration"]
-    managed_config = wg_cfg.get("ManagedQueryResultsConfiguration", {})
-    managed = managed_config.get("Enabled", False) if isinstance(managed_config, dict) else False
+    # Check if primary workgroup is managed (cached to avoid rate limiting)
+    managed, wg_cfg = _get_workgroup_config_cached(athena_client)
 
     bucket_name = os.environ.get('PHEBEE_BUCKET_NAME') if not managed else None
 
