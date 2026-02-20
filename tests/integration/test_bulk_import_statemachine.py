@@ -283,9 +283,160 @@ def test_bulk_import_ttl_files_generated(golden_bulk_import_execution):
     assert first_file.endswith(".ttl"), f"Expected .ttl file, got {first_file}"
 
 
+def test_bulk_import_query_tables_materialized(golden_bulk_import_execution, query_athena):
+    """
+    Test 6: Verify analytical query tables were materialized successfully.
+
+    Reuses golden execution to verify both subject_terms_by_subject and
+    subject_terms_by_project_term tables contain the expected data.
+
+    This test ensures the MaterializeProjectSubjectTerms step not only ran,
+    but actually populated the query tables correctly.
+    """
+    project_id = golden_bulk_import_execution["project_id"]
+    expected_subjects = golden_bulk_import_execution["expected_subjects"]
+
+    # Test 1: Verify subject_terms_by_subject table
+    by_subject_query = f"""
+        SELECT COUNT(DISTINCT subject_id) as subject_count,
+               COUNT(*) as total_records
+        FROM phebee.subject_terms_by_subject
+        WHERE subject_id IN (
+            SELECT DISTINCT subject_id
+            FROM phebee.evidence
+            WHERE run_id = '{golden_bulk_import_execution["run_id"]}'
+        )
+    """
+
+    by_subject_results = query_athena(by_subject_query)
+    assert len(by_subject_results) == 1, "Expected one result row from by_subject query"
+
+    subject_count = int(by_subject_results[0]["subject_count"])
+    total_records = int(by_subject_results[0]["total_records"])
+
+    assert subject_count == expected_subjects, \
+        f"subject_terms_by_subject: Expected {expected_subjects} subjects, found {subject_count}"
+
+    # With 50 subjects and 1 unique term, we should have 50 records (1 per subject)
+    assert total_records == expected_subjects, \
+        f"subject_terms_by_subject: Expected {expected_subjects} records, found {total_records}"
+
+    print(f"✓ subject_terms_by_subject: {subject_count} subjects, {total_records} records")
+
+    # Test 2: Verify subject_terms_by_project_term table
+    by_project_term_query = f"""
+        SELECT COUNT(DISTINCT subject_id) as subject_count,
+               COUNT(DISTINCT term_id) as term_count,
+               COUNT(*) as total_records
+        FROM phebee.subject_terms_by_project_term
+        WHERE subject_id IN (
+            SELECT DISTINCT subject_id
+            FROM phebee.evidence
+            WHERE run_id = '{golden_bulk_import_execution["run_id"]}'
+        )
+    """
+
+    by_project_term_results = query_athena(by_project_term_query)
+    assert len(by_project_term_results) == 1, "Expected one result row from by_project_term query"
+
+    pt_subject_count = int(by_project_term_results[0]["subject_count"])
+    pt_term_count = int(by_project_term_results[0]["term_count"])
+    pt_total_records = int(by_project_term_results[0]["total_records"])
+
+    assert pt_subject_count == expected_subjects, \
+        f"subject_terms_by_project_term: Expected {expected_subjects} subjects, found {pt_subject_count}"
+
+    # All subjects reference the same term, so we should have 1 unique term
+    assert pt_term_count == 1, \
+        f"subject_terms_by_project_term: Expected 1 unique term, found {pt_term_count}"
+
+    # 50 subjects × 1 term = 50 records
+    assert pt_total_records == expected_subjects, \
+        f"subject_terms_by_project_term: Expected {expected_subjects} records, found {pt_total_records}"
+
+    print(f"✓ subject_terms_by_project_term: {pt_subject_count} subjects, {pt_term_count} terms, {pt_total_records} records")
+
+    # Test 3: Verify aggregation is working correctly
+    # The test creates 4 evidence records per subject for the SAME term.
+    # Materialization should aggregate these into ONE row per (subject, term) with evidence_count=4.
+    # This verifies that multiple evidence records get properly collapsed.
+
+    # First, verify the raw evidence table has 4 records per subject
+    raw_evidence_query = f"""
+        SELECT subject_id,
+               COUNT(*) as raw_evidence_count
+        FROM phebee.evidence
+        WHERE run_id = '{golden_bulk_import_execution["run_id"]}'
+        GROUP BY subject_id
+        ORDER BY subject_id
+        LIMIT 5
+    """
+
+    raw_evidence_results = query_athena(raw_evidence_query)
+    for row in raw_evidence_results:
+        raw_count = int(row["raw_evidence_count"])
+        assert raw_count == 4, f"Subject {row['subject_id']} should have 4 raw evidence records, found {raw_count}"
+
+    print(f"✓ Verified raw evidence: 4 records per subject")
+
+    # Now verify that materialization aggregated these into single rows
+    aggregation_query = f"""
+        SELECT subject_id,
+               COUNT(*) as materialized_rows,
+               MAX(evidence_count) as evidence_count
+        FROM phebee.subject_terms_by_subject
+        WHERE subject_id IN (
+            SELECT DISTINCT subject_id
+            FROM phebee.evidence
+            WHERE run_id = '{golden_bulk_import_execution["run_id"]}'
+        )
+        GROUP BY subject_id
+        ORDER BY subject_id
+        LIMIT 5
+    """
+
+    aggregation_results = query_athena(aggregation_query)
+    for row in aggregation_results:
+        materialized_rows = int(row["materialized_rows"])
+        evidence_count = int(row["evidence_count"])
+
+        # Each subject should have exactly 1 materialized row (not 4)
+        assert materialized_rows == 1, \
+            f"Subject {row['subject_id']}: Expected 1 materialized row, found {materialized_rows}. Aggregation may not be working."
+
+        # That single row should have evidence_count=4 (aggregated from 4 raw records)
+        assert evidence_count == 4, \
+            f"Subject {row['subject_id']}: Expected evidence_count=4, found {evidence_count}"
+
+    print(f"✓ Aggregation verified: 4 evidence records → 1 materialized row per subject")
+
+    # Verify overall evidence counts
+    evidence_count_query = f"""
+        SELECT MIN(evidence_count) as min_evidence,
+               MAX(evidence_count) as max_evidence,
+               AVG(evidence_count) as avg_evidence
+        FROM phebee.subject_terms_by_subject
+        WHERE subject_id IN (
+            SELECT DISTINCT subject_id
+            FROM phebee.evidence
+            WHERE run_id = '{golden_bulk_import_execution["run_id"]}'
+        )
+    """
+
+    evidence_results = query_athena(evidence_count_query)
+    min_evidence = int(evidence_results[0]["min_evidence"])
+    max_evidence = int(evidence_results[0]["max_evidence"])
+
+    assert min_evidence > 0, "All records should have evidence_count > 0"
+    assert min_evidence == 4, f"Expected min evidence_count = 4, found {min_evidence}"
+    assert max_evidence == 4, f"Expected max evidence_count = 4, found {max_evidence}"
+
+    print(f"✓ Evidence counts across all subjects: min={min_evidence}, max={max_evidence}")
+
+
 def test_bulk_import_invalid_input_path(physical_resources):
     """
-    Test 6: Validation failure - nonexistent S3 path.
+    Test 7: Validation failure - nonexistent S3 path.
 
     Fast test that validates early failure for invalid input.
     """
@@ -329,7 +480,7 @@ def test_bulk_import_invalid_input_path(physical_resources):
 
 def test_bulk_import_missing_run_id(physical_resources):
     """
-    Test 7: Validation failure - missing run_id parameter.
+    Test 8: Validation failure - missing run_id parameter.
 
     Fast test that validates required field checking.
     """
@@ -373,7 +524,7 @@ def test_bulk_import_missing_run_id(physical_resources):
 @pytest.mark.manual
 def test_bulk_import_concurrent_executions():
     """
-    Test 9: Multiple concurrent bulk import executions.
+    Test 10: Multiple concurrent bulk import executions.
 
     MARKED AS MANUAL: This test takes 1+ hours and should be run manually
     to verify concurrency handling.

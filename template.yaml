@@ -1590,6 +1590,8 @@ Resources:
         AWSRegion: !Ref AWS::Region
         IcebergDatabase: !Ref IcebergDatabase
         IcebergEvidenceTable: !Ref IcebergEvidenceTable
+        IcebergSubjectTermsBySubjectTable: !Ref IcebergSubjectTermsBySubjectTable
+        IcebergSubjectTermsByProjectTermTable: !Ref IcebergSubjectTermsByProjectTermTable
         NeptuneClusterEndpoint: !GetAtt PheBeeNeptuneCluster.Endpoint
         StartNeptuneBulkLoadFunction: !GetAtt StartNeptuneBulkLoadFunction.Arn
         CheckNeptuneBulkLoadStatusFunction: !GetAtt CheckNeptuneBulkLoadStatusFunction.Arn

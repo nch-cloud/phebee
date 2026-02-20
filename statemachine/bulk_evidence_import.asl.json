@@ -252,33 +252,33 @@
 
     "MaterializeProjectSubjectTerms": {
       "Type": "Task",
-      "Resource": "arn:aws:states:::lambda:invoke",
+      "Resource": "arn:aws:states:::emr-serverless:startJobRun.sync",
       "Parameters": {
-        "FunctionName": "${MaterializeProjectSubjectTermsFunction}",
-        "Payload": {
-          "project_id.$": "$.validation.Payload.body.project_id",
-          "run_id.$": "$.run_id",
-          "batch_size": 100
+        "ApplicationId": "${EMRServerlessApplicationId}",
+        "ExecutionRoleArn": "${EMRExecutionRoleArn}",
+        "Name.$": "States.Format('MaterializeProjectSubjectTerms-{}', $.run_id)",
+        "JobDriver": {
+          "SparkSubmit": {
+            "EntryPoint": "s3://${PheBeeBucketName}/scripts/materialize_project_subject_terms_emr.py",
+            "EntryPointArguments.$": "States.Array('--project-id', $.validation.Payload.body.project_id, '--iceberg-database', '${IcebergDatabase}', '--evidence-table', '${IcebergEvidenceTable}', '--by-subject-table', '${IcebergSubjectTermsBySubjectTable}', '--by-project-term-table', '${IcebergSubjectTermsByProjectTermTable}', '--mapping-file', States.Format('s3://${PheBeeBucketName}/runs/{}/subject_mapping.json', $.run_id), '--region', '${AWSRegion}')",
+            "SparkSubmitParameters": "--conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions --conf spark.sql.catalog.glue_catalog=org.apache.iceberg.spark.SparkCatalog --conf spark.sql.catalog.glue_catalog.warehouse=s3://${PheBeeBucketName}/iceberg-warehouse --conf spark.sql.catalog.glue_catalog.catalog-impl=org.apache.iceberg.aws.glue.GlueCatalog --conf spark.sql.catalog.glue_catalog.io-impl=org.apache.iceberg.aws.s3.S3FileIO"
+          }
+        },
+        "ConfigurationOverrides": {
+          "MonitoringConfiguration": {
+            "S3MonitoringConfiguration": {
+              "LogUri": "s3://${PheBeeBucketName}/emr-logs/"
+            }
+          }
         }
       },
       "ResultPath": "$.materialization",
-      "Next": "CheckMaterializationStatus",
+      "Next": "NotifySuccess",
       "Catch": [{
         "ErrorEquals": ["States.ALL"],
         "Next": "NotifyFailure",
         "ResultPath": "$.error"
       }]
-    },
-
-    "CheckMaterializationStatus": {
-      "Type": "Choice",
-      "Choices": [{
-        "Variable": "$.materialization.Payload.status",
-        "StringEquals": "success",
-        "Next": "NotifySuccess"
-      }],
-      "Default": "NotifySuccess",
-      "Comment": "Always proceed to success - materialization is optional optimization"
     },
 
     "NotifySuccess": {

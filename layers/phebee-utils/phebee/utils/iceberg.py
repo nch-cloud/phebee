@@ -1733,7 +1733,7 @@ def materialize_project(project_id: str, batch_size: int = 100) -> Dict[str, int
 
     Args:
         project_id: The project ID
-        batch_size: Number of subjects to process per batch (currently unused)
+        batch_size: Number of subjects to process per batch to avoid ICEBERG_TOO_MANY_OPEN_PARTITIONS error
 
     Returns:
         Dict with statistics: subjects_processed, terms_materialized
@@ -1746,7 +1746,7 @@ def materialize_project(project_id: str, batch_size: int = 100) -> Dict[str, int
     by_subject_table = os.environ['ICEBERG_SUBJECT_TERMS_BY_SUBJECT_TABLE']
     by_project_term_table = os.environ['ICEBERG_SUBJECT_TERMS_BY_PROJECT_TERM_TABLE']
 
-    logger.info(f"Materializing project {project_id}")
+    logger.info(f"Materializing project {project_id} with batch_size={batch_size}")
 
     # Step 1: Get all subjects in this project from DynamoDB
     table_name = _get_table_name()
@@ -1783,23 +1783,8 @@ def materialize_project(project_id: str, batch_size: int = 100) -> Dict[str, int
         logger.warning(f"No subjects found for project {project_id}")
         return {"subjects_processed": 0, "terms_materialized": 0}
 
-    # Build WHERE clause for subject_id filter
-    subject_id_list = "', '".join(subject_ids)
-    subject_filter = f"WHERE subject_id IN ('{subject_id_list}')"
-
-    # Step 2: Delete existing records for these subjects from by_subject_table
-    delete_by_subject = f"""
-    DELETE FROM {database_name}.{by_subject_table}
-    {subject_filter}
-    """
-
-    try:
-        _execute_athena_query(delete_by_subject)
-        logger.info(f"Deleted existing by_subject records for {len(subject_ids)} subjects")
-    except Exception as e:
-        logger.warning(f"Error deleting from by_subject: {e}")
-
-    # Step 3: Delete existing records for this project from by_project_term_table
+    # Step 2: Delete existing records for this project (do once, not per batch)
+    # Delete from by_project_term_table first (project-specific)
     delete_by_project = f"""
     DELETE FROM {database_name}.{by_project_term_table}
     WHERE project_id = '{project_id}'
@@ -1811,121 +1796,152 @@ def materialize_project(project_id: str, batch_size: int = 100) -> Dict[str, int
     except Exception as e:
         logger.warning(f"Error deleting from by_project_term: {e}")
 
-    # Step 4: Build aggregation query for by_subject_table (project-agnostic)
-    aggregate_by_subject = f"""
-    WITH aggregated AS (
-        SELECT
-            subject_id,
-            CONCAT('http://ods.nationwidechildrens.org/phebee/subjects/', subject_id) as subject_iri,
-            term_iri,
-            COUNT(*) as evidence_count,
-            MIN(created_date) as first_evidence_date,
-            MAX(created_date) as last_evidence_date,
-            ARBITRARY(termlink_id) as termlink_id,
-            ARRAY_AGG(DISTINCT
-                CASE
-                    WHEN q.qualifier_value IN ('true', '1') THEN q.qualifier_type
-                    ELSE NULL
-                END
-            ) as active_qualifiers
-        FROM {database_name}.{evidence_table}
-        LEFT JOIN UNNEST(COALESCE(qualifiers, ARRAY[])) AS t(q) ON TRUE
-        {subject_filter}
-        GROUP BY subject_id, term_iri
-    )
-    SELECT
-        subject_id,
-        subject_iri,
-        term_iri,
-        REGEXP_REPLACE(
-            REGEXP_REPLACE(term_iri, '.*/obo/', ''),
-            '_', ':'
-        ) as term_id,
-        CAST(NULL AS VARCHAR) as term_label,
-        FILTER(active_qualifiers, x -> x IS NOT NULL) as qualifiers,
-        evidence_count,
-        termlink_id,
-        first_evidence_date,
-        last_evidence_date
-    FROM aggregated
-    """
+    # Delete from by_subject_table (all subjects at once - this is project-agnostic)
+    subject_id_list_all = "', '".join(subject_ids)
+    subject_filter_all = f"WHERE subject_id IN ('{subject_id_list_all}')"
 
-    # Step 5: Build aggregation query for by_project_term_table (project-specific)
-    # Create mapping CTE using VALUES to join subject_id (UUID) -> project_subject_id
-    mapping_values = []
-    for subject_id, project_subject_id in project_subject_map.items():
-        mapping_values.append(f"('{subject_id}', '{project_subject_id}')")
-
-    mapping_cte = f"""
-    subject_mapping AS (
-        SELECT subject_id, project_subject_id
-        FROM (VALUES {', '.join(mapping_values)}) AS t(subject_id, project_subject_id)
-    ),
-    """
-
-    aggregate_by_project = f"""
-    WITH {mapping_cte}
-    aggregated AS (
-        SELECT
-            '{project_id}' as project_id,
-            e.subject_id,
-            m.project_subject_id,
-            CONCAT('http://ods.nationwidechildrens.org/phebee/subjects/', e.subject_id) as subject_iri,
-            CONCAT('http://ods.nationwidechildrens.org/phebee/projects/{project_id}/', m.project_subject_id) as project_subject_iri,
-            e.term_iri,
-            COUNT(*) as evidence_count,
-            MIN(e.created_date) as first_evidence_date,
-            MAX(e.created_date) as last_evidence_date,
-            ARBITRARY(e.termlink_id) as termlink_id,
-            ARRAY_AGG(DISTINCT
-                CASE
-                    WHEN q.qualifier_value IN ('true', '1') THEN q.qualifier_type
-                    ELSE NULL
-                END
-            ) as active_qualifiers
-        FROM {database_name}.{evidence_table} e
-        JOIN subject_mapping m ON e.subject_id = m.subject_id
-        LEFT JOIN UNNEST(COALESCE(e.qualifiers, ARRAY[])) AS t(q) ON TRUE
-        GROUP BY e.subject_id, m.project_subject_id, e.term_iri
-    )
-    SELECT
-        project_id,
-        subject_id,
-        project_subject_id,
-        subject_iri,
-        project_subject_iri,
-        term_iri,
-        REGEXP_REPLACE(
-            REGEXP_REPLACE(term_iri, '.*/obo/', ''),
-            '_', ':'
-        ) as term_id,
-        CAST(NULL AS VARCHAR) as term_label,
-        FILTER(active_qualifiers, x -> x IS NOT NULL) as qualifiers,
-        evidence_count,
-        termlink_id,
-        first_evidence_date,
-        last_evidence_date
-    FROM aggregated
+    delete_by_subject = f"""
+    DELETE FROM {database_name}.{by_subject_table}
+    {subject_filter_all}
     """
 
     try:
-        # Step 6: Insert into by_subject_table (project-agnostic)
-        insert_by_subject_query = f"""
-        INSERT INTO {database_name}.{by_subject_table}
-        {aggregate_by_subject}
-        """
-        _execute_athena_query(insert_by_subject_query)
-        logger.info(f"Inserted by_subject records for {len(subject_ids)} subjects")
+        _execute_athena_query(delete_by_subject)
+        logger.info(f"Deleted existing by_subject records for {len(subject_ids)} subjects")
+    except Exception as e:
+        logger.warning(f"Error deleting from by_subject: {e}")
 
-        # Step 7: Insert into by_project_term_table (project-specific)
-        insert_by_project_query = f"""
-        INSERT INTO {database_name}.{by_project_term_table}
-        {aggregate_by_project}
-        """
-        _execute_athena_query(insert_by_project_query)
-        logger.info(f"Inserted by_project_term records for project {project_id}")
+    # Step 3: Process subjects in batches to avoid TOO_MANY_OPEN_PARTITIONS error
+    num_batches = (len(subject_ids) + batch_size - 1) // batch_size
+    logger.info(f"Processing {len(subject_ids)} subjects in {num_batches} batches of size {batch_size}")
 
-        # Step 8: Get statistics
+    try:
+        for batch_num in range(num_batches):
+            start_idx = batch_num * batch_size
+            end_idx = min(start_idx + batch_size, len(subject_ids))
+            batch_subject_ids = subject_ids[start_idx:end_idx]
+
+            logger.info(f"Processing batch {batch_num + 1}/{num_batches} ({len(batch_subject_ids)} subjects)")
+
+            # Build WHERE clause for this batch
+            batch_subject_id_list = "', '".join(batch_subject_ids)
+            batch_subject_filter = f"WHERE subject_id IN ('{batch_subject_id_list}')"
+
+            # Build aggregation query for by_subject_table (project-agnostic)
+            aggregate_by_subject = f"""
+            WITH aggregated AS (
+                SELECT
+                    subject_id,
+                    CONCAT('http://ods.nationwidechildrens.org/phebee/subjects/', subject_id) as subject_iri,
+                    term_iri,
+                    COUNT(*) as evidence_count,
+                    MIN(created_date) as first_evidence_date,
+                    MAX(created_date) as last_evidence_date,
+                    ARBITRARY(termlink_id) as termlink_id,
+                    ARRAY_AGG(DISTINCT
+                        CASE
+                            WHEN q.qualifier_value IN ('true', '1') THEN q.qualifier_type
+                            ELSE NULL
+                        END
+                    ) as active_qualifiers
+                FROM {database_name}.{evidence_table}
+                LEFT JOIN UNNEST(COALESCE(qualifiers, ARRAY[])) AS t(q) ON TRUE
+                {batch_subject_filter}
+                GROUP BY subject_id, term_iri
+            )
+            SELECT
+                subject_id,
+                subject_iri,
+                term_iri,
+                REGEXP_REPLACE(
+                    REGEXP_REPLACE(term_iri, '.*/obo/', ''),
+                    '_', ':'
+                ) as term_id,
+                CAST(NULL AS VARCHAR) as term_label,
+                FILTER(active_qualifiers, x -> x IS NOT NULL) as qualifiers,
+                evidence_count,
+                termlink_id,
+                first_evidence_date,
+                last_evidence_date
+            FROM aggregated
+            """
+
+            # Build aggregation query for by_project_term_table (project-specific)
+            # Create mapping CTE for this batch only
+            batch_mapping_values = []
+            for subject_id in batch_subject_ids:
+                project_subject_id = project_subject_map[subject_id]
+                batch_mapping_values.append(f"('{subject_id}', '{project_subject_id}')")
+
+            mapping_cte = f"""
+            subject_mapping AS (
+                SELECT subject_id, project_subject_id
+                FROM (VALUES {', '.join(batch_mapping_values)}) AS t(subject_id, project_subject_id)
+            ),
+            """
+
+            aggregate_by_project = f"""
+            WITH {mapping_cte}
+            aggregated AS (
+                SELECT
+                    '{project_id}' as project_id,
+                    e.subject_id,
+                    m.project_subject_id,
+                    CONCAT('http://ods.nationwidechildrens.org/phebee/subjects/', e.subject_id) as subject_iri,
+                    CONCAT('http://ods.nationwidechildrens.org/phebee/projects/{project_id}/', m.project_subject_id) as project_subject_iri,
+                    e.term_iri,
+                    COUNT(*) as evidence_count,
+                    MIN(e.created_date) as first_evidence_date,
+                    MAX(e.created_date) as last_evidence_date,
+                    ARBITRARY(e.termlink_id) as termlink_id,
+                    ARRAY_AGG(DISTINCT
+                        CASE
+                            WHEN q.qualifier_value IN ('true', '1') THEN q.qualifier_type
+                            ELSE NULL
+                        END
+                    ) as active_qualifiers
+                FROM {database_name}.{evidence_table} e
+                JOIN subject_mapping m ON e.subject_id = m.subject_id
+                LEFT JOIN UNNEST(COALESCE(e.qualifiers, ARRAY[])) AS t(q) ON TRUE
+                GROUP BY e.subject_id, m.project_subject_id, e.term_iri
+            )
+            SELECT
+                project_id,
+                subject_id,
+                project_subject_id,
+                subject_iri,
+                project_subject_iri,
+                term_iri,
+                REGEXP_REPLACE(
+                    REGEXP_REPLACE(term_iri, '.*/obo/', ''),
+                    '_', ':'
+                ) as term_id,
+                CAST(NULL AS VARCHAR) as term_label,
+                FILTER(active_qualifiers, x -> x IS NOT NULL) as qualifiers,
+                evidence_count,
+                termlink_id,
+                first_evidence_date,
+                last_evidence_date
+            FROM aggregated
+            """
+
+            # Insert into by_subject_table for this batch
+            insert_by_subject_query = f"""
+            INSERT INTO {database_name}.{by_subject_table}
+            {aggregate_by_subject}
+            """
+            _execute_athena_query(insert_by_subject_query)
+            logger.info(f"Batch {batch_num + 1}/{num_batches}: Inserted by_subject records")
+
+            # Insert into by_project_term_table for this batch
+            insert_by_project_query = f"""
+            INSERT INTO {database_name}.{by_project_term_table}
+            {aggregate_by_project}
+            """
+            _execute_athena_query(insert_by_project_query)
+            logger.info(f"Batch {batch_num + 1}/{num_batches}: Inserted by_project_term records")
+
+        # Step 4: Get final statistics
         stats_query = f"""
         SELECT
             COUNT(DISTINCT subject_id) as subjects,
