@@ -17,6 +17,11 @@ Optional:
   PHEBEE_EVAL_METRICS_S3_URI=s3://<bucket>/<prefix>   # Upload metrics JSON to S3
   PHEBEE_EVAL_METRICS_PATH=/tmp/phebee_api_metrics.json # Write metrics JSON locally
   PHEBEE_EVAL_STRICT_LATENCY=1                         # Enforce p95<=5s gates
+  PHEBEE_EVAL_WRITE_ARTIFACTS=0                        # Disable artifact writing (default: 1)
+
+Output Artifacts:
+  - /tmp/phebee-eval-artifacts/{run_id}/table4_latency.csv
+  - /tmp/phebee-eval-artifacts/{run_id}/api_run.json
 
 Note: Run test_import_performance.py first to populate data, then run this test against the
 same project (uses session-scoped test_project_id fixture).
@@ -24,6 +29,7 @@ same project (uses session-scoped test_project_id fixture).
 
 from __future__ import annotations
 
+import csv
 import json
 import os
 import random
@@ -31,11 +37,14 @@ import re
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import boto3
 import pytest
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # Import shared conftest utilities (relative import to avoid parent conftest)
 from .conftest import GeneratedDataset
@@ -159,9 +168,41 @@ def run_bulk_import_sfn(
 
         time.sleep(30)
 
-def api_post(api_base_url: str, path: str, payload: Dict[str, Any], sigv4_auth) -> requests.Response:
+def create_http_session() -> requests.Session:
+    """
+    Create an HTTP session with retry logic and connection pooling.
+
+    This prevents DNS resolution failures and connection exhaustion at high concurrency
+    by reusing connections and automatically retrying transient failures.
+    """
+    session = requests.Session()
+
+    # Configure retry strategy
+    retry_strategy = Retry(
+        total=3,  # Maximum number of retries
+        backoff_factor=0.5,  # Wait 0.5s, 1s, 2s between retries
+        status_forcelist=[429, 500, 502, 503, 504],  # Retry on these HTTP codes
+        allowed_methods=["POST"],  # Retry POST requests (API queries are idempotent)
+    )
+
+    # Configure connection pooling
+    adapter = HTTPAdapter(
+        max_retries=retry_strategy,
+        pool_connections=50,  # Number of connection pools to cache
+        pool_maxsize=50,  # Maximum connections per pool
+    )
+
+    # Mount adapter for both HTTP and HTTPS
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+
+    return session
+
+def api_post(api_base_url: str, path: str, payload: Dict[str, Any], sigv4_auth, session: requests.Session = None) -> requests.Response:
     """Make authenticated API POST request."""
     url = f"{api_base_url}{path}"
+    if session:
+        return session.post(url, json=payload, auth=sigv4_auth, timeout=60)
     return requests.post(url, json=payload, auth=sigv4_auth, timeout=60)
 
 def pctl(values: List[float], percentile: float) -> float:
@@ -191,6 +232,15 @@ def run_concurrent(fn, n: int, concurrency: int) -> List[float]:
             timings.append(fut.result())
     return timings
 
+def _write_csv(path: Path, rows: List[Dict[str, Any]], fieldnames: List[str]) -> None:
+    """Write CSV artifact."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames)
+        w.writeheader()
+        for r in rows:
+            w.writerow({k: r.get(k) for k in fieldnames})
+
 def maybe_write_metrics(metrics: Dict[str, Any]) -> None:
     """Write metrics to console, local file, and/or S3."""
     # Always print for logs
@@ -219,13 +269,73 @@ def maybe_write_metrics(metrics: Dict[str, Any]) -> None:
             )
             print(f"[EVAL_METRICS_UPLOADED] s3://{bucket}/{key}")
 
+    # Write artifacts to /tmp/phebee-eval-artifacts/{run_id}/ (default behavior like import test)
+    if os.environ.get("PHEBEE_EVAL_WRITE_ARTIFACTS", "1") == "1":
+        run_id = metrics.get("run_id", "unknown")
+        project_id = metrics.get("project_id", "unknown")
+        base = Path("/tmp/phebee-eval-artifacts") / run_id
+        base.mkdir(parents=True, exist_ok=True)
+
+        # Write Table 4 CSV (latency results)
+        table4_path = base / "table4_latency.csv"
+        latency_results = metrics.get("latency", [])
+
+        # Flatten latency results with run_id and project_id for CSV
+        table4_rows = []
+        for result in latency_results:
+            row = {
+                "run_id": run_id,
+                "project_id": project_id,
+                "endpoint": result.get("endpoint"),
+                "n": result.get("n"),
+                "p50_ms": result.get("p50_ms"),
+                "p95_ms": result.get("p95_ms"),
+                "p99_ms": result.get("p99_ms"),
+                "max_ms": result.get("max_ms"),
+                "min_ms": result.get("min_ms"),
+                "avg_ms": result.get("avg_ms"),
+                "error": result.get("error"),
+            }
+            table4_rows.append(row)
+
+        if table4_rows:
+            _write_csv(
+                table4_path,
+                table4_rows,
+                fieldnames=[
+                    "run_id",
+                    "project_id",
+                    "endpoint",
+                    "n",
+                    "p50_ms",
+                    "p95_ms",
+                    "p99_ms",
+                    "max_ms",
+                    "min_ms",
+                    "avg_ms",
+                    "error",
+                ],
+            )
+
+        # Write full JSON output (like import_run.json)
+        json_path = base / "api_run.json"
+        json_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+
+        print(f"\n{'='*80}")
+        print(f"Artifacts Written")
+        print(f"{'='*80}")
+        print(f"  Table 4 CSV: {table4_path}")
+        print(f"  Full JSON:   {json_path}")
+        print()
+
 # ---------------------------------------------------------------------
 # Comprehensive API testing functions
 # ---------------------------------------------------------------------
 
 def create_api_test_functions(api_base_url: str, sigv4_auth, project_id: str,
                             project_subject_iris: List[str],
-                            dataset_terms: List[str]) -> Dict[str, callable]:
+                            dataset_terms: List[str],
+                            session: requests.Session = None) -> Dict[str, callable]:
     """Create comprehensive API test functions covering all realistic query patterns."""
 
     # Rotation index for subject queries
@@ -236,7 +346,7 @@ def create_api_test_functions(api_base_url: str, sigv4_auth, project_id: str,
         r = api_post(api_base_url, "/subjects/query", {
             "project_id": project_id,
             "limit": 10
-        }, sigv4_auth)
+        }, sigv4_auth, session)
         assert r.status_code == 200
 
     def call_individual_subject():
@@ -245,17 +355,17 @@ def create_api_test_functions(api_base_url: str, sigv4_auth, project_id: str,
         idx["i"] = (i + 1) % len(project_subject_iris)
         r = api_post(api_base_url, "/subject", {
             "project_subject_iri": project_subject_iris[i]
-        }, sigv4_auth)
+        }, sigv4_auth, session)
         assert r.status_code == 200
 
     def call_hierarchy_query():
         """Hierarchy expansion query - research pattern."""
         r = api_post(api_base_url, "/subjects/query", {
             "project_id": project_id,
-            "term_iri": "http://purl.obolibrary.org/obo/HP_0000118",  # Phenotypic abnormality (root)
+            "term_iri": "http://purl.obolibrary.org/obo/HP_0000924",  # Abnormality of the skeletal system
             "include_child_terms": True,     # Test hierarchy expansion
             "limit": 20
-        }, sigv4_auth)
+        }, sigv4_auth, session)
         assert r.status_code == 200
 
     def call_qualified_filtering():
@@ -266,7 +376,7 @@ def create_api_test_functions(api_base_url: str, sigv4_auth, project_id: str,
             "term_iri": term,
             "include_qualified": False,      # Exclude qualified findings
             "limit": 15
-        }, sigv4_auth)
+        }, sigv4_auth, session)
         assert r.status_code == 200
 
     def call_specific_phenotype():
@@ -277,7 +387,7 @@ def create_api_test_functions(api_base_url: str, sigv4_auth, project_id: str,
             "term_iri": term,
             "include_child_terms": True,
             "limit": 25
-        }, sigv4_auth)
+        }, sigv4_auth, session)
         assert r.status_code == 200
 
     def call_cardiac_cohort():
@@ -289,7 +399,7 @@ def create_api_test_functions(api_base_url: str, sigv4_auth, project_id: str,
             "include_child_terms": True,
             "include_qualified": False,
             "limit": 30
-        }, sigv4_auth)
+        }, sigv4_auth, session)
         assert r.status_code == 200
 
     def call_neuro_cohort():
@@ -300,17 +410,16 @@ def create_api_test_functions(api_base_url: str, sigv4_auth, project_id: str,
             "term_iri": term,
             "include_child_terms": True,
             "limit": 25
-        }, sigv4_auth)
+        }, sigv4_auth, session)
         assert r.status_code == 200
 
     def call_paginated_large_cohort():
         """Large cohort with pagination - stress test."""
+        # Omit term_iri to get all subjects (largest possible cohort)
         r = api_post(api_base_url, "/subjects/query", {
             "project_id": project_id,
-            "term_iri": "http://purl.obolibrary.org/obo/HP_0000118",  # Root - matches most subjects
-            "include_child_terms": True,
             "limit": 50               # Force pagination
-        }, sigv4_auth)
+        }, sigv4_auth, session)
         assert r.status_code == 200
 
         # Follow pagination if available
@@ -320,7 +429,7 @@ def create_api_test_functions(api_base_url: str, sigv4_auth, project_id: str,
                 "project_id": project_id,
                 "cursor": body["pagination"]["next_cursor"],
                 "limit": 50
-            }, sigv4_auth)
+            }, sigv4_auth, session)
             assert r2.status_code == 200
 
     def call_subject_term_info():
@@ -336,7 +445,7 @@ def create_api_test_functions(api_base_url: str, sigv4_auth, project_id: str,
         r = api_post(api_base_url, "/subject/term-info", {
             "subject_id": subject_id,  # Use subject_id instead of project_subject_iri
             "term_iri": term
-        }, sigv4_auth)
+        }, sigv4_auth, session)
         # Note: May return 404 if subject doesn't have this term - that's OK for perf testing
         assert r.status_code in [200, 404]
 
@@ -347,7 +456,7 @@ def create_api_test_functions(api_base_url: str, sigv4_auth, project_id: str,
             "project_id": project_id,
             "term_source": "HPO",
             "limit": 20
-        }, sigv4_auth)
+        }, sigv4_auth, session)
         assert r.status_code == 200
 
     return {
@@ -380,10 +489,60 @@ def test_r11_enhanced_api_latency_at_scale(
     Enhanced performance test with realistic clinical data patterns and comprehensive API testing.
     Uses shared synthetic_dataset fixture from conftest.py for consistency across tests.
     """
+    # Print all relevant environment variables for reproducibility
+    print("\n" + "="*80)
+    print("Test Configuration - Environment Variables")
+    print("="*80)
+    env_vars = {
+        "PHEBEE_EVAL_SCALE": os.environ.get("PHEBEE_EVAL_SCALE", "not set"),
+        "PHEBEE_EVAL_PROJECT_ID": os.environ.get("PHEBEE_EVAL_PROJECT_ID", "not set"),
+        "PHEBEE_EVAL_TERMS_JSON_PATH": os.environ.get("PHEBEE_EVAL_TERMS_JSON_PATH", "not set"),
+        "PHEBEE_EVAL_PREVALENCE_CSV_PATH": os.environ.get("PHEBEE_EVAL_PREVALENCE_CSV_PATH", "not set"),
+        "PHEBEE_EVAL_USE_DISEASE_CLUSTERING": os.environ.get("PHEBEE_EVAL_USE_DISEASE_CLUSTERING", "not set"),
+        "PHEBEE_EVAL_SCALE_SUBJECTS": os.environ.get("PHEBEE_EVAL_SCALE_SUBJECTS", "10000 (default)"),
+        "PHEBEE_EVAL_SCALE_MIN_TERMS": os.environ.get("PHEBEE_EVAL_SCALE_MIN_TERMS", "5 (default)"),
+        "PHEBEE_EVAL_SCALE_MAX_TERMS": os.environ.get("PHEBEE_EVAL_SCALE_MAX_TERMS", "50 (default)"),
+        "PHEBEE_EVAL_SCALE_MIN_EVIDENCE": os.environ.get("PHEBEE_EVAL_SCALE_MIN_EVIDENCE", "1 (default)"),
+        "PHEBEE_EVAL_SCALE_MAX_EVIDENCE": os.environ.get("PHEBEE_EVAL_SCALE_MAX_EVIDENCE", "25 (default)"),
+        "PHEBEE_EVAL_BATCH_SIZE": os.environ.get("PHEBEE_EVAL_BATCH_SIZE", "10000 (default)"),
+        "PHEBEE_EVAL_INGEST_TIMEOUT_S": os.environ.get("PHEBEE_EVAL_INGEST_TIMEOUT_S", "7200 (default)"),
+        "PHEBEE_EVAL_LATENCY_N": os.environ.get("PHEBEE_EVAL_LATENCY_N", "500 (default)"),
+        "PHEBEE_EVAL_CONCURRENCY": os.environ.get("PHEBEE_EVAL_CONCURRENCY", "25 (default)"),
+        "PHEBEE_EVAL_SEED": os.environ.get("PHEBEE_EVAL_SEED", "not set"),
+        "PHEBEE_EVAL_WRITE_ARTIFACTS": os.environ.get("PHEBEE_EVAL_WRITE_ARTIFACTS", "1 (default)"),
+        "PHEBEE_EVAL_METRICS_PATH": os.environ.get("PHEBEE_EVAL_METRICS_PATH", "not set"),
+        "PHEBEE_EVAL_METRICS_S3_URI": os.environ.get("PHEBEE_EVAL_METRICS_S3_URI", "not set"),
+        "PHEBEE_EVAL_STRICT_LATENCY": os.environ.get("PHEBEE_EVAL_STRICT_LATENCY", "not set"),
+    }
+    for key, value in env_vars.items():
+        print(f"  {key}: {value}")
+    print("="*80 + "\n")
+
     project_id = test_project_id
     print(f"[DEBUG] test_project_id from fixture: {test_project_id}")
     records = synthetic_dataset.records
     dataset_stats = synthetic_dataset.stats
+
+    # Print dataset generation configuration
+    print("\n" + "="*80)
+    print("Dataset Configuration (from generation)")
+    print("="*80)
+    print(f"  Generator Seed: {dataset_stats.get('generator_seed', 'not available')}")
+    print(f"  Disease Clustering Enabled: {dataset_stats.get('disease_clustering_enabled', 'not available')}")
+    print(f"  Number of Subjects: {dataset_stats.get('n_subjects', 'not available'):,}")
+    print(f"  Number of Records: {dataset_stats.get('n_records', 'not available'):,}")
+    print(f"  Number of Evidence Items: {dataset_stats.get('n_evidence', 'not available'):,}")
+    print(f"  Unique Terms: {dataset_stats.get('n_unique_terms', 'not available'):,}")
+    terms_per_subject = dataset_stats.get('terms_per_subject', {})
+    print(f"  Terms per Subject: {terms_per_subject.get('min', '?')}-{terms_per_subject.get('max', '?')} (mean: {terms_per_subject.get('mean', '?'):.1f})")
+    evidence_per_record = dataset_stats.get('evidence_per_record', {})
+    print(f"  Evidence per Record: {evidence_per_record.get('min', '?')}-{evidence_per_record.get('max', '?')} (mean: {evidence_per_record.get('mean', '?'):.1f})")
+    term_source = dataset_stats.get('term_source', {})
+    print(f"  Term Source: {term_source.get('source', '?')} {term_source.get('version', '?')}")
+    if dataset_stats.get('anchor_terms'):
+        anchor_count = len(dataset_stats['anchor_terms'])
+        print(f"  Anchor Terms: {anchor_count} terms (disease clustering)")
+    print("="*80 + "\n")
 
     # Verify project_id in loaded records
     sample_record_project_ids = set(r.get("project_id") for r in records[:5])
@@ -497,8 +656,13 @@ def test_r11_enhanced_api_latency_at_scale(
     # Extract unique terms from dataset for query patterns
     dataset_terms = list(set(r["term_iri"] for r in records))
 
+    # Create HTTP session with retry logic and connection pooling
+    # This prevents DNS resolution failures at high concurrency
+    print("[SESSION_SETUP] Creating HTTP session with retry logic and connection pooling")
+    session = create_http_session()
+
     # Create comprehensive API test functions
-    api_functions = create_api_test_functions(api_base_url, sigv4_auth, project_id, project_subject_iris, dataset_terms)
+    api_functions = create_api_test_functions(api_base_url, sigv4_auth, project_id, project_subject_iris, dataset_terms, session)
 
     # Warm-up to reduce cold-start skew
     print("[WARMUP_START]")

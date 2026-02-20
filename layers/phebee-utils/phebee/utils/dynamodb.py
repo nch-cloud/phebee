@@ -1,6 +1,7 @@
 import boto3
 import uuid
 import os
+from datetime import datetime
 from typing import Dict, List, Set, Tuple, Optional
 from botocore.exceptions import ClientError
 
@@ -231,17 +232,80 @@ def create_subject_mapping(table_name: str, project_id: str, project_subject_id:
 def resolve_subjects_batch(table_name: str, project_subject_pairs: Set[Tuple[str, str]], region: str = 'us-east-2') -> Dict[Tuple[str, str], str]:
     """Resolve multiple subject mappings, creating new ones if they don't exist"""
     subject_map = {}
-    
+
     # First, try to get existing mappings
     for project_id, project_subject_id in project_subject_pairs:
         subject_id = get_subject_id(table_name, project_id, project_subject_id, region)
         if subject_id:
             subject_map[(project_id, project_subject_id)] = subject_id
-    
+
     # Create new mappings for any that don't exist
     missing_pairs = project_subject_pairs - set(subject_map.keys())
     for project_id, project_subject_id in missing_pairs:
         subject_id = create_subject_mapping(table_name, project_id, project_subject_id, region)
         subject_map[(project_id, project_subject_id)] = subject_id
-    
+
     return subject_map
+
+
+# ---------------------------
+# Term descendants cache utilities
+# ---------------------------
+
+def get_term_descendants_from_cache(term_id: str, term_source: str, term_source_version: str) -> Optional[List[str]]:
+    """
+    Get cached term descendants from DynamoDB.
+
+    Args:
+        term_id: The term ID (e.g., "HP:0001627")
+        term_source: The term source (e.g., "hpo", "mondo")
+        term_source_version: The term source version (e.g., "v2026-01-08")
+
+    Returns:
+        List of descendant term IDs if cached, None if cache miss
+    """
+    table = _get_table()
+
+    try:
+        response = table.get_item(
+            Key={
+                'PK': f'TERM_DESCENDANTS#{term_source.upper()}#{term_source_version}',
+                'SK': term_id
+            }
+        )
+
+        item = response.get('Item')
+        if item and 'descendants' in item:
+            return item['descendants']
+
+        return None
+    except ClientError as e:
+        # Log error but don't fail - just cache miss
+        return None
+
+
+def put_term_descendants_to_cache(term_id: str, term_source: str, term_source_version: str, descendants: List[str]) -> None:
+    """
+    Cache term descendants in DynamoDB.
+
+    Args:
+        term_id: The term ID (e.g., "HP:0001627")
+        term_source: The term source (e.g., "hpo", "mondo")
+        term_source_version: The term source version (e.g., "v2026-01-08")
+        descendants: List of descendant term IDs
+    """
+    table = _get_table()
+
+    try:
+        table.put_item(
+            Item={
+                'PK': f'TERM_DESCENDANTS#{term_source.upper()}#{term_source_version}',
+                'SK': term_id,
+                'descendants': descendants,
+                'descendant_count': len(descendants),
+                'cached_at': datetime.utcnow().isoformat() + 'Z'
+            }
+        )
+    except ClientError as e:
+        # Log error but don't fail the request
+        pass

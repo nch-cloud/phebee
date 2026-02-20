@@ -11,12 +11,14 @@ import random
 import re
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import List, Dict, Any, Tuple, Set
 from rdflib import Graph, URIRef, Literal as RdfLiteral, Namespace
 from rdflib.namespace import RDF, DCTERMS, XSD
 
 from phebee.constants import PHEBEE
+from phebee.utils.dynamodb import get_term_descendants_from_cache, put_term_descendants_to_cache
 
 logger = logging.getLogger(__name__)
 
@@ -241,17 +243,18 @@ def query_iceberg_evidence(query: str) -> List[Dict[str, Any]]:
         query_execution_id = response['QueryExecutionId']
         
         # Wait for query completion
+        # Poll every 0.5s for fast queries (most queries complete in 1-5 seconds)
         while True:
             result = athena_client.get_query_execution(QueryExecutionId=query_execution_id)
             status = result['QueryExecution']['Status']['State']
-            
+
             if status == 'SUCCEEDED':
                 break
             elif status in ['FAILED', 'CANCELLED']:
                 error_msg = result['QueryExecution']['Status'].get('StateChangeReason', 'Unknown error')
                 raise Exception(f"Athena query failed: {error_msg}")
-            
-            time.sleep(2)
+
+            time.sleep(0.5)
         
         # Get query results
         results = athena_client.get_query_results(QueryExecutionId=query_execution_id)
@@ -1457,9 +1460,16 @@ def query_subjects_by_project(
     """
 
     try:
-        # Execute queries
-        results = query_iceberg_evidence(query)
-        count_results = query_iceberg_evidence(count_query)
+        # Execute queries in parallel to reduce latency
+        # Both queries are independent and can run concurrently
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            # Submit both queries
+            data_future = executor.submit(query_iceberg_evidence, query)
+            count_future = executor.submit(query_iceberg_evidence, count_query)
+
+            # Wait for both to complete
+            results = data_future.result()
+            count_results = count_future.result()
 
         total_count = int(count_results[0]['total']) if count_results else 0
 
@@ -1701,6 +1711,7 @@ def _execute_athena_query(query: str, wait_for_completion: bool = True) -> str:
 
     if wait_for_completion:
         # Wait for query completion
+        # Poll every 0.5s for fast queries (most queries complete in 1-5 seconds)
         while True:
             result = athena_client.get_query_execution(QueryExecutionId=query_execution_id)
             status = result['QueryExecution']['Status']['State']
@@ -1711,7 +1722,7 @@ def _execute_athena_query(query: str, wait_for_completion: bool = True) -> str:
                 error_msg = result['QueryExecution']['Status'].get('StateChangeReason', 'Unknown error')
                 raise Exception(f"Athena query failed: {error_msg}")
 
-            time.sleep(2)
+            time.sleep(0.5)
 
     return query_execution_id
 
@@ -2582,6 +2593,17 @@ def query_term_descendants(
             logger.error(f"Failed to get latest version for {ontology_source}: {e}")
             return []
 
+    # Check DynamoDB cache first
+    cached_descendants = get_term_descendants_from_cache(term_id, ontology_source, version)
+    if cached_descendants is not None:
+        logger.info(f"Cache hit: Found {len(cached_descendants)} descendants for {term_id} from DynamoDB")
+        # Return in same format as Athena query (list of dicts with term_id)
+        # Caller only uses term_id, so we don't need term_label or depth from cache
+        return [{'term_id': tid} for tid in cached_descendants]
+
+    # Cache miss - query Athena
+    logger.info(f"Cache miss: Querying Athena for descendants of {term_id}")
+
     # Query descendants - all terms that have this term in their ancestor_term_ids
     # Use case-insensitive comparison for ontology_source (stored as lowercase: hpo, mondo)
     query = f"""
@@ -2603,9 +2625,17 @@ def query_term_descendants(
 
         if not results:
             logger.info(f"No descendants found for term {term_id} in {ontology_source} version {version}")
+            # Cache empty result to avoid repeated queries
+            put_term_descendants_to_cache(term_id, ontology_source, version, [])
             return []
 
-        logger.info(f"Found {len(results)} descendants for term {term_id}")
+        # Extract term IDs for caching
+        term_ids = [d['term_id'] for d in results]
+
+        # Write to cache for future requests
+        put_term_descendants_to_cache(term_id, ontology_source, version, term_ids)
+        logger.info(f"Cached {len(term_ids)} descendants for {term_id} in DynamoDB")
+
         return results
 
     except Exception as e:
