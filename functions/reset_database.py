@@ -13,9 +13,19 @@ def lambda_handler(event, context):
     logger.info(event)
 
     try:
+        logger.info("Step 1/3: Resetting DynamoDB table...")
         reset_dynamodb_table()
+        logger.info("Step 1/3: DynamoDB reset complete")
+
+        logger.info("Step 2/3: Resetting Neptune database...")
         reset_neptune_database()
+        logger.info("Step 2/3: Neptune reset complete")
+
+        logger.info("Step 3/3: Resetting Iceberg tables...")
         reset_iceberg_tables()
+        logger.info("Step 3/3: Iceberg reset complete")
+
+        logger.info("All resets completed successfully")
         return {"statusCode": 200, "success": True}
     except Exception as e:
         logger.error(e)

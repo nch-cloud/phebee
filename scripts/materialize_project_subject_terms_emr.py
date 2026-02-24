@@ -259,6 +259,10 @@ def main():
         num_partitions = by_project_term_df.rdd.getNumPartitions()
         print(f"Writing by_project_term table with {num_partitions} partitions...")
 
+        # Debug: Print schema to verify columns
+        print(f"by_project_term_df schema:")
+        by_project_term_df.printSchema()
+
         # Use MERGE INTO for idempotent incremental updates
         by_project_term_df.createOrReplaceTempView("new_by_project_term_data")
 

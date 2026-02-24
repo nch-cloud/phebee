@@ -49,11 +49,8 @@ def create_table(database: str, table: str, s3_location: str, query_results_s3: 
 
     create_table_sql = f"""
     CREATE TABLE IF NOT EXISTS {database}.{table} (
-        project_id string,
         subject_id string,
-        project_subject_id string,
         subject_iri string,
-        project_subject_iri string,
         term_iri string,
         term_id string,
         term_label string,

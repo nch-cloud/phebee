@@ -28,26 +28,46 @@ def reset_dynamodb_table():
     Deletes ALL items from the table (paged scan + batch_writer).
     For dev/test and use through reset lambda only. PITR is enabled in template for safety.
     """
+    print("Starting DynamoDB table reset...")
     table = _get_table()
-    
+
     # Paginated scan + batch delete
     scan_kwargs = {}
-    
+    item_count = 0
+    page_count = 0
+    start_time = datetime.utcnow()
+
     while True:
+        page_count += 1
+        page_start = datetime.utcnow()
+
         response = table.scan(**scan_kwargs)
-        
+        batch_size = len(response.get('Items', []))
+        item_count += batch_size
+
+        scan_elapsed = (datetime.utcnow() - page_start).total_seconds()
+        print(f"DynamoDB scan page {page_count}: {batch_size} items ({scan_elapsed:.2f}s)")
+
         # Batch delete items
+        delete_start = datetime.utcnow()
         with table.batch_writer() as batch:
             for item in response.get('Items', []):
                 batch.delete_item(Key={
                     'PK': item['PK'],
                     'SK': item['SK']
                 })
-        
+
+        delete_elapsed = (datetime.utcnow() - delete_start).total_seconds()
+        print(f"DynamoDB delete page {page_count}: {batch_size} items deleted ({delete_elapsed:.2f}s)")
+        print(f"Running total: {item_count} items processed")
+
         # Check if there are more items to scan
         if 'LastEvaluatedKey' not in response:
             break
         scan_kwargs['ExclusiveStartKey'] = response['LastEvaluatedKey']
+
+    total_elapsed = (datetime.utcnow() - start_time).total_seconds()
+    print(f"DynamoDB reset complete: {item_count} total items deleted in {total_elapsed:.2f}s ({page_count} pages)")
 
 
 # ---------------------------

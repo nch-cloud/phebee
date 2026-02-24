@@ -416,7 +416,26 @@ def create_evidence_record(
         term_source_value = f"ROW('{source}', '{version}', '{iri}')"
     
     insert_query = f"""
-    INSERT INTO {database_name}.{table_name} VALUES (
+    INSERT INTO {database_name}.{table_name} (
+        evidence_id,
+        run_id,
+        batch_id,
+        evidence_type,
+        assertion_type,
+        created_timestamp,
+        created_date,
+        source_level,
+        subject_id,
+        encounter_id,
+        clinical_note_id,
+        termlink_id,
+        term_iri,
+        term_source,
+        note_context,
+        creator,
+        text_annotation,
+        qualifiers
+    ) VALUES (
         '{evidence_id}',
         '{run_id or f"manual-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"}',
         '{batch_id or ''}',
@@ -430,11 +449,11 @@ def create_evidence_record(
         {f"'{clinical_note_id}'" if clinical_note_id else 'NULL'},
         '{termlink_id}',
         '{term_iri}',
+        {term_source_value},
         {note_context_value},
         {creator_value},
         {text_annotation_value},
-        {qualifiers_value},
-        {term_source_value}
+        {qualifiers_value}
     )
     """
     
@@ -706,7 +725,18 @@ def update_subject_terms_for_evidence(
         """
 
         insert_by_subject = f"""
-        INSERT INTO {database_name}.{by_subject_table} VALUES (
+        INSERT INTO {database_name}.{by_subject_table} (
+            subject_id,
+            subject_iri,
+            term_iri,
+            term_id,
+            term_label,
+            qualifiers,
+            evidence_count,
+            termlink_id,
+            first_evidence_date,
+            last_evidence_date
+        ) VALUES (
             '{subject_id}',
             '{subject_iri}',
             '{term_iri}',
@@ -744,7 +774,21 @@ def update_subject_terms_for_evidence(
             """
 
             insert_by_project = f"""
-            INSERT INTO {database_name}.{by_project_term_table} VALUES (
+            INSERT INTO {database_name}.{by_project_term_table} (
+                project_id,
+                subject_id,
+                project_subject_id,
+                subject_iri,
+                project_subject_iri,
+                term_iri,
+                term_id,
+                term_label,
+                qualifiers,
+                evidence_count,
+                termlink_id,
+                first_evidence_date,
+                last_evidence_date
+            ) VALUES (
                 '{pid}',
                 '{subject_id}',
                 '{psid}',
@@ -874,7 +918,18 @@ def remove_subject_terms_for_evidence(
                 """
 
                 insert_by_subject = f"""
-                INSERT INTO {database_name}.{by_subject_table} VALUES (
+                INSERT INTO {database_name}.{by_subject_table} (
+                    subject_id,
+                    subject_iri,
+                    term_iri,
+                    term_id,
+                    term_label,
+                    qualifiers,
+                    evidence_count,
+                    termlink_id,
+                    first_evidence_date,
+                    last_evidence_date
+                ) VALUES (
                     '{subject_id}',
                     '{subject_iri}',
                     '{term_iri}',
@@ -934,7 +989,21 @@ def remove_subject_terms_for_evidence(
                     """
 
                     insert_by_project = f"""
-                    INSERT INTO {database_name}.{by_project_term_table} VALUES (
+                    INSERT INTO {database_name}.{by_project_term_table} (
+                        project_id,
+                        subject_id,
+                        project_subject_id,
+                        subject_iri,
+                        project_subject_iri,
+                        term_iri,
+                        term_id,
+                        term_label,
+                        qualifiers,
+                        evidence_count,
+                        termlink_id,
+                        first_evidence_date,
+                        last_evidence_date
+                    ) VALUES (
                         '{pid}',
                         '{subject_id}',
                         '{psid}',
@@ -1863,8 +1932,8 @@ def materialize_project(project_id: str, batch_size: int = 100) -> Dict[str, int
                     CONCAT('http://ods.nationwidechildrens.org/phebee/subjects/', subject_id) as subject_iri,
                     term_iri,
                     COUNT(*) as evidence_count,
-                    MIN(created_date) as first_evidence_date,
-                    MAX(created_date) as last_evidence_date,
+                    MIN(CAST(note_context.note_date AS DATE)) as first_evidence_date,
+                    MAX(CAST(note_context.note_date AS DATE)) as last_evidence_date,
                     ARBITRARY(termlink_id) as termlink_id,
                     ARRAY_AGG(DISTINCT
                         CASE
@@ -1919,8 +1988,8 @@ def materialize_project(project_id: str, batch_size: int = 100) -> Dict[str, int
                     CONCAT('http://ods.nationwidechildrens.org/phebee/projects/{project_id}/', m.project_subject_id) as project_subject_iri,
                     e.term_iri,
                     COUNT(*) as evidence_count,
-                    MIN(e.created_date) as first_evidence_date,
-                    MAX(e.created_date) as last_evidence_date,
+                    MIN(CAST(e.note_context.note_date AS DATE)) as first_evidence_date,
+                    MAX(CAST(e.note_context.note_date AS DATE)) as last_evidence_date,
                     ARBITRARY(e.termlink_id) as termlink_id,
                     ARRAY_AGG(DISTINCT
                         CASE
@@ -1955,7 +2024,18 @@ def materialize_project(project_id: str, batch_size: int = 100) -> Dict[str, int
 
             # Insert into by_subject_table for this batch
             insert_by_subject_query = f"""
-            INSERT INTO {database_name}.{by_subject_table}
+            INSERT INTO {database_name}.{by_subject_table} (
+                subject_id,
+                subject_iri,
+                term_iri,
+                term_id,
+                term_label,
+                qualifiers,
+                evidence_count,
+                termlink_id,
+                first_evidence_date,
+                last_evidence_date
+            )
             {aggregate_by_subject}
             """
             _execute_athena_query(insert_by_subject_query)
@@ -1963,7 +2043,21 @@ def materialize_project(project_id: str, batch_size: int = 100) -> Dict[str, int
 
             # Insert into by_project_term_table for this batch
             insert_by_project_query = f"""
-            INSERT INTO {database_name}.{by_project_term_table}
+            INSERT INTO {database_name}.{by_project_term_table} (
+                project_id,
+                subject_id,
+                project_subject_id,
+                subject_iri,
+                project_subject_iri,
+                term_iri,
+                term_id,
+                term_label,
+                qualifiers,
+                evidence_count,
+                termlink_id,
+                first_evidence_date,
+                last_evidence_date
+            )
             {aggregate_by_project}
             """
             _execute_athena_query(insert_by_project_query)
@@ -2088,8 +2182,8 @@ def materialize_subject_terms(subject_id: str) -> Dict[str, int]:
             CONCAT('http://ods.nationwidechildrens.org/phebee/subjects/', subject_id) as subject_iri,
             term_iri,
             COUNT(*) as evidence_count,
-            MIN(created_date) as first_evidence_date,
-            MAX(created_date) as last_evidence_date,
+            MIN(CAST(note_context.note_date AS DATE)) as first_evidence_date,
+            MAX(CAST(note_context.note_date AS DATE)) as last_evidence_date,
             ARBITRARY(termlink_id) as termlink_id,
             ARRAY_AGG(DISTINCT
                 CASE
@@ -2143,8 +2237,8 @@ def materialize_subject_terms(subject_id: str) -> Dict[str, int]:
             CONCAT('http://ods.nationwidechildrens.org/phebee/projects/', m.project_id, '/', m.project_subject_id) as project_subject_iri,
             e.term_iri,
             COUNT(*) as evidence_count,
-            MIN(e.created_date) as first_evidence_date,
-            MAX(e.created_date) as last_evidence_date,
+            MIN(CAST(e.note_context.note_date AS DATE)) as first_evidence_date,
+            MAX(CAST(e.note_context.note_date AS DATE)) as last_evidence_date,
             ARBITRARY(e.termlink_id) as termlink_id,
             ARRAY_AGG(DISTINCT
                 CASE
@@ -2180,7 +2274,18 @@ def materialize_subject_terms(subject_id: str) -> Dict[str, int]:
     try:
         # Step 6: Insert into by_subject_table (project-agnostic)
         insert_by_subject_query = f"""
-        INSERT INTO {database_name}.{by_subject_table}
+        INSERT INTO {database_name}.{by_subject_table} (
+            subject_id,
+            subject_iri,
+            term_iri,
+            term_id,
+            term_label,
+            qualifiers,
+            evidence_count,
+            termlink_id,
+            first_evidence_date,
+            last_evidence_date
+        )
         {aggregate_by_subject}
         """
         _execute_athena_query(insert_by_subject_query)
@@ -2188,7 +2293,21 @@ def materialize_subject_terms(subject_id: str) -> Dict[str, int]:
 
         # Step 7: Insert into by_project_term_table (project-specific for all projects)
         insert_by_project_query = f"""
-        INSERT INTO {database_name}.{by_project_term_table}
+        INSERT INTO {database_name}.{by_project_term_table} (
+            project_id,
+            subject_id,
+            project_subject_id,
+            subject_iri,
+            project_subject_iri,
+            term_iri,
+            term_id,
+            term_label,
+            qualifiers,
+            evidence_count,
+            termlink_id,
+            first_evidence_date,
+            last_evidence_date
+        )
         {aggregate_by_project}
         """
         _execute_athena_query(insert_by_project_query)
