@@ -1488,7 +1488,7 @@ Resources:
     Properties:
       Name: !Sub ${AppName}-BulkEvidenceProcessor
       Type: Spark
-      ReleaseLabel: emr-7.0.0      
+      ReleaseLabel: emr-7.0.0
       AutoStartConfiguration:
         Enabled: true
       AutoStopConfiguration:
@@ -2182,6 +2182,11 @@ Outputs:
     Value: !Ref EMRServerlessApplication
     Export:
       Name: !Sub "${AppName}-EMRServerlessApplicationId"
+
+  EMRExecutionRoleArn:
+    Value: !GetAtt EMRExecutionRole.Arn
+    Export:
+      Name: !Sub "${AppName}-EMRExecutionRoleArn"
 
   ValidateBulkImportFunctionArn:
     Value: !GetAtt ValidateBulkImportFunction.Arn

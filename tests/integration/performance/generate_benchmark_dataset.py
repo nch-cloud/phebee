@@ -265,7 +265,7 @@ def main():
     min_terms = _env_int("PHEBEE_EVAL_SCALE_MIN_TERMS", 5)
     max_terms = _env_int("PHEBEE_EVAL_SCALE_MAX_TERMS", 50)
     min_evidence = _env_int("PHEBEE_EVAL_SCALE_MIN_EVIDENCE", 1)
-    max_evidence = _env_int("PHEBEE_EVAL_SCALE_MAX_EVIDENCE", 25)
+    max_evidence = _env_int("PHEBEE_EVAL_SCALE_MAX_EVIDENCE", 100)
 
     # Generate descriptive project ID if not provided
     if args.project_id is None:
@@ -276,7 +276,9 @@ def main():
     if args.output_dir is None:
         clustering_suffix = "-noclustering" if not args.use_disease_clustering else ""
         dataset_dir_name = f"{n_subjects}-subjects-seed{seed}{clustering_suffix}"
-        args.output_dir = Path(__file__).parent / "data" / "benchmark" / dataset_dir_name
+        # Use project root for datasets (go up 3 levels from script location)
+        project_root = Path(__file__).parent.parent.parent
+        args.output_dir = project_root / "data" / "benchmark" / dataset_dir_name
 
     generation_params = {
         "seed": seed,

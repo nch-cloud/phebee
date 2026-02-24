@@ -128,8 +128,7 @@ pytest -v tests/integration/performance/test_evaluation_perf_scale.py
 
 **Optional:** Generate static benchmark dataset for manuscript reproducibility:
 ```bash
-cd tests/integration/performance
-python generate_benchmark_dataset.py  # Creates data/benchmark/{n_subjects}-subjects-seed{seed}/
+python tests/integration/performance/generate_benchmark_dataset.py  # Creates data/benchmark/{n_subjects}-subjects-seed{seed}/
 ```
 
 Each dataset is isolated in its own subdirectory based on parameters (subjects, seed). Non-default configurations (e.g., `--no-disease-clustering`) add a suffix.

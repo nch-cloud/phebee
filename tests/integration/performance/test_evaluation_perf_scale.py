@@ -95,27 +95,105 @@ def upload_jsonl_shards(
     *,
     s3_bucket: str,
     s3_prefix: str,
-    records: List[Dict[str, Any]],
+    records: List[Dict[str, Any]] = None,
     shard_size: int,
+    benchmark_dir: Path = None,
+    test_project_id: str = None,
+    subject_id_map: Dict[str, str] = None,
 ) -> str:
-    """Upload records as multiple JSONL files under s3://bucket/<s3_prefix>/jsonl/."""
+    """
+    Upload records as multiple JSONL files under s3://bucket/<s3_prefix>/jsonl/.
+
+    Can accept either:
+    - records: List of dicts to upload (for small datasets)
+    - benchmark_dir: Path to benchmark dataset directory (for large datasets - streams from disk)
+
+    Args:
+        s3_bucket: S3 bucket name
+        s3_prefix: S3 prefix for upload
+        records: Optional list of records (if None, must provide benchmark_dir)
+        shard_size: Records per shard file
+        benchmark_dir: Optional path to benchmark dataset (for streaming large datasets)
+        test_project_id: Required when using benchmark_dir (to override project_id in records)
+        subject_id_map: Required when using benchmark_dir (to map subject IDs)
+    """
     s3 = boto3.client("s3")
     jsonl_prefix = f"{s3_prefix.rstrip('/')}/jsonl"
-    total = len(records)
 
-    shard_size = max(1, shard_size)
-    shard_count = (total + shard_size - 1) // shard_size
+    if records is not None:
+        # Traditional path: upload from memory
+        total = len(records)
+        shard_size = max(1, shard_size)
+        shard_count = (total + shard_size - 1) // shard_size
 
-    for i in range(shard_count):
-        chunk = records[i * shard_size : (i + 1) * shard_size]
-        body = "\n".join(json.dumps(r) for r in chunk).encode("utf-8")
-        key = f"{jsonl_prefix}/shard-{i:05d}.json"
-        s3.put_object(
-            Bucket=s3_bucket,
-            Key=key,
-            Body=body,
-            ContentType="application/x-ndjson",
-        )
+        for i in range(shard_count):
+            chunk = records[i * shard_size : (i + 1) * shard_size]
+            body = "\n".join(json.dumps(r) for r in chunk).encode("utf-8")
+            key = f"{jsonl_prefix}/shard-{i:05d}.json"
+            s3.put_object(
+                Bucket=s3_bucket,
+                Key=key,
+                Body=body,
+                ContentType="application/x-ndjson",
+            )
+    elif benchmark_dir is not None:
+        # Streaming path: read from batch files and upload directly
+        if not test_project_id:
+            raise ValueError("test_project_id required when streaming from benchmark_dir")
+        if not subject_id_map:
+            raise ValueError("subject_id_map required when streaming from benchmark_dir")
+
+        print(f"[STREAMING_UPLOAD] Streaming records from {benchmark_dir} to S3")
+        batches_dir = benchmark_dir / "batches"
+        batch_files = sorted(batches_dir.glob("batch-*.json"))
+
+        shard_buffer = []
+        shard_idx = 0
+        total_records = 0
+
+        for batch_file in batch_files:
+            with batch_file.open("r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        record = json.loads(line)
+                        # Override project_id and subject_id
+                        record["project_id"] = test_project_id
+                        old_subject_id = record.get("subject_id") or record.get("project_subject_id")
+                        if old_subject_id and old_subject_id in subject_id_map:
+                            record["subject_id"] = subject_id_map[old_subject_id]
+
+                        shard_buffer.append(record)
+                        total_records += 1
+
+                        # Upload shard when buffer is full
+                        if len(shard_buffer) >= shard_size:
+                            body = "\n".join(json.dumps(r) for r in shard_buffer).encode("utf-8")
+                            key = f"{jsonl_prefix}/shard-{shard_idx:05d}.json"
+                            s3.put_object(
+                                Bucket=s3_bucket,
+                                Key=key,
+                                Body=body,
+                                ContentType="application/x-ndjson",
+                            )
+                            shard_idx += 1
+                            shard_buffer = []
+
+        # Upload final partial shard if any records remain
+        if shard_buffer:
+            body = "\n".join(json.dumps(r) for r in shard_buffer).encode("utf-8")
+            key = f"{jsonl_prefix}/shard-{shard_idx:05d}.json"
+            s3.put_object(
+                Bucket=s3_bucket,
+                Key=key,
+                Body=body,
+                ContentType="application/x-ndjson",
+            )
+            shard_idx += 1
+
+        print(f"[STREAMING_UPLOAD] Uploaded {total_records:,} records in {shard_idx} shards")
+    else:
+        raise ValueError("Must provide either records or benchmark_dir")
 
     # Verify upload
     resp = s3.list_objects_v2(Bucket=s3_bucket, Prefix=jsonl_prefix + "/")
@@ -520,8 +598,14 @@ def test_r11_enhanced_api_latency_at_scale(
 
     project_id = test_project_id
     print(f"[DEBUG] test_project_id from fixture: {test_project_id}")
-    records = synthetic_dataset.records
     dataset_stats = synthetic_dataset.stats
+
+    # Check if dataset is using lazy loading (for large datasets)
+    is_lazy = synthetic_dataset.records is None
+    if is_lazy:
+        print(f"[MEMORY_OPTIMIZATION] Dataset using lazy loading - records not in memory")
+
+    records = synthetic_dataset.records  # May be None for lazy-loaded datasets
 
     # Print dataset generation configuration
     print("\n" + "="*80)
@@ -544,9 +628,10 @@ def test_r11_enhanced_api_latency_at_scale(
         print(f"  Anchor Terms: {anchor_count} terms (disease clustering)")
     print("="*80 + "\n")
 
-    # Verify project_id in loaded records
-    sample_record_project_ids = set(r.get("project_id") for r in records[:5])
-    print(f"[DEBUG] Sample project_ids from loaded records: {sample_record_project_ids}")
+    # Verify project_id in loaded records (if in memory)
+    if not is_lazy:
+        sample_record_project_ids = set(r.get("project_id") for r in records[:5])
+        print(f"[DEBUG] Sample project_ids from loaded records: {sample_record_project_ids}")
 
     # Resolve physical resources
     s3_bucket = physical_resources.get("PheBeeBucket")
@@ -560,21 +645,12 @@ def test_r11_enhanced_api_latency_at_scale(
     total_subjects = dataset_stats["n_subjects"]
     total_terms = dataset_stats["n_unique_terms"]
     total_evidence = dataset_stats["n_evidence"]
+    n_records = dataset_stats["n_records"]
 
-    # Analyze qualifier distribution
-    qualifier_stats = {"negated": 0, "family": 0, "hypothetical": 0, "total": 0}
-    for record in records:
-        for evidence in record["evidence"]:
-            contexts = evidence.get("contexts", {})
-            qualifier_stats["total"] += 1
-            if contexts.get("negated", 0.0) > 0:
-                qualifier_stats["negated"] += 1
-            if contexts.get("family", 0.0) > 0:
-                qualifier_stats["family"] += 1
-            if contexts.get("hypothetical", 0.0) > 0:
-                qualifier_stats["hypothetical"] += 1
+    # Use pre-computed qualifier stats from metadata (no need to recalculate)
+    qualifier_stats = dataset_stats.get("qualifier_distribution_records", {})
 
-    print(f"[DATASET_STATS] {len(records)} records, {total_subjects} subjects, {total_terms} unique terms, {total_evidence} evidence")
+    print(f"[DATASET_STATS] {n_records:,} records, {total_subjects:,} subjects, {total_terms:,} unique terms, {total_evidence:,} evidence")
     print(f"[QUALIFIER_STATS] {qualifier_stats}")
     print(f"[DATASET_METADATA] {dataset_stats}")
 
@@ -610,12 +686,24 @@ def test_r11_enhanced_api_latency_at_scale(
         print(f"[NO_DATA] Project {project_id} is empty - proceeding with import")
         # Upload data
         input_prefix = f"perf-data/{evaluation_run_id}"
-        input_path_s3 = upload_jsonl_shards(
-            s3_bucket=s3_bucket,
-            s3_prefix=input_prefix,
-            records=records,
-            shard_size=shard_size,
-        )
+        if is_lazy:
+            # Stream from benchmark directory
+            input_path_s3 = upload_jsonl_shards(
+                s3_bucket=s3_bucket,
+                s3_prefix=input_prefix,
+                shard_size=shard_size,
+                benchmark_dir=synthetic_dataset.benchmark_dir,
+                test_project_id=test_project_id,
+                subject_id_map=synthetic_dataset.subject_id_map,
+            )
+        else:
+            # Upload from memory
+            input_path_s3 = upload_jsonl_shards(
+                s3_bucket=s3_bucket,
+                s3_prefix=input_prefix,
+                records=records,
+                shard_size=shard_size,
+            )
 
         # Bulk import
         print(f"[BULK_IMPORT_START] {input_path_s3}")
@@ -654,7 +742,23 @@ def test_r11_enhanced_api_latency_at_scale(
     print(f"[API_TEST_PREP] {len(project_subject_iris)} subjects available for testing")
 
     # Extract unique terms from dataset for query patterns
-    dataset_terms = list(set(r["term_iri"] for r in records))
+    if is_lazy:
+        # Sample terms from first batch file instead of loading all records
+        print("[MEMORY_OPTIMIZATION] Sampling terms from first batch file")
+        first_batch = sorted((synthetic_dataset.benchmark_dir / "batches").glob("batch-*.json"))[0]
+        sample_terms = set()
+        with first_batch.open("r", encoding="utf-8") as f:
+            for i, line in enumerate(f):
+                if i >= 10000:  # Sample first 10K records
+                    break
+                if line.strip():
+                    record = json.loads(line)
+                    sample_terms.add(record["term_iri"])
+        dataset_terms = list(sample_terms)
+        print(f"[MEMORY_OPTIMIZATION] Sampled {len(dataset_terms)} unique terms from first batch")
+    else:
+        # Extract from in-memory records
+        dataset_terms = list(set(r["term_iri"] for r in records))
 
     # Create HTTP session with retry logic and connection pooling
     # This prevents DNS resolution failures at high concurrency

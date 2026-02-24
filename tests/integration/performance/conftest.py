@@ -697,11 +697,12 @@ def _mk_record(
 @dataclass(frozen=True)
 class GeneratedDataset:
     """Container for generated synthetic dataset and its statistics."""
-    records: List[Dict[str, Any]]
+    records: List[Dict[str, Any]] | None  # None when using lazy loading for large datasets
     stats: Dict[str, Any]
     anchor_terms: List[str]
     parent_term: str
     subject_id_map: Dict[str, str] = None  # Optional: maps old subject_ids to new UUIDs (for benchmark loads)
+    benchmark_dir: Path | None = None  # Optional: path to benchmark dataset directory for streaming
 
 
 def generate_scale_dataset(
@@ -1008,16 +1009,17 @@ def test_project_id(cloudformation_stack):
     yield body.get("project_id")
 
 
-def _load_benchmark_dataset(benchmark_dir: Path, test_project_id: str) -> GeneratedDataset:
+def _load_benchmark_dataset(benchmark_dir: Path, test_project_id: str, lazy: bool = False) -> GeneratedDataset:
     """
     Load a pre-generated benchmark dataset from disk.
 
     Args:
         benchmark_dir: Path to benchmark dataset directory (contains metadata.json and batches/)
         test_project_id: Project ID to use (overrides the one in metadata)
+        lazy: If True, skip loading records into memory (for large datasets). Only loads metadata.
 
     Returns:
-        GeneratedDataset with loaded records and statistics
+        GeneratedDataset with loaded records and statistics (records=None if lazy=True)
     """
     metadata_path = benchmark_dir / "metadata.json"
     batches_dir = benchmark_dir / "batches"
@@ -1031,55 +1033,80 @@ def _load_benchmark_dataset(benchmark_dir: Path, test_project_id: str) -> Genera
     with metadata_path.open("r", encoding="utf-8") as f:
         metadata = json.load(f)
 
-    # Load all batch files
-    records: List[Dict[str, Any]] = []
     batch_files = sorted(batches_dir.glob("batch-*.json"))
-
     if not batch_files:
         raise ValueError(f"No batch files found in {batches_dir}")
 
     print(f"Loading benchmark dataset from {benchmark_dir}")
     print(f"  Found {len(batch_files)} batch files")
 
-    # Build mapping of old subject_ids to new UUIDs for this test run
-    subject_id_map = {}
-
-    for batch_file in batch_files:
-        with batch_file.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    record = json.loads(line)
-                    # Override project_id to use the current test project
-                    record["project_id"] = test_project_id
-
-                    # Generate new subject_id for this test run to avoid duplicates
-                    # Use project_subject_id as the key if subject_id is not present (for older benchmarks)
-                    old_subject_id = record.get("subject_id") or record.get("project_subject_id")
-                    if old_subject_id and old_subject_id not in subject_id_map:
-                        import uuid
-                        subject_id_map[old_subject_id] = str(uuid.uuid4())
-
-                    if old_subject_id:
-                        record["subject_id"] = subject_id_map[old_subject_id]
-
-                    records.append(record)
-
-    print(f"  Loaded {len(records)} records from benchmark dataset")
-    print(f"  Generated {len(subject_id_map)} new subject IDs for this test run")
-
     # Extract statistics from metadata
     stats = metadata.get("dataset_statistics", {})
     anchor_terms = metadata.get("anchor_terms", [])
     parent_term = metadata.get("parent_term_for_queries", "http://purl.obolibrary.org/obo/HP_0001507")
 
-    return GeneratedDataset(
-        records=records,
-        stats=stats,
-        anchor_terms=anchor_terms,
-        parent_term=parent_term,
-        subject_id_map=subject_id_map,
-    )
+    # Build subject_id mapping by scanning files (needed for upload streaming)
+    subject_id_map = {}
+
+    if lazy:
+        # Lazy mode: scan for subject IDs but don't load records
+        print(f"  Lazy loading: scanning for subject IDs without loading records into memory")
+        for batch_file in batch_files:
+            with batch_file.open("r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        record = json.loads(line)
+                        old_subject_id = record.get("subject_id") or record.get("project_subject_id")
+                        if old_subject_id and old_subject_id not in subject_id_map:
+                            import uuid
+                            subject_id_map[old_subject_id] = str(uuid.uuid4())
+
+        print(f"  Generated {len(subject_id_map)} new subject IDs for this test run")
+        print(f"  Records not loaded (lazy mode) - will stream from disk during upload")
+
+        return GeneratedDataset(
+            records=None,  # Lazy loading - records not in memory
+            stats=stats,
+            anchor_terms=anchor_terms,
+            parent_term=parent_term,
+            subject_id_map=subject_id_map,
+            benchmark_dir=benchmark_dir,
+        )
+    else:
+        # Eager mode: load all records into memory
+        records: List[Dict[str, Any]] = []
+        for batch_file in batch_files:
+            with batch_file.open("r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        record = json.loads(line)
+                        # Override project_id to use the current test project
+                        record["project_id"] = test_project_id
+
+                        # Generate new subject_id for this test run to avoid duplicates
+                        old_subject_id = record.get("subject_id") or record.get("project_subject_id")
+                        if old_subject_id and old_subject_id not in subject_id_map:
+                            import uuid
+                            subject_id_map[old_subject_id] = str(uuid.uuid4())
+
+                        if old_subject_id:
+                            record["subject_id"] = subject_id_map[old_subject_id]
+
+                        records.append(record)
+
+        print(f"  Loaded {len(records)} records from benchmark dataset")
+        print(f"  Generated {len(subject_id_map)} new subject IDs for this test run")
+
+        return GeneratedDataset(
+            records=records,
+            stats=stats,
+            anchor_terms=anchor_terms,
+            parent_term=parent_term,
+            subject_id_map=subject_id_map,
+            benchmark_dir=None,
+        )
 
 
 @pytest.fixture
@@ -1110,7 +1137,20 @@ def synthetic_dataset(
     benchmark_dir_str = os.environ.get("PHEBEE_EVAL_BENCHMARK_DIR")
     if benchmark_dir_str:
         benchmark_dir = Path(benchmark_dir_str)
-        return _load_benchmark_dataset(benchmark_dir, test_project_id)
+        # Check dataset size from metadata to decide on lazy loading
+        metadata_path = benchmark_dir / "metadata.json"
+        if metadata_path.exists():
+            with metadata_path.open("r", encoding="utf-8") as f:
+                metadata = json.load(f)
+            stats = metadata.get("dataset_statistics", {})
+            n_records = stats.get("n_records", 0)
+            # Use lazy loading for large datasets (> 500K records) to avoid OOM
+            lazy = n_records > 500_000
+            if lazy:
+                print(f"[MEMORY_OPTIMIZATION] Dataset has {n_records:,} records - using lazy loading to avoid OOM")
+            return _load_benchmark_dataset(benchmark_dir, test_project_id, lazy=lazy)
+        else:
+            return _load_benchmark_dataset(benchmark_dir, test_project_id, lazy=False)
 
     # Generate fresh dataset
     n_subjects = _env_int("PHEBEE_EVAL_SCALE_SUBJECTS", 10_000)
