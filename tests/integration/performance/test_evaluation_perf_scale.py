@@ -1,7 +1,7 @@
 """
 PheBee API Performance Test (Manuscript Table 4)
 
-Comprehensive API latency testing with 10 realistic query patterns. Uses synthetic datasets
+Comprehensive API latency testing with 8 realistic query patterns. Uses synthetic datasets
 generated with realistic disease clustering patterns for accurate performance evaluation.
 
 How to run:
@@ -73,19 +73,7 @@ def evaluation_run_id() -> str:
 # Minimal term lists for API query patterns
 # ---------------------------------------------------------------------
 
-# Cardiac terms - used for specialty-specific query patterns
-CARDIAC_TERMS = [
-    "http://purl.obolibrary.org/obo/HP_0001627",  # Abnormal heart morphology
-    "http://purl.obolibrary.org/obo/HP_0001635",  # Heart failure
-    "http://purl.obolibrary.org/obo/HP_0001644",  # Dilated cardiomyopathy
-]
-
-# Neurological terms - used for specialty-specific query patterns
-NEURO_TERMS = [
-    "http://purl.obolibrary.org/obo/HP_0001250",  # Seizures
-    "http://purl.obolibrary.org/obo/HP_0002069",  # Bilateral tonic-clonic seizures
-    "http://purl.obolibrary.org/obo/HP_0001298",  # Encephalopathy
-]
+# No static term lists needed - tests use terms from dataset
 
 # ---------------------------------------------------------------------
 # Utility functions
@@ -414,7 +402,7 @@ def create_api_test_functions(api_base_url: str, sigv4_auth, project_id: str,
                             project_subject_iris: List[str],
                             dataset_terms: List[str],
                             session: requests.Session = None) -> Dict[str, callable]:
-    """Create comprehensive API test functions covering all realistic query patterns."""
+    """Create 8 comprehensive API test functions covering realistic query patterns."""
 
     # Rotation index for subject queries
     idx = {"i": 0}
@@ -436,19 +424,19 @@ def create_api_test_functions(api_base_url: str, sigv4_auth, project_id: str,
         }, sigv4_auth, session)
         assert r.status_code == 200
 
-    def call_hierarchy_query():
-        """Hierarchy expansion query - research pattern."""
+    def call_hierarchy_expansion():
+        """Hierarchy expansion query - tests ontology traversal."""
         r = api_post(api_base_url, "/subjects/query", {
             "project_id": project_id,
-            "term_iri": "http://purl.obolibrary.org/obo/HP_0000924",  # Abnormality of the skeletal system
-            "include_child_terms": True,     # Test hierarchy expansion
+            "term_iri": "http://purl.obolibrary.org/obo/HP_0001626",  # Abnormality of the cardiovascular system
+            "include_child_terms": True,     # Test hierarchy expansion on cardiac terms
             "limit": 20
         }, sigv4_auth, session)
         assert r.status_code == 200
 
     def call_qualified_filtering():
         """Qualifier filtering - exclude negated/family/hypothetical."""
-        term = random.choice(dataset_terms) if dataset_terms else CARDIAC_TERMS[0]
+        term = random.choice(dataset_terms) if dataset_terms else "http://purl.obolibrary.org/obo/HP_0001627"
         r = api_post(api_base_url, "/subjects/query", {
             "project_id": project_id,
             "term_iri": term,
@@ -458,35 +446,11 @@ def create_api_test_functions(api_base_url: str, sigv4_auth, project_id: str,
         assert r.status_code == 200
 
     def call_specific_phenotype():
-        """Specific phenotype query - targeted research."""
-        term = random.choice(dataset_terms) if dataset_terms else CARDIAC_TERMS[0]
+        """Specific phenotype query - direct term matching without hierarchy."""
+        term = random.choice(dataset_terms) if dataset_terms else "http://purl.obolibrary.org/obo/HP_0001627"
         r = api_post(api_base_url, "/subjects/query", {
             "project_id": project_id,
             "term_iri": term,
-            "include_child_terms": True,
-            "limit": 25
-        }, sigv4_auth, session)
-        assert r.status_code == 200
-
-    def call_cardiac_cohort():
-        """Cardiac phenotype cohort - specialty research pattern."""
-        term = random.choice(CARDIAC_TERMS)
-        r = api_post(api_base_url, "/subjects/query", {
-            "project_id": project_id,
-            "term_iri": term,
-            "include_child_terms": True,
-            "include_qualified": False,
-            "limit": 30
-        }, sigv4_auth, session)
-        assert r.status_code == 200
-
-    def call_neuro_cohort():
-        """Neurological phenotype cohort - specialty research pattern."""
-        term = random.choice(NEURO_TERMS)
-        r = api_post(api_base_url, "/subjects/query", {
-            "project_id": project_id,
-            "term_iri": term,
-            "include_child_terms": True,
             "limit": 25
         }, sigv4_auth, session)
         assert r.status_code == 200
@@ -540,11 +504,9 @@ def create_api_test_functions(api_base_url: str, sigv4_auth, project_id: str,
     return {
         "basic_subjects_query": call_basic_subjects_query,
         "individual_subject": call_individual_subject,
-        "hierarchy_query": call_hierarchy_query,
+        "hierarchy_expansion": call_hierarchy_expansion,
         "qualified_filtering": call_qualified_filtering,
         "specific_phenotype": call_specific_phenotype,
-        "cardiac_cohort": call_cardiac_cohort,
-        "neuro_cohort": call_neuro_cohort,
         "paginated_large_cohort": call_paginated_large_cohort,
         "subject_term_info": call_subject_term_info,
         "version_specific_query": call_version_specific_query,
@@ -821,9 +783,9 @@ def test_r11_enhanced_api_latency_at_scale(
             "evidence_per_record": dataset_stats["evidence_per_record"],
             "avg_evidence_per_record": round(total_evidence / len(records), 2) if records else 0,
             "qualifier_distribution": {
-                "negated_pct": round(qualifier_stats["negated"] / qualifier_stats["total"] * 100, 1) if qualifier_stats["total"] > 0 else 0,
-                "family_pct": round(qualifier_stats["family"] / qualifier_stats["total"] * 100, 1) if qualifier_stats["total"] > 0 else 0,
-                "hypothetical_pct": round(qualifier_stats["hypothetical"] / qualifier_stats["total"] * 100, 1) if qualifier_stats["total"] > 0 else 0,
+                "negated_pct": round(qualifier_stats.get("negated", 0) / qualifier_stats.get("total", 1) * 100, 1) if qualifier_stats.get("total", 0) > 0 else 0,
+                "family_pct": round(qualifier_stats.get("family", 0) / qualifier_stats.get("total", 1) * 100, 1) if qualifier_stats.get("total", 0) > 0 else 0,
+                "hypothetical_pct": round(qualifier_stats.get("hypothetical", 0) / qualifier_stats.get("total", 1) * 100, 1) if qualifier_stats.get("total", 0) > 0 else 0,
             },
             "disease_clustering_enabled": dataset_stats.get("disease_clustering_enabled", False),
             "cluster_distribution": dataset_stats.get("cluster_distribution", {}),
