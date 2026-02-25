@@ -1126,10 +1126,10 @@ def synthetic_dataset(
     - PHEBEE_EVAL_PREVALENCE_CSV_PATH (optional): CSV with "term_iri,frequency" for
       realistic common/rare term classification based on actual clinical data
     - PHEBEE_EVAL_SCALE_SUBJECTS (default: 10000)
-    - PHEBEE_EVAL_SCALE_MIN_TERMS (default: 5)
-    - PHEBEE_EVAL_SCALE_MAX_TERMS (default: 50)
-    - PHEBEE_EVAL_SCALE_MIN_EVIDENCE (default: 1)
-    - PHEBEE_EVAL_SCALE_MAX_EVIDENCE (default: 25)
+    - PHEBEE_EVAL_SCALE_MIN_TERMS (default: 150): Calibrated to production p75 range
+    - PHEBEE_EVAL_SCALE_MAX_TERMS (default: 500): Calibrated to production p90 range
+    - PHEBEE_EVAL_SCALE_MIN_EVIDENCE (default: 1): Matches production minimum
+    - PHEBEE_EVAL_SCALE_MAX_EVIDENCE (default: 50): Calibrated to production p95 range
     - PHEBEE_EVAL_SEED (optional): Random seed for reproducibility
     - PHEBEE_EVAL_USE_DISEASE_CLUSTERING (default: 1): Enable realistic disease clustering (1=enabled)
     """
@@ -1153,11 +1153,21 @@ def synthetic_dataset(
             return _load_benchmark_dataset(benchmark_dir, test_project_id, lazy=False)
 
     # Generate fresh dataset
+    #
+    # Default values calibrated against production rare disease phenotyping data:
+    # - Production: N=45,228 subjects, 90.4M evidence records
+    # - Terms per subject: median=114, p75=183, p90=281, max=1,113
+    # - Evidence per termlink: median=2, p75=6, p90=18, p95=37, max=7,153
+    #
+    # Defaults target p75-p95 range ("Complex Patient Load" profile) representing
+    # deeply phenotyped rare disease cohorts with extensive longitudinal documentation.
+    # This ensures performance testing reflects realistic production workloads for
+    # comprehensive clinical phenotyping systems.
     n_subjects = _env_int("PHEBEE_EVAL_SCALE_SUBJECTS", 10_000)
-    min_terms = _env_int("PHEBEE_EVAL_SCALE_MIN_TERMS", 5)
-    max_terms = _env_int("PHEBEE_EVAL_SCALE_MAX_TERMS", 50)
+    min_terms = _env_int("PHEBEE_EVAL_SCALE_MIN_TERMS", 150)
+    max_terms = _env_int("PHEBEE_EVAL_SCALE_MAX_TERMS", 500)
     min_evidence = _env_int("PHEBEE_EVAL_SCALE_MIN_EVIDENCE", 1)
-    max_evidence = _env_int("PHEBEE_EVAL_SCALE_MAX_EVIDENCE", 25)
+    max_evidence = _env_int("PHEBEE_EVAL_SCALE_MAX_EVIDENCE", 50)
 
     rng_seed = None
     if os.environ.get("PHEBEE_EVAL_SEED"):

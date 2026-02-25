@@ -215,10 +215,10 @@ pytest -v -s tests/integration/performance/test_import_performance.py \
 | `PHEBEE_EVAL_PREVALENCE_CSV_PATH` | None | Term frequency CSV for realistic distributions |
 | `PHEBEE_EVAL_SEED` | 42 | Random seed for reproducibility |
 | `PHEBEE_EVAL_SCALE_SUBJECTS` | 10,000 | Number of subjects |
-| `PHEBEE_EVAL_SCALE_MIN_TERMS` | 5 | Min HPO terms per subject |
-| `PHEBEE_EVAL_SCALE_MAX_TERMS` | 50 | Max HPO terms per subject |
-| `PHEBEE_EVAL_SCALE_MIN_EVIDENCE` | 1 | Min evidence items per term |
-| `PHEBEE_EVAL_SCALE_MAX_EVIDENCE` | 25 | Max evidence items per term |
+| `PHEBEE_EVAL_SCALE_MIN_TERMS` | 150 | Min HPO terms per subject (calibrated to production p75) |
+| `PHEBEE_EVAL_SCALE_MAX_TERMS` | 500 | Max HPO terms per subject (calibrated to production p90) |
+| `PHEBEE_EVAL_SCALE_MIN_EVIDENCE` | 1 | Min evidence items per term (matches production minimum) |
+| `PHEBEE_EVAL_SCALE_MAX_EVIDENCE` | 50 | Max evidence items per term (calibrated to production p95) |
 | `PHEBEE_EVAL_BATCH_SIZE` | 10,000 | Records per S3 batch file |
 | `PHEBEE_EVAL_USE_DISEASE_CLUSTERING` | 1 | Enable disease clustering (1=enabled, 0=disabled) |
 

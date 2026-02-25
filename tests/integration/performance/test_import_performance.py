@@ -16,10 +16,10 @@ Environment Variables:
 - PHEBEE_EVAL_TERMS_JSON_PATH (required): HPO terms JSON file
 - PHEBEE_EVAL_PREVALENCE_CSV_PATH (optional): Term frequency CSV for realistic distributions
 - PHEBEE_EVAL_SCALE_SUBJECTS (default: 10000): Number of subjects to generate
-- PHEBEE_EVAL_SCALE_MIN_TERMS (default: 5): Min HPO terms per subject
-- PHEBEE_EVAL_SCALE_MAX_TERMS (default: 50): Max HPO terms per subject
-- PHEBEE_EVAL_SCALE_MIN_EVIDENCE (default: 1): Min evidence items per term link
-- PHEBEE_EVAL_SCALE_MAX_EVIDENCE (default: 25): Max evidence items per term link
+- PHEBEE_EVAL_SCALE_MIN_TERMS (default: 150): Min HPO terms per subject (production p75)
+- PHEBEE_EVAL_SCALE_MAX_TERMS (default: 500): Max HPO terms per subject (production p90)
+- PHEBEE_EVAL_SCALE_MIN_EVIDENCE (default: 1): Min evidence items per term link (production min)
+- PHEBEE_EVAL_SCALE_MAX_EVIDENCE (default: 50): Max evidence items per term link (production p95)
 - PHEBEE_EVAL_BATCH_SIZE (default: 10000): Records per S3 batch file
 - PHEBEE_EVAL_INGEST_TIMEOUT_S (default: 21600): Max seconds to wait for import (6 hours)
 - PHEBEE_EVAL_SEED (optional): Random seed for reproducibility
