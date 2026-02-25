@@ -6,7 +6,8 @@ This script creates a reproducible synthetic dataset for manuscript performance 
 The generated dataset can be uploaded to Zenodo or similar repositories for data sharing.
 
 Usage:
-    python generate_benchmark_dataset.py --output-dir ./benchmark_data
+    python generate_benchmark_dataset.py  # Uses default: ./data/benchmark
+    python generate_benchmark_dataset.py --output-dir /custom/path
 
 Environment variables (or use defaults):
     - PHEBEE_EVAL_TERMS_JSON_PATH (required): Path to HPO terms JSON
@@ -38,17 +39,20 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
 
-# Add parent directory to path to import conftest utilities
-sys.path.insert(0, str(Path(__file__).parent))
+# Import conftest utilities - add script directory to path for direct execution
+import importlib.util
+_conftest_path = Path(__file__).parent / "conftest.py"
+_spec = importlib.util.spec_from_file_location("perf_conftest_local", _conftest_path)
+_conftest = importlib.util.module_from_spec(_spec)
+sys.modules["perf_conftest_local"] = _conftest  # Register module before execution
+_spec.loader.exec_module(_conftest)
 
-from conftest import (
-    GeneratedDataset,
-    TermUniverse,
-    _env_int,
-    _env_str,
-    generate_scale_dataset,
-    load_terms_json,
-)
+GeneratedDataset = _conftest.GeneratedDataset
+TermUniverse = _conftest.TermUniverse
+_env_int = _conftest._env_int
+_env_str = _conftest._env_str
+generate_scale_dataset = _conftest.generate_scale_dataset
+load_terms_json = _conftest.load_terms_json
 
 
 def _split_batches(records: List[Dict[str, Any]], batch_size: int) -> List[List[Dict[str, Any]]]:
@@ -148,6 +152,7 @@ actual clinical data.
 - **Terms per Subject**: {generation_params['min_terms']}-{generation_params['max_terms']}
 - **Evidence per Term Link**: {generation_params['min_evidence']}-{generation_params['max_evidence']}
 - **Batch Size**: {generation_params['batch_size']:,} records per file
+- **Disease Clustering**: {'Enabled' if generation_params.get('use_disease_clustering') else 'Disabled'}
 - **HPO Version**: {hpo_version}
 
 ## Qualifier Distribution
@@ -155,7 +160,21 @@ actual clinical data.
 - **Unqualified**: {stats['qualifier_distribution_records']['unqualified']:,} ({stats['qualifier_distribution_records']['unqualified']/stats['n_records']*100:.1f}%)
 - **Negated**: {stats['qualifier_distribution_records']['negated']:,} ({stats['qualifier_distribution_records']['negated']/stats['n_records']*100:.1f}%)
 - **Family History**: {stats['qualifier_distribution_records']['family']:,} ({stats['qualifier_distribution_records']['family']/stats['n_records']*100:.1f}%)
-- **Hypothetical**: {stats['qualifier_distribution_records']['hypothetical']:,} ({stats['qualifier_distribution_records']['hypothetical']/stats['n_records']*100:.1f}%)
+- **Hypothetical**: {stats['qualifier_distribution_records']['hypothetical']:,} ({stats['qualifier_distribution_records']['hypothetical']/stats['n_records']*100:.1f}%)"""
+
+    # Add cluster distribution if disease clustering was enabled
+    if generation_params.get('use_disease_clustering') and stats.get('cluster_distribution'):
+        cluster_dist = stats['cluster_distribution']
+        readme += f"""
+
+## Disease Cluster Distribution
+
+"""
+        for cluster_name, count in sorted(cluster_dist.items()):
+            pct = count / stats['n_subjects'] * 100
+            readme += f"- **{cluster_name}**: {count:,} subjects ({pct:.1f}%)\n"
+
+    readme += f"""
 
 ## Term Source
 
@@ -202,20 +221,32 @@ def main():
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("./benchmark_data"),
-        help="Output directory for generated dataset (default: ./benchmark_data)",
+        default=None,
+        help="Output directory for generated dataset (default: ./data/benchmark/{n_subjects}-subjects-seed{seed})",
     )
     parser.add_argument(
         "--project-id",
         type=str,
-        default="phebee-benchmark-v1",
-        help="Project ID for the dataset (default: phebee-benchmark-v1)",
+        default=None,
+        help="Project ID for the dataset (default: phebee-benchmark-{n_subjects}subj-seed{seed})",
     )
     parser.add_argument(
         "--batch-size",
         type=int,
         default=10000,
         help="Records per batch file (default: 10000)",
+    )
+    parser.add_argument(
+        "--use-disease-clustering",
+        action="store_true",
+        default=True,
+        help="Use realistic disease clustering patterns (default: True)",
+    )
+    parser.add_argument(
+        "--no-disease-clustering",
+        dest="use_disease_clustering",
+        action="store_false",
+        help="Disable disease clustering (use simple random sampling)",
     )
 
     args = parser.parse_args()
@@ -234,7 +265,20 @@ def main():
     min_terms = _env_int("PHEBEE_EVAL_SCALE_MIN_TERMS", 5)
     max_terms = _env_int("PHEBEE_EVAL_SCALE_MAX_TERMS", 50)
     min_evidence = _env_int("PHEBEE_EVAL_SCALE_MIN_EVIDENCE", 1)
-    max_evidence = _env_int("PHEBEE_EVAL_SCALE_MAX_EVIDENCE", 25)
+    max_evidence = _env_int("PHEBEE_EVAL_SCALE_MAX_EVIDENCE", 100)
+
+    # Generate descriptive project ID if not provided
+    if args.project_id is None:
+        clustering_suffix = "-noclustering" if not args.use_disease_clustering else ""
+        args.project_id = f"phebee-benchmark-{n_subjects}subj-seed{seed}{clustering_suffix}"
+
+    # Generate descriptive output directory if not provided
+    if args.output_dir is None:
+        clustering_suffix = "-noclustering" if not args.use_disease_clustering else ""
+        dataset_dir_name = f"{n_subjects}-subjects-seed{seed}{clustering_suffix}"
+        # Use project root for datasets (go up 3 levels from script location)
+        project_root = Path(__file__).parent.parent.parent
+        args.output_dir = project_root / "data" / "benchmark" / dataset_dir_name
 
     generation_params = {
         "seed": seed,
@@ -245,6 +289,7 @@ def main():
         "min_evidence": min_evidence,
         "max_evidence": max_evidence,
         "batch_size": args.batch_size,
+        "use_disease_clustering": args.use_disease_clustering,
         "terms_json_path": terms_path,
         "prevalence_csv_path": prevalence_csv_path,
     }
@@ -275,6 +320,8 @@ def main():
 
     # Generate dataset
     print("Generating synthetic dataset...")
+    if args.use_disease_clustering:
+        print("  Using realistic disease clustering patterns...")
     dataset = generate_scale_dataset(
         project_id=args.project_id,
         universe=universe,
@@ -284,6 +331,7 @@ def main():
         min_evidence=min_evidence,
         max_evidence=max_evidence,
         rng_seed=seed,
+        use_disease_clustering=args.use_disease_clustering,
     )
 
     stats = dataset.stats

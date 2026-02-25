@@ -177,16 +177,6 @@ def make_signed_request(method, query_type, query):
     neptune_endpoint = os.environ["NeptuneEndpoint"]
     neptune_host = urlparse(neptune_endpoint).hostname
 
-    print()
-    print("+++++ USER INPUT +++++")
-    print("host = " + neptune_host)
-    print("method = " + method)
-    print("query_type = " + query_type)
-    if isinstance(query, str):
-        print("query = " + query)
-    else:
-        print("query (json) = " + json.dumps(query))
-
     # validate input
     validate_input(method, query_type)
 
@@ -220,16 +210,11 @@ def make_signed_request(method, query_type, query):
 
     # ************* SEND THE REQUEST *************
     if method == "GET":
-        print("++++ BEGIN GET REQUEST +++++")
-        print("Request URL = " + request_url)
-        print("params = " + json.dumps(params))
         r = requests.get(
             request_url, headers=request.headers, verify=False, params=params
         )
 
     elif method == "POST":
-        print("\n+++++ BEGIN POST REQUEST +++++")
-        print("Request URL = " + request_url)
         if query_type == "loader":
             request.headers["Content-type"] = "application/json"
         elif query_type == "sparql" or query_type == "sparqlupdate":
@@ -237,19 +222,14 @@ def make_signed_request(method, query_type, query):
         r = requests.post(request_url, headers=request.headers, verify=False, data=data)
 
     else:
-        print('Request method is neither "GET" nor "POST", something is wrong here.')
+        raise ValueError('Request method must be "GET" or "POST"')
 
     if r is not None:
-        print("+++++ RESPONSE +++++")
-        print("Response code: %d\n" % r.status_code)
-        print(r)
-
         if not r.status_code == 200:
             raise (Exception(f"Query failed with status {r.status_code}: {r.text}"))
 
         response = r.text
         r.close()
-        print(response)
 
         return response
 

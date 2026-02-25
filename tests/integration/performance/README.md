@@ -1,382 +1,375 @@
-# PheBee Performance Testing Suite
+# PheBee Performance Testing
 
-This directory contains performance evaluation tools for the PheBee phenotype-to-cohort query system, designed to generate manuscript-quality performance metrics (Tables 3 & 4).
+This directory contains tools and tests for evaluating PheBee's performance at scale, including bulk data ingestion throughput and API query latency under realistic clinical data patterns.
 
 ## Overview
 
-The performance test suite evaluates PheBee across two dimensions:
-1. **Import Performance (Table 3)**: Bulk data ingestion throughput and scalability
-2. **API Latency (Table 4)**: Query response times under load (p50/p95/p99 latencies)
+Performance testing infrastructure consists of:
 
-## File Structure
+1. **Data Generation**: Tools to create reproducible synthetic datasets with realistic clinical patterns
+2. **Import Performance Tests**: Measure bulk data ingestion throughput
+3. **API Latency Tests**: Measure query performance under load with various access patterns
+4. **Benchmark Dataset Generation**: Create shareable datasets for manuscript reproducibility
 
-```
-tests/integration/performance/
-├── README.md                                  # This file
-├── conftest.py                                # Shared fixtures and data generation utilities
-├── test_import_performance.py                 # Table 3: Bulk ingestion performance
-├── test_api_latency.py                        # Table 4: API query latency
-├── generate_benchmark_dataset.py              # Script to create static benchmark dataset
-├── create_import_performance_datasets.sh      # Script to generate all dataset scales
-├── data/
-│   ├── hpo_terms_v2026-01-08.json            # HPO term universe
-│   └── term_frequencies.csv                   # Clinical term prevalence data
-└── test_evaluation_perf_scale_terms_json.py  # (Original combined test - deprecated)
-```
+## Table of Contents
+
+- [Methodology](#methodology)
+- [Quick Start](#quick-start)
+- [Environment Variables](#environment-variables)
+- [Benchmark Datasets](#benchmark-datasets)
+- [Troubleshooting](#troubleshooting)
+
+---
+
+## Methodology
+
+### Realistic Clinical Data Patterns
+
+Our synthetic data generation incorporates clinically realistic patterns based on published literature:
+
+#### 1. Disease Clustering (60% of subjects)
+
+Subjects are assigned phenotypes that co-occur in real clinical practice, rather than random sampling. This reflects how patients typically present with related symptoms from a common underlying condition.
+
+**Disease Clusters:**
+- **Cardiomyopathy**: Heart failure, dilated cardiomyopathy, arrhythmias
+- **Epilepsy**: Seizures, encephalopathy, developmental issues
+- **Metabolic**: Diabetes, obesity, hypertriglyceridemia
+- **Oncology**: Neoplasm with associated complications
+- **Rare Dysmorphic**: Multiple congenital anomalies
+
+#### 2. Term Frequency Weighting
+
+When a prevalence CSV is provided (`PHEBEE_EVAL_PREVALENCE_CSV_PATH`), terms are sampled according to real-world clinical frequencies:
+- **Common phenotypes** (70% of assignments): Frequently documented findings
+- **Rare phenotypes** (30% of assignments): Less common but clinically important findings
+
+This ensures synthetic data matches real clinical data distributions.
+
+#### 3. Qualifier Distributions
+
+Realistic context qualifiers based on clinical documentation patterns:
+- **Negated** (15%): Explicitly ruled-out findings
+- **Family History** (8%): Conditions observed in relatives
+- **Hypothetical** (5%): Suspected or rule-out diagnoses
+- **Unqualified** (72%): Present/observed findings
+
+#### 4. Evidence Importance Weighting
+
+Documentation frequency varies by clinical importance:
+- **Chief complaints** (5-12 evidence items): Primary presenting symptoms
+- **Active problems** (2-6 evidence items): Current issues under management
+- **Past history** (1-3 evidence items): Historical findings
+- **Incidental** (1-2 evidence items): Noted but not primary concern
+
+#### 5. Specialty Attribution
+
+Phenotypes are documented by appropriate medical specialties:
+- Cardiac phenotypes → Cardiology
+- Neurological phenotypes → Neurology
+- Metabolic phenotypes → Endocrinology
+- Rare dysmorphic features → Genetics
+
+---
 
 ## Quick Start
 
-### Prerequisites
-
-1. **Deployed PheBee stack** with required infrastructure:
-   - API Gateway endpoint
-   - S3 bucket for bulk imports
-   - Step Functions for bulk import workflow
-   - DynamoDB, Neptune, Glue/Iceberg data warehouse
-
-2. **Python dependencies** (from project root):
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-3. **AWS credentials** configured with access to your PheBee stack
-
-### Required Environment Variables
-
+**Step 1: Download HPO ontology**
 ```bash
-# Required for all tests
-export PHEBEE_EVAL_SCALE=1                                    # Enable performance tests
-export PHEBEE_EVAL_TERMS_JSON_PATH=tests/integration/performance/data/hpo_terms_v2026-01-08.json
-
-# Optional but recommended for realistic distributions
-export PHEBEE_EVAL_PREVALENCE_CSV_PATH=tests/integration/performance/data/term_frequencies.csv
-
-# Optional: Control dataset size (defaults shown)
-export PHEBEE_EVAL_SCALE_SUBJECTS=10000
-export PHEBEE_EVAL_SCALE_MIN_TERMS=5
-export PHEBEE_EVAL_SCALE_MAX_TERMS=50
-export PHEBEE_EVAL_SCALE_MIN_EVIDENCE=1
-export PHEBEE_EVAL_SCALE_MAX_EVIDENCE=25
-
-# Optional: Reproducibility
-export PHEBEE_EVAL_SEED=42
-
-# Optional: Latency test configuration
-export PHEBEE_EVAL_LATENCY_N=500       # Requests per endpoint
-export PHEBEE_EVAL_CONCURRENCY=25      # Concurrent requests
+cd tests/integration/performance
+curl -L http://purl.obolibrary.org/obo/hp.obo -o data/hp.obo
 ```
 
-## Running Tests
+**Step 2: Generate HPO terms index**
+```bash
+python generate_hpo_terms_json.py --obo data/hp.obo --out data/hpo_terms.json
+```
 
-### Run Both Tests Sequentially (Tables 3 & 4)
+**Step 3: Configure environment**
+```bash
+# Required
+export PHEBEE_EVAL_SCALE=1
+export PHEBEE_EVAL_TERMS_JSON_PATH="tests/integration/performance/data/hpo_terms.json"
 
-For complete manuscript data, run both tests in sequence:
+# Manuscript parameters (recommended for Table 3 & 4)
+export PHEBEE_EVAL_SCALE_SUBJECTS=10000      # Dataset size (default: 10000)
+export PHEBEE_EVAL_CONCURRENCY=25            # Concurrent workers (default: 25)
+```
+
+**Step 4a: Run import performance test**
+```bash
+# IMPORTANT: Run from project root so .phebee-test-stack file is found
+cd /path/to/phebee  # Navigate to project root
+
+# Use -s flag to see all output including artifact locations
+pytest -v -s tests/integration/performance/test_import_performance.py
+```
+
+This will print detailed output including:
+- Dataset statistics (subjects, records, terms, evidence)
+- Import progress and throughput metrics
+- **Artifact locations**: `/tmp/phebee-eval-artifacts/{run_id}/`
+- **Project ID**: Needed for query performance tests
+
+The test creates these artifacts:
+- `table3_ingestion.csv` - Import performance metrics
+- `import_run.json` - Full run details including project_id
+- `subject_id_mapping.json` - Subject UUID mappings
+
+**Step 4b: Run query performance test**
+```bash
+# Find the project_id from the import test output or JSON file
+PROJECT_ID=$(cat /tmp/phebee-eval-artifacts/import-perf-*/import_run.json | jq -r '.project_id')
+
+# Run query performance test against the imported data
+export PHEBEE_EVAL_PROJECT_ID=$PROJECT_ID
+pytest -v -s tests/integration/performance/test_evaluation_perf_scale.py
+```
+
+This will print:
+- Per-endpoint latency metrics (p50, p95, p99, max)
+- Query pattern descriptions
+- Performance summary
+
+**Alternative: Run both tests in one session**
+```bash
+# Both tests will share the same project automatically
+pytest -v -s tests/integration/performance/test_import_performance.py \
+          tests/integration/performance/test_evaluation_perf_scale.py
+```
+
+### Query Patterns Tested
+
+The API latency test executes 8 comprehensive query patterns representing realistic clinical and research use cases:
+
+| # | Pattern | Description | Use Case |
+|---|---------|-------------|----------|
+| 1 | **basic_subjects_query** | Simple project query with limit | Most common access pattern |
+| 2 | **individual_subject** | Single subject detail lookup | Patient detail views |
+| 3 | **hierarchy_expansion** | Descendant term expansion with ontology traversal | Research: "all cardiovascular conditions" |
+| 4 | **qualified_filtering** | Exclude negated/family/hypothetical | Clinical: confirmed findings only |
+| 5 | **specific_phenotype** | Direct term query without hierarchy | Research: exact term matching |
+| 6 | **paginated_large_cohort** | Large result set with pagination | Broad cohort queries with cursor |
+| 7 | **subject_term_info** | Detailed subject-term evidence | Curator: evidence review |
+| 8 | **version_specific_query** | Ontology version filtering | Research: specific HPO version |
+
+**Step 5: Run additional evaluations (optional)**
+
+To test different load parameters without reimporting data:
 
 ```bash
+# Use the project_id from Step 4b
+export PHEBEE_EVAL_PROJECT_ID=test_project_abc12345  # Use actual ID from import test
+
+# Test with different concurrency (run from project root)
+export PHEBEE_EVAL_CONCURRENCY=50
+pytest -v -s tests/integration/performance/test_evaluation_perf_scale.py
+```
+
+**Optional:** Generate static benchmark dataset for manuscript reproducibility:
+```bash
+python tests/integration/performance/generate_benchmark_dataset.py  # Creates data/benchmark/{n_subjects}-subjects-seed{seed}/
+```
+
+Each dataset is isolated in its own subdirectory based on parameters (subjects, seed). Non-default configurations (e.g., `--no-disease-clustering`) add a suffix.
+
+**Using Pre-Generated Datasets:** To use a previously generated benchmark dataset instead of generating fresh data, set `PHEBEE_EVAL_BENCHMARK_DIR`:
+```bash
+export PHEBEE_EVAL_BENCHMARK_DIR="tests/integration/performance/data/benchmark/10000-subjects-seed42"
+
+# Run from project root (use -s to see output)
 cd /path/to/phebee
-
-# Table 3: Import performance
-pytest tests/integration/performance/test_import_performance.py -v
-
-# Table 4: API latency (uses data from import test)
-pytest tests/integration/performance/test_api_latency.py -v
+pytest -v -s tests/integration/performance/test_import_performance.py \
+          tests/integration/performance/test_evaluation_perf_scale.py
 ```
 
-### Run All Performance Tests Together
+---
 
-```bash
-cd /path/to/phebee
-pytest tests/integration/performance/ -v -m perf
-```
+## Environment Variables
 
-**Note**: This runs both tests in sequence, but `test_api_latency.py` requires data to be imported first.
+### Required
 
-### Run Import Performance Test Only (Table 3)
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `PHEBEE_EVAL_SCALE` | Enable performance tests (set to `1`) | `1` |
+| `PHEBEE_EVAL_TERMS_JSON_PATH` | Path to HPO terms JSON | `./data/hpo_terms.json` |
 
-```bash
-pytest tests/integration/performance/test_import_performance.py -v
-```
+### Optional - Test Execution
 
-### Run API Latency Test Only (Table 4)
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PHEBEE_EVAL_PROJECT_ID` | None | Use existing project instead of creating new one. Required when running tests separately. |
+| `PHEBEE_EVAL_INGEST_TIMEOUT_S` | 21,600 | Timeout in seconds for bulk import Step Function (6 hours) |
+| `PHEBEE_EVAL_LATENCY_N` | 500 | Number of requests per API endpoint pattern |
+| `PHEBEE_EVAL_CONCURRENCY` | 25 | Number of concurrent workers for load testing |
+| `PHEBEE_EVAL_STRICT_LATENCY` | 0 | Enforce p95 ≤ 5000ms performance gates (1=enabled, 0=disabled) |
+| `PHEBEE_EVAL_WRITE_ARTIFACTS` | 1 | Write CSV/JSON artifacts to /tmp/phebee-eval-artifacts/ |
+| `PHEBEE_EVAL_METRICS_PATH` | None | Local file path to write performance metrics JSON |
+| `PHEBEE_EVAL_METRICS_S3_URI` | None | S3 URI to upload performance metrics JSON (e.g., `s3://bucket/prefix/`) |
 
-**Prerequisite**: Project must have data already imported.
+### Optional - Data Generation
 
-```bash
-pytest tests/integration/performance/test_api_latency.py -v
-```
-
-### Iterate on Latency Test with Existing Project
-
-To iterate on the latency test without re-running the import each time, use an existing project ID:
-
-```bash
-# First, note the project ID from a previous import run
-# (printed as "[Performance Tests] Creating shared project: test_project_XXXXXXXX")
-
-# Then run latency test against that project
-export PHEBEE_EVAL_PROJECT_ID=test_project_c3608683  # Use your actual project ID
-pytest tests/integration/performance/test_api_latency.py -v
-```
-
-This is especially useful when tweaking latency test parameters (concurrency, number of requests, etc.) without waiting for the import to complete each time.
-
-### Run with Different Scale
-
-```bash
-# Test with 50K subjects
-export PHEBEE_EVAL_SCALE_SUBJECTS=50000
-pytest tests/integration/performance/test_import_performance.py -v
-
-# Then run latency test on the imported data
-pytest tests/integration/performance/test_api_latency.py -v
-```
-
-## Generating Static Benchmark Dataset
-
-### Reproducible Generation
-
-All datasets are generated **deterministically** using a fixed random seed (default: 42). This means anyone with the same input files and parameters can regenerate the exact same datasets.
-
-### Generate Single Dataset
-
-For manuscript submission or local testing:
-
-```bash
-# Set environment variables
-export PHEBEE_EVAL_TERMS_JSON_PATH=tests/integration/performance/data/hpo_terms_v2026-01-08.json
-export PHEBEE_EVAL_PREVALENCE_CSV_PATH=tests/integration/performance/data/term_frequencies.csv
-export PHEBEE_EVAL_SEED=42  # For reproducibility
-
-# Generate dataset
-python tests/integration/performance/generate_benchmark_dataset.py \
-    --output-dir ./phebee_benchmark_v1 \
-    --project-id phebee-benchmark-v1 \
-    --batch-size 10000
-```
-
-This creates:
-- `metadata.json` - Generation parameters and statistics
-- `README.md` - Human-readable description
-- `batches/*.json` - NDJSON data files ready for bulk import
-
-### Generate Multiple Scales
-
-To generate all four benchmark scales (1K, 10K, 50K, 100K subjects) at once:
-
-```bash
-# Using default paths (if data files are in tests/integration/performance/data/)
-./tests/integration/performance/create_import_performance_datasets.sh
-
-# Or specify custom output directory
-./tests/integration/performance/create_import_performance_datasets.sh ./my_benchmarks
-
-# Or set custom input paths
-export PHEBEE_EVAL_TERMS_JSON_PATH=/path/to/hpo_terms.json
-export PHEBEE_EVAL_PREVALENCE_CSV_PATH=/path/to/term_frequencies.csv
-./tests/integration/performance/create_import_performance_datasets.sh
-```
-
-### Data Sharing Strategy
-
-Generated datasets can be **very large** (1K scale: ~213MB, 100K scale: ~20GB). For manuscript data sharing:
-
-**Recommended Approach**: Share generation scripts instead of raw data
-- Upload to repository (GitHub/Zenodo):
-  - Generation scripts: `conftest.py`, `generate_benchmark_dataset.py`, `create_import_performance_datasets.sh`
-  - Input data: `data/hpo_terms_v2026-01-08.json`, `data/term_frequencies.csv`
-  - Documentation: `README.md`
-- Reviewers can regenerate datasets deterministically using the fixed seed
-- Provides verifiable reproducibility
-- Much faster downloads (~50MB vs ~32GB for all scales)
-
-**Alternative Approach**: Share raw datasets
-- Upload generated datasets directly to Zenodo
-- Faster for users who just want to run tests
-- Requires more storage and bandwidth
-- Less transparent (opaque data files vs. generation code)
-
-## Configuration Options
-
-### Dataset Generation
-
-| Environment Variable | Default | Description |
-|---------------------|---------|-------------|
-| `PHEBEE_EVAL_SCALE` | (none) | Must be `1` to enable tests |
-| `PHEBEE_EVAL_TERMS_JSON_PATH` | (required) | Path to HPO terms JSON |
-| `PHEBEE_EVAL_PREVALENCE_CSV_PATH` | (optional) | Path to term frequency CSV |
-| `PHEBEE_EVAL_SEED` | timestamp | Random seed for reproducibility |
-| `PHEBEE_EVAL_SCALE_SUBJECTS` | 10000 | Number of subjects to generate |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PHEBEE_EVAL_BENCHMARK_DIR` | None | Path to pre-generated benchmark dataset directory (if set, loads from disk instead of generating) |
+| `PHEBEE_EVAL_PREVALENCE_CSV_PATH` | None | Term frequency CSV for realistic distributions |
+| `PHEBEE_EVAL_SEED` | 42 | Random seed for reproducibility |
+| `PHEBEE_EVAL_SCALE_SUBJECTS` | 10,000 | Number of subjects |
 | `PHEBEE_EVAL_SCALE_MIN_TERMS` | 5 | Min HPO terms per subject |
 | `PHEBEE_EVAL_SCALE_MAX_TERMS` | 50 | Max HPO terms per subject |
-| `PHEBEE_EVAL_SCALE_MIN_EVIDENCE` | 1 | Min evidence items per term link |
-| `PHEBEE_EVAL_SCALE_MAX_EVIDENCE` | 25 | Max evidence items per term link |
-| `PHEBEE_EVAL_BATCH_SIZE` | 10000 | Records per S3 batch file |
+| `PHEBEE_EVAL_SCALE_MIN_EVIDENCE` | 1 | Min evidence items per term |
+| `PHEBEE_EVAL_SCALE_MAX_EVIDENCE` | 25 | Max evidence items per term |
+| `PHEBEE_EVAL_BATCH_SIZE` | 10,000 | Records per S3 batch file |
+| `PHEBEE_EVAL_USE_DISEASE_CLUSTERING` | 1 | Enable disease clustering (1=enabled, 0=disabled) |
 
-### Import Performance
+### Optional - Clinical Realism (Advanced)
 
-| Environment Variable | Default | Description |
-|---------------------|---------|-------------|
-| `PHEBEE_EVAL_INGEST_TIMEOUT_S` | 7200 | Max seconds to wait for import (2 hours) |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PHEBEE_EVAL_QUAL_NEGATED_PCT` | 0.15 | Negated findings percentage |
+| `PHEBEE_EVAL_QUAL_FAMILY_PCT` | 0.08 | Family history percentage |
+| `PHEBEE_EVAL_QUAL_HYPOTHETICAL_PCT` | 0.05 | Hypothetical findings percentage |
+| `PHEBEE_EVAL_COMMON_TERM_PCT` | 0.70 | Common vs rare term ratio |
+| `PHEBEE_EVAL_ANCHOR_TERM_PCT` | 0.60 | Include anchor term probability |
+| `PHEBEE_EVAL_NOTE_DATE_START` | 2023-01-01 | Clinical note date range start |
+| `PHEBEE_EVAL_NOTE_DATE_END` | 2024-12-31 | Clinical note date range end |
 
-### API Latency Testing
+---
 
-| Environment Variable | Default | Description |
-|---------------------|---------|-------------|
-| `PHEBEE_EVAL_PROJECT_ID` | (none) | Use existing project instead of creating new one |
-| `PHEBEE_EVAL_LATENCY_N` | 500 | Requests per endpoint |
-| `PHEBEE_EVAL_CONCURRENCY` | 25 | Concurrent request threads |
-| `PHEBEE_EVAL_HTTP_TIMEOUT_S` | 30 | HTTP request timeout |
+## Benchmark Datasets
 
-### Qualifier Distribution
+### Generating Shareable Datasets for Manuscripts
 
-| Environment Variable | Default | Description |
-|---------------------|---------|-------------|
-| `PHEBEE_EVAL_QUAL_NEGATED_PCT` | 0.15 | % of term links that are negated |
-| `PHEBEE_EVAL_QUAL_FAMILY_PCT` | 0.08 | % of term links that are family history |
-| `PHEBEE_EVAL_QUAL_HYPOTHETICAL_PCT` | 0.05 | % of term links that are hypothetical |
+For manuscript reproducibility, generate a benchmark dataset with a fixed seed:
 
-### Clinical Note Timestamps
+```bash
+export PHEBEE_EVAL_TERMS_JSON_PATH="./data/hpo_terms_v2026-01-08.json"
+export PHEBEE_EVAL_PREVALENCE_CSV_PATH="/path/to/term_frequencies.csv"
+export PHEBEE_EVAL_SEED=42
+export PHEBEE_EVAL_SCALE_SUBJECTS=50000
 
-| Environment Variable | Default | Description |
-|---------------------|---------|-------------|
-| `PHEBEE_EVAL_NOTE_DATE_START` | 2023-01-01 | Start date for synthetic notes |
-| `PHEBEE_EVAL_NOTE_DATE_END` | 2024-12-31 | End date for synthetic notes |
+python generate_benchmark_dataset.py \
+  --project-id phebee-manuscript-2026 \
+  --use-disease-clustering
+```
 
-## Output Artifacts
+**Output Structure:**
+```
+data/benchmark/
+├── metadata.json           # Generation parameters and statistics
+├── README.md              # Human-readable documentation
+└── batches/
+    ├── batch-00000.json   # NDJSON batch files
+    ├── batch-00001.json
+    └── ...
+```
 
-### Import Performance (Table 3)
+### Sharing via Zenodo
 
-CSV file with columns:
-- `run_id` - Unique run identifier
-- `project_id` - PheBee project ID
-- `n_subjects` - Number of subjects
-- `n_records` - Number of term links (records)
-- `n_evidence` - Total evidence items
-- `n_unique_terms` - Unique HPO terms used
-- `terms_per_subject_mean/median/min/max` - Distribution statistics
-- `evidence_per_record_mean/median/min/max` - Distribution statistics
-- `ingest_seconds` - Total import time
-- `records_per_sec` - Throughput (records/second)
-- `evidence_per_sec` - Throughput (evidence/second)
+1. Generate dataset with fixed seed (as above)
+2. Create a new Zenodo deposit at https://zenodo.org/
+3. Upload all files from `data/benchmark/`
+4. Add keywords: `PheBee`, `phenotype`, `performance`, `benchmark`, `HPO`
+5. Publish and obtain DOI
+6. Cite DOI in manuscript methods section
 
-### API Latency (Table 4)
+### Using Pre-Generated Benchmarks
 
-CSV file with columns:
-- `endpoint` - API endpoint name
-- `n` - Number of requests
-- `min_ms` - Minimum latency
-- `max_ms` - Maximum latency
-- `avg_ms` - Average latency
-- `p50_ms` - 50th percentile (median)
-- `p95_ms` - 95th percentile
-- `p99_ms` - 99th percentile
+To use a previously generated benchmark dataset instead of generating fresh data:
 
-### Full Results JSON
+```bash
+# Download from Zenodo and extract to project directory
+cd /path/to/phebee
+wget https://zenodo.org/record/YOUR_RECORD_ID/files/benchmark_dataset.tar.gz
+tar -xzf benchmark_dataset.tar.gz -C tests/integration/performance/data/benchmark/
 
-Both tests also output a complete JSON file with:
-- Dataset generation statistics
-- Import performance metrics
-- API latency results
-- Configuration parameters
-- Query workload details
+# Point tests to the pre-generated dataset
+export PHEBEE_EVAL_SCALE=1
+export PHEBEE_EVAL_TERMS_JSON_PATH="tests/integration/performance/data/hpo_terms_v2026-01-08.json"
+export PHEBEE_EVAL_BENCHMARK_DIR="tests/integration/performance/data/benchmark/10000-subjects-seed42"
 
-By default, artifacts are written to `/tmp/phebee-eval-artifacts/{run_id}/`:
-- `table3_ingestion.csv`
-- `table4_latency.csv`
-- `eval_run.json`
+# Run tests using the static benchmark dataset (from project root, use -s to see output)
+pytest -v -s tests/integration/performance/test_import_performance.py \
+          tests/integration/performance/test_evaluation_perf_scale.py
+```
 
-Set `PHEBEE_EVAL_WRITE_ARTIFACTS=0` to disable artifact generation.
+**Note:** When `PHEBEE_EVAL_BENCHMARK_DIR` is set, the tests will load pre-generated data from that directory instead of generating fresh synthetic data. This ensures exact reproducibility across test runs and is recommended for manuscript performance evaluations.
 
-## Data Generation Strategy
+### Important: Running Tests from Project Root
 
-### Term Selection
+**All performance tests must be run from the project root directory**, not from `tests/integration/performance/`. This is because:
 
-Each subject receives 5-50 HPO terms:
-- **60% chance** to include one anchor term (cardiovascular or neuro)
-- **70% of remaining terms** sampled from high-frequency terms (top 2000 by clinical prevalence)
-- **30% of remaining terms** sampled from low-frequency terms (bottom 5000 by clinical prevalence)
+1. The test infrastructure looks for `.phebee-test-stack` file (containing the deployed stack name) in the current working directory
+2. This file exists at the project root and specifies which CloudFormation stack to use
+3. Running from the wrong directory will cause the tests to attempt a new stack deployment (and likely fail during SAM build)
 
-This distribution reflects realistic clinical data patterns when `PHEBEE_EVAL_PREVALENCE_CSV_PATH` is provided.
+If you see errors about SAM CLI failing during test setup, ensure you're running pytest from the project root.
 
-### Qualifier Distribution
+---
 
-Each term link receives at most one qualifier:
-- **15%** Negated (e.g., "no fever")
-- **8%** Family history
-- **5%** Hypothetical
-- **72%** Unqualified (positive assertion)
+## Files in This Directory
 
-### Evidence Generation
+| File | Purpose |
+|------|---------|
+| `conftest.py` | Shared fixtures and data generation utilities with disease clustering |
+| `generate_hpo_terms_json.py` | Convert HPO OBO to searchable JSON index |
+| `generate_benchmark_dataset.py` | Create reproducible benchmark datasets |
+| `test_import_performance.py` | Bulk import throughput test (Manuscript Table 3) |
+| `test_evaluation_perf_scale.py` | Comprehensive API latency test (Manuscript Table 4) |
+| `data/hpo_terms_v*.json` | HPO term indexes (can be checked in or gitignored) |
+| `data/benchmark/` | Generated benchmark datasets (gitignored) |
 
-Each term link receives 1-25 evidence items representing clinical note annotations:
-- Automated NLP creator (with one manual curator example for validation)
-- Unique note IDs per evidence item
-- Shared encounter ID per subject
-- Random timestamps within specified date range
-- Realistic text span positions
-
-## Expected Performance
-
-Typical results (10K subjects, ~250K term links, ~3M evidence items):
-- **Import**: 300-600 records/sec (varies by instance size)
-- **API p95 latency**: 100-500ms for most queries
-- **Large cohort queries**: May take 1-2s at p95 for hierarchy expansion
+---
 
 ## Troubleshooting
 
-### Tests Skip with "PHEBEE_EVAL_SCALE not set"
+### "Could not load prevalence data" warning
 
-Set `export PHEBEE_EVAL_SCALE=1` to enable performance tests.
+**Cause:** The prevalence CSV path is set but the file is missing or malformed.
 
-### "PHEBEE_EVAL_TERMS_JSON_PATH not found"
+**Solution:** Either fix the CSV path/format, or unset `PHEBEE_EVAL_PREVALENCE_CSV_PATH` to use fallback heuristics.
 
-Ensure the environment variable points to a valid HPO terms JSON file:
+### Import test times out
+
+**Cause:** Dataset is too large for the configured timeout (default: 6 hours).
+
+**Solution:** Increase timeout or reduce dataset size:
 ```bash
-export PHEBEE_EVAL_TERMS_JSON_PATH=tests/integration/performance/data/hpo_terms_v2026-01-08.json
+export PHEBEE_EVAL_INGEST_TIMEOUT_S=28800  # 8 hours for very large imports
+# OR
+export PHEBEE_EVAL_SCALE_SUBJECTS=5000  # Smaller dataset
 ```
 
-### Import Timeout
+### API latency test fails with 404s
 
-Increase timeout for larger datasets:
+**Cause:** You must run `test_import_performance.py` first to populate data.
+
+**Solution:**
 ```bash
-export PHEBEE_EVAL_INGEST_TIMEOUT_S=14400  # 4 hours
+# Ensure you're in the project root
+cd /path/to/phebee
+
+# Run import test first (use -s to see output)
+pytest -v -s tests/integration/performance/test_import_performance.py
+
+# Get the project_id from artifacts
+export PHEBEE_EVAL_PROJECT_ID=$(cat /tmp/phebee-eval-artifacts/import-perf-*/import_run.json | jq -r '.project_id')
+
+# Then run latency test (use -s to see output)
+pytest -v -s tests/integration/performance/test_evaluation_perf_scale.py
 ```
 
-### API Latency Test Fails After Import
+### Can't find test output or artifacts
 
-Some tests require data to exist before running API latency tests. Run import test first, or run against an existing project with sufficient data.
+**Cause:** Pytest captured the output because `-s` flag was not used.
 
-## For Manuscript Authors
-
-### Recommended Test Configuration
-
-For reproducible manuscript results:
-
+**Solution:** Always use the `-s` flag to see detailed output:
 ```bash
-# Fixed seed for reproducibility
-export PHEBEE_EVAL_SEED=42
-
-# Moderate scale for reasonable runtime
-export PHEBEE_EVAL_SCALE_SUBJECTS=10000
-
-# Use real prevalence data
-export PHEBEE_EVAL_PREVALENCE_CSV_PATH=tests/integration/performance/data/term_frequencies.csv
-
-# Sufficient samples for stable latency measurements
-export PHEBEE_EVAL_LATENCY_N=500
-export PHEBEE_EVAL_CONCURRENCY=25
+pytest -v -s tests/integration/performance/test_import_performance.py
 ```
 
-### Methods Section Template
+The artifacts are still written to `/tmp/phebee-eval-artifacts/` even without `-s`, you just won't see the console output showing where they are.
 
-> We evaluated PheBee performance using synthetic phenotype data reflecting real-world clinical frequency distributions. We generated 10,000 subjects with 5-50 HPO terms each (mean: X), where 70% of terms were sampled from high-frequency terms (top 2000 by clinical prevalence) and 30% from low-frequency terms (bottom 5000), based on actual clinical data from [your institution]. Each term link included 1-25 evidence items (mean: Y) representing clinical note annotations. We measured bulk import throughput and API query latency (p50/p95/p99) across representative cohort query workloads with 500 requests per endpoint at 25 concurrent connections.
+---
 
-## Citation
-
-If you use this performance testing framework, please cite:
-
-[Insert manuscript citation when published]
-
-## Contact
-
-[Insert contact information]
+**Last Updated:** 2026-02-25

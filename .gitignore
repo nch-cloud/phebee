@@ -263,3 +263,7 @@ phebee_import_benchmarks/
 **/phebee_import_benchmark_*/
 **/phebee_benchmark_*/
 benchmark_data/
+tests/integration/performance/data/benchmark/
+
+# Local stack configuration for integration tests
+.phebee-test-stack

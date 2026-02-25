@@ -1,7 +1,10 @@
 import json
+import os
 from aws_lambda_powertools import Metrics, Logger, Tracer
 from phebee.utils.aws import extract_body
-from phebee.utils.iceberg import create_evidence_record
+from phebee.utils.iceberg import create_evidence_record, count_evidence_by_termlink
+from phebee.utils.hash import generate_termlink_hash
+from phebee.utils.sparql import create_term_link
 
 logger = Logger()
 tracer = Tracer()
@@ -30,7 +33,7 @@ def lambda_handler(event, context):
         span_end = body.get("span_end")
         qualifiers = body.get("qualifiers", [])
         term_source = body.get("term_source")
-        
+
         # Clinical note context fields
         note_timestamp = body.get("note_timestamp")
         provider_type = body.get("provider_type")
@@ -55,10 +58,34 @@ def lambda_handler(event, context):
         if creator_name:
             creator["creator_name"] = creator_name
 
-        # Generate timestamp
+        # Generate timestamps (use same base time for consistency)
         from datetime import datetime
-        created_timestamp = datetime.utcnow().isoformat()
+        now = datetime.utcnow()
+        created_timestamp = now.isoformat()
+        created_date = now.date().isoformat()
 
+        # Convert qualifiers dict to list format for hash generation
+        # Qualifiers can be provided as either a dict {"iri": true/false} or a list ["iri"]
+        qualifier_list = []
+        if qualifiers:
+            if isinstance(qualifiers, dict):
+                # Convert dict to list of IRIs, filtering out false values
+                # Just use the IRI itself (presence implies active)
+                for qualifier_iri, qualifier_value in qualifiers.items():
+                    if qualifier_value not in [False, "false", "0", 0, 0.0]:
+                        qualifier_list.append(qualifier_iri)
+            elif isinstance(qualifiers, list):
+                # List format - use as-is (presence implies active)
+                qualifier_list = qualifiers
+            else:
+                logger.warning(f"Unexpected qualifiers type: {type(qualifiers)}")
+                qualifier_list = []
+
+        # Compute termlink_id using the same logic as create_evidence_record
+        subject_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"
+        termlink_id = generate_termlink_hash(subject_iri, term_iri, qualifier_list)
+
+        # Create evidence record in Iceberg
         evidence_id = create_evidence_record(
             subject_id=subject_id,
             term_iri=term_iri,
@@ -72,13 +99,58 @@ def lambda_handler(event, context):
             clinical_note_id=clinical_note_id,
             span_start=span_start,
             span_end=span_end,
-            qualifiers=qualifiers,
+            qualifiers=qualifier_list,
             note_timestamp=note_timestamp,
             provider_type=provider_type,
             author_specialty=author_specialty,
             note_type=note_type,
             term_source=term_source
         )
+
+        # Create the term link in Neptune (idempotent - will not recreate if it exists)
+        try:
+            logger.info(f"Ensuring term link exists in Neptune for termlink {termlink_id}")
+            creator_iri = f"http://ods.nationwidechildrens.org/phebee/creators/{creator_id}"
+
+            # Convert qualifier strings to IRIs if needed
+            # qualifier_list is already in plain IRI format (no :true suffix)
+            qualifier_iris = []
+            for q in qualifier_list:
+                if q.startswith('http://') or q.startswith('https://'):
+                    qualifier_iris.append(q)
+                else:
+                    # Assume qualifier is a short name, convert to IRI
+                    qualifier_iris.append(f"http://ods.nationwidechildrens.org/phebee/qualifier/{q}")
+
+            result = create_term_link(
+                subject_iri=subject_iri,
+                term_iri=term_iri,
+                creator_iri=creator_iri,
+                qualifiers=qualifier_iris
+            )
+            if result.get("created"):
+                logger.info(f"Created new term link in Neptune: {result.get('termlink_iri')}")
+            else:
+                logger.info(f"Term link already exists in Neptune: {result.get('termlink_iri')}")
+        except Exception as e:
+            # Log but don't fail the evidence creation if term link creation fails
+            logger.error(f"Failed to ensure term link in Neptune: {e}")
+
+        # Update subject-terms analytical tables incrementally
+        try:
+            from phebee.utils.iceberg import update_subject_terms_for_evidence
+
+            update_subject_terms_for_evidence(
+                subject_id=subject_id,
+                term_iri=term_iri,
+                termlink_id=termlink_id,
+                qualifiers=qualifier_list,
+                created_date=created_date
+            )
+            logger.info(f"Updated subject-terms analytical tables for termlink {termlink_id}")
+        except Exception as e:
+            # Log but don't fail the evidence creation if analytical table update fails
+            logger.error(f"Failed to update subject-terms analytical tables: {e}")
 
         # Return the complete evidence record
         evidence_record = {
@@ -88,6 +160,7 @@ def lambda_handler(event, context):
             "evidence_type": evidence_type,
             "subject_id": subject_id,
             "term_iri": term_iri,
+            "termlink_id": termlink_id,
             "creator": creator,
             "created_timestamp": created_timestamp
         }

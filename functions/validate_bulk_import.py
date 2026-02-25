@@ -10,11 +10,12 @@ s3 = boto3.client('s3')
 def lambda_handler(event, context):
     """Validate bulk import input and check file exists"""
     logger.info(event)
-    
+
     try:
         run_id = event.get('run_id')
         input_path = event.get('input_path')
-        
+        project_id = event.get('project_id')  # Optional: if provided, use it directly
+
         if not run_id or not input_path:
             raise ValueError("run_id and input_path are required")
         
@@ -26,19 +27,49 @@ def lambda_handler(event, context):
         bucket = path_parts[0]
         prefix = path_parts[1] if len(path_parts) > 1 else ''
         
+        # Extract project_id from path if not provided (assumes format: projects/{project_id}/runs/{run_id}/)
+        if not project_id and 'projects/' in prefix:
+            parts = prefix.split('/')
+            try:
+                project_idx = parts.index('projects')
+                if project_idx + 1 < len(parts):
+                    project_id = parts[project_idx + 1]
+                    logger.info(f"Extracted project_id from path: {project_id}")
+            except (ValueError, IndexError):
+                logger.warning(f"Could not extract project_id from path: {prefix}")
+
         # List JSONL files in the prefix
         try:
             response = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
 
             jsonl_files = [obj['Key'] for obj in response.get('Contents', []) if '/jsonl/' in obj['Key'] and (obj['Key'].endswith('.jsonl') or obj['Key'].endswith('.json'))]
-            
+
             if not jsonl_files:
                 raise ValueError(f"No JSONL files found in: {input_path}")
-            
+
             # Calculate total size
             total_size = sum(obj['Size'] for obj in response.get('Contents', []) if '/jsonl/' in obj['Key'] and (obj['Key'].endswith('.jsonl') or obj['Key'].endswith('.json')))
-            
-            logger.info(f"Validated input directory: {input_path}, found {len(jsonl_files)} JSONL files, total size: {total_size} bytes")
+
+            # If project_id not found in path, extract it from the first JSONL file
+            if not project_id and jsonl_files:
+                try:
+                    first_file = jsonl_files[0]
+                    logger.info(f"Reading first JSONL file to extract project_id: {first_file}")
+                    obj = s3.get_object(Bucket=bucket, Key=first_file)
+                    content = obj['Body'].read().decode('utf-8')
+                    # Read first line
+                    first_line = content.split('\n')[0]
+                    if first_line.strip():
+                        record = json.loads(first_line)
+                        project_id = record.get('project_id')
+                        if project_id:
+                            logger.info(f"Extracted project_id from JSONL record: {project_id}")
+                        else:
+                            logger.warning(f"No project_id field in first JSONL record")
+                except Exception as e:
+                    logger.warning(f"Failed to extract project_id from JSONL file: {e}")
+
+            logger.info(f"Validated input directory: {input_path}, found {len(jsonl_files)} JSONL files, total size: {total_size} bytes, project_id: {project_id}")
             
         except Exception as e:
             if "NoSuchBucket" in str(e):
@@ -53,6 +84,7 @@ def lambda_handler(event, context):
                 'input_path': input_path,
                 'bucket': bucket,
                 'prefix': prefix,
+                'project_id': project_id,
                 'jsonl_files': [f"s3://{bucket}/{file_key}" for file_key in jsonl_files],
                 'total_size': total_size,
                 'validated': True

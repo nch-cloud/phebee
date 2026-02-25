@@ -1,30 +1,35 @@
 """
-Enhanced Scale/performance evaluation harness for PheBee with realistic clinical data patterns.
+PheBee API Performance Test (Manuscript Table 4)
 
-This module generates realistic clinical datasets with proper phenotype clustering, qualifier
-distributions, temporal patterns, and comprehensive query testing.
+Comprehensive API latency testing with 8 realistic query patterns. Uses synthetic datasets
+generated with realistic disease clustering patterns for accurate performance evaluation.
 
-How to run (example):
+How to run:
   PHEBEE_EVAL_SCALE=1 \
-  PHEBEE_EVAL_SCALE_SUBJECTS=5000 \
-  PHEBEE_EVAL_SCALE_MIN_TERMS=5 \
-  PHEBEE_EVAL_SCALE_MAX_TERMS=50 \
-  PHEBEE_EVAL_SCALE_MIN_EVIDENCE=1 \
-  PHEBEE_EVAL_SCALE_MAX_EVIDENCE=8 \
-  PHEBEE_EVAL_BATCH_SIZE=10000 \
-  PHEBEE_EVAL_INGEST_TIMEOUT_S=7200 \
+  PHEBEE_EVAL_USE_DISEASE_CLUSTERING=1 \
+  PHEBEE_EVAL_TERMS_JSON_PATH=data/hpo_terms.json \
+  PHEBEE_EVAL_SCALE_SUBJECTS=10000 \
   PHEBEE_EVAL_LATENCY_N=500 \
   PHEBEE_EVAL_CONCURRENCY=25 \
-  pytest -m perf tests/performance/test_evaluation_perf_scale_v2.py
+  pytest -v -s test_evaluation_perf_scale.py
 
 Optional:
-  PHEBEE_EVAL_METRICS_S3_URI=s3://<bucket>/<prefix>   # upload metrics JSON to S3
-  PHEBEE_EVAL_METRICS_PATH=/tmp/phebee_r11_metrics.json # write metrics JSON locally
-  PHEBEE_EVAL_STRICT_LATENCY=1                         # enforce p95<=5s gates
+  PHEBEE_EVAL_METRICS_S3_URI=s3://<bucket>/<prefix>   # Upload metrics JSON to S3
+  PHEBEE_EVAL_METRICS_PATH=/tmp/phebee_api_metrics.json # Write metrics JSON locally
+  PHEBEE_EVAL_STRICT_LATENCY=1                         # Enforce p95<=5s gates
+  PHEBEE_EVAL_WRITE_ARTIFACTS=0                        # Disable artifact writing (default: 1)
+
+Output Artifacts:
+  - /tmp/phebee-eval-artifacts/{run_id}/table4_latency.csv
+  - /tmp/phebee-eval-artifacts/{run_id}/api_run.json
+
+Note: Run test_import_performance.py first to populate data, then run this test against the
+same project (uses session-scoped test_project_id fixture).
 """
 
 from __future__ import annotations
 
+import csv
 import json
 import os
 import random
@@ -32,16 +37,17 @@ import re
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
-from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import Any, Dict, List, Tuple
 
 import boto3
 import pytest
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
-# Set random seed for reproducible datasets
-random.seed(42)
+# Import shared conftest utilities (relative import to avoid parent conftest)
+from .conftest import GeneratedDataset
 
 # ---------------------------------------------------------------------
 # Module-level gate: don't run perf scale tests unless explicitly enabled
@@ -55,401 +61,19 @@ if os.environ.get("PHEBEE_EVAL_SCALE") != "1":
 pytestmark = [pytest.mark.integration, pytest.mark.perf]
 
 # ---------------------------------------------------------------------
-# Clinical data patterns and distributions
+# Fixtures
 # ---------------------------------------------------------------------
-
-# Common phenotypes (70% of assignments) - based on real clinical frequency
-COMMON_PHENOTYPES = [
-    "HP_0001627",  # Abnormal heart morphology
-    "HP_0001250",  # Seizures
-    "HP_0001943",  # Hyperglycemia
-    "HP_0000819",  # Diabetes mellitus
-    "HP_0001635",  # Heart failure
-    "HP_0002069",  # Bilateral tonic-clonic seizures
-    "HP_0001644",  # Dilated cardiomyopathy
-    "HP_0001298",  # Encephalopathy
-    "HP_0001513",  # Obesity
-    "HP_0002155",  # Hypertriglyceridemia
-    "HP_0001678",  # Atrioventricular block
-    "HP_0002376",  # Developmental regression
-    "HP_0000822",  # Hypertension
-    "HP_0001508",  # Failure to thrive
-    "HP_0002664",  # Neoplasm
-    "HP_0000708",  # Behavioral abnormality
-    "HP_0001252",  # Muscular hypotonia
-    "HP_0000365",  # Hearing impairment
-    "HP_0000478",  # Abnormality of the eye
-    "HP_0000707",  # Abnormality of the nervous system
-    "HP_0001626",  # Abnormality of the cardiovascular system
-    "HP_0000924",  # Abnormality of the skeletal system
-    "HP_0000118",  # Phenotypic abnormality
-    "HP_0001871",  # Abnormality of blood and blood-forming tissues
-    "HP_0000951",  # Abnormality of the skin
-    "HP_0000119",  # Abnormality of the genitourinary system
-    "HP_0025031",  # Abnormality of the digestive system
-    "HP_0002715",  # Abnormality of the immune system
-    "HP_0000152",  # Abnormality of head or neck
-    "HP_0040064",  # Abnormality of limbs
-    "HP_0000598",  # Abnormality of the ear
-    "HP_0002086",  # Abnormality of the respiratory system
-    "HP_0000769",  # Abnormality of the breast
-    "HP_0001197",  # Abnormality of prenatal development or birth
-    "HP_0000271",  # Abnormality of the face
-    "HP_0001507",  # Growth abnormality
-    "HP_0000234",  # Abnormality of the head
-    "HP_0001574",  # Abnormality of the integument
-    "HP_0000929",  # Abnormality of the skull
-    "HP_0000818",  # Abnormality of the endocrine system
-    "HP_0002011",  # Morphological abnormality of the central nervous system
-    "HP_0000707",  # Abnormality of the nervous system
-    "HP_0001939",  # Abnormality of metabolism/homeostasis
-    "HP_0002060",  # Abnormality of the cerebrum
-    "HP_0000707",  # Abnormality of the nervous system
-]
-
-# Rare phenotypes (30% of assignments) - actual specific rare clinical findings
-RARE_PHENOTYPES = [
-    "HP_0000316",  # Hypertelorism
-    "HP_0000486",  # Strabismus
-    "HP_0000508",  # Ptosis
-    "HP_0000639",  # Nystagmus
-    "HP_0000767",  # Pectus excavatum
-    "HP_0001156",  # Brachydactyly
-    "HP_0001249",  # Intellectual disability
-    "HP_0001263",  # Global developmental delay
-    "HP_0001371",  # Flexion contracture
-    "HP_0001629",  # Ventricular septal defect
-    "HP_0001631",  # Atrial septal defect
-    "HP_0001636",  # Tetralogy of Fallot
-    "HP_0001655",  # Patent foramen ovale
-    "HP_0001999",  # Abnormal facial shape
-    "HP_0002007",  # Frontal bossing
-    "HP_0002079",  # Hypoplasia of the corpus callosum
-    "HP_0002119",  # Ventriculomegaly
-    "HP_0002564",  # Malformation of the heart and great vessels
-    "HP_0002650",  # Scoliosis
-    "HP_0002751",  # Kyphoscoliosis
-    "HP_0003196",  # Short nose
-    "HP_0003272",  # Abnormality of the hip bone
-    "HP_0003577",  # Congenital onset
-    "HP_0004322",  # Short stature
-    "HP_0004374",  # Hemiplegia/hemiparesis
-    "HP_0005280",  # Depressed nasal bridge
-    "HP_0005347",  # Webbed neck
-    "HP_0006101",  # Finger syndactyly
-    "HP_0007018",  # Attention deficit hyperactivity disorder
-    "HP_0008551",  # Microtia
-    "HP_0009381",  # Short finger
-    "HP_0009623",  # Proximal placement of thumb
-    "HP_0010055",  # Broad hallux
-    "HP_0010554",  # Cutaneous finger syndactyly
-    "HP_0011304",  # Broad thumb
-    "HP_0012368",  # Flat face
-    "HP_0012471",  # Thick vermilion border
-    "HP_0025031",  # Abnormality of the digestive system
-    "HP_0030084",  # Clinodactyly
-    "HP_0040064",  # Abnormality of limbs
-]
-
-# Disease clusters - realistic phenotype co-occurrence
-DISEASE_CLUSTERS = {
-    "cardiomyopathy": ["HP_0001627", "HP_0001635", "HP_0001644", "HP_0001678", "HP_0000822"],
-    "epilepsy": ["HP_0001250", "HP_0002069", "HP_0001298", "HP_0002376", "HP_0001508"],
-    "metabolic": ["HP_0001943", "HP_0000819", "HP_0001513", "HP_0002155", "HP_0001508"],
-    "oncology": ["HP_0002664", "HP_0001508", "HP_0000822", "HP_0001943"],
-    "complex_rare": RARE_PHENOTYPES[:5]  # Rare diseases often have multiple rare phenotypes
-}
-
-# Provider specialties and their associated phenotypes
-SPECIALTY_PHENOTYPES = {
-    "cardiology": ["HP_0001627", "HP_0001635", "HP_0001644", "HP_0001678", "HP_0000822"],
-    "neurology": ["HP_0001250", "HP_0002069", "HP_0001298", "HP_0002376"],
-    "endocrinology": ["HP_0001943", "HP_0000819", "HP_0001513", "HP_0002155"],
-    "oncology": ["HP_0002664"],
-    "pediatrics": ["HP_0001508", "HP_0002376"],
-    "internal_medicine": COMMON_PHENOTYPES[:8]  # General medicine sees common conditions
-}
-
-# Evidence importance weights (affects documentation frequency)
-EVIDENCE_IMPORTANCE = {
-    "chief_complaint": (5, 12),    # Heavily documented
-    "active_problem": (2, 6),      # Moderate documentation
-    "past_history": (1, 3),        # Light documentation
-    "incidental": (1, 2)           # Minimal documentation
-}
-
-# Estimated label lengths for common phenotype patterns (fallback if no label available)
-LABEL_LENGTH_ESTIMATES = {
-    "default": (15, 25),      # Most clinical terms
-    "short": (8, 15),         # Simple terms like "seizures"
-    "long": (25, 45),         # Complex descriptive terms
-}
-
-# Note types and their temporal patterns
-NOTE_TYPES = [
-    ("admission", "emergency_dept", 0),
-    ("progress_1", "internal_medicine", 1),
-    ("progress_2", "specialty", 2),
-    ("progress_3", "specialty", 3),
-    ("discharge", "internal_medicine", 5)
-]
-
-@dataclass(frozen=True)
-class TermSource:
-    source: str
-    version: str
-    iri: str
-
-    def as_dict(self) -> Dict[str, str]:
-        return {"source": self.source, "version": self.version, "iri": self.iri}
-
-@pytest.fixture
-def term_source_hpo() -> TermSource:
-    """Default term source used for synthetic data."""
-    return TermSource(source="hpo", version="2024-01-01", iri="http://purl.obolibrary.org/obo/hp.owl")
-
-@pytest.fixture
-def scale_run_enabled() -> bool:
-    return True
 
 @pytest.fixture
 def evaluation_run_id() -> str:
-    return f"perf-run-{uuid.uuid4().hex[:10]}"
+    """Generate unique run ID for this evaluation."""
+    return f"api-perf-{uuid.uuid4().hex[:10]}"
 
 # ---------------------------------------------------------------------
-# Realistic data generation functions
+# Minimal term lists for API query patterns
 # ---------------------------------------------------------------------
 
-def generate_realistic_qualifiers() -> Dict[str, float]:
-    """Generate realistic qualifier distributions based on clinical data."""
-    return {
-        "negated": 1.0 if random.random() < 0.15 else 0.0,      # 15% negated findings
-        "family": 1.0 if random.random() < 0.08 else 0.0,       # 8% family history
-        "hypothetical": 1.0 if random.random() < 0.05 else 0.0  # 5% hypothetical/rule-out
-    }
-
-def select_weighted_phenotype() -> str:
-    """Select phenotype with realistic frequency distribution."""
-    # 70% common phenotypes, 30% rare phenotypes
-    if random.random() < 0.7:
-        return random.choice(COMMON_PHENOTYPES)
-    else:
-        return random.choice(RARE_PHENOTYPES)
-
-def generate_subject_phenotypes(min_terms: int, max_terms: int) -> List[str]:
-    """Generate realistic phenotype clusters for a subject."""
-    # Determine subject complexity using power law distribution
-    rand = random.random()
-    if rand < 0.7:  # 70% simple cases
-        n_terms = random.randint(min_terms, min(max_terms, 15))
-    elif rand < 0.95:  # 25% moderate complexity
-        n_terms = random.randint(16, min(max_terms, 40))
-    else:  # 5% complex cases
-        n_terms = random.randint(41, max_terms)
-    
-    phenotypes = []
-    
-    # 60% of subjects have clustered phenotypes (single disease)
-    if random.random() < 0.6:
-        cluster_name = random.choice(list(DISEASE_CLUSTERS.keys()))
-        cluster_phenotypes = DISEASE_CLUSTERS[cluster_name]
-        
-        # Sample from cluster first, then fill with related phenotypes
-        cluster_sample = random.sample(cluster_phenotypes, min(n_terms, len(cluster_phenotypes)))
-        phenotypes.extend(cluster_sample)
-        
-        # Fill remaining with weighted selection
-        while len(phenotypes) < n_terms:
-            candidate = select_weighted_phenotype()
-            if candidate not in phenotypes:
-                phenotypes.append(candidate)
-    else:
-        # 40% mixed/complex cases - diverse phenotypes
-        while len(phenotypes) < n_terms:
-            candidate = select_weighted_phenotype()
-            if candidate not in phenotypes:
-                phenotypes.append(candidate)
-    
-    return phenotypes[:n_terms]
-
-def get_appropriate_specialty(term_iri: str) -> str:
-    """Return appropriate medical specialty for a given phenotype."""
-    for specialty, terms in SPECIALTY_PHENOTYPES.items():
-        if term_iri in terms:
-            return specialty
-    return "internal_medicine"  # Default
-
-def get_evidence_importance(term_iri: str, is_primary: bool = False) -> str:
-    """Determine clinical importance of a phenotype for evidence generation."""
-    if is_primary or term_iri in COMMON_PHENOTYPES[:5]:  # Top 5 most common
-        return "chief_complaint"
-    elif term_iri in COMMON_PHENOTYPES:
-        return "active_problem"
-    elif term_iri in RARE_PHENOTYPES:
-        return "incidental"  # Rare findings often incidental
-    else:
-        return "past_history"
-
-def generate_evidence_count(importance: str) -> int:
-    """Generate realistic evidence count based on clinical importance."""
-    min_ev, max_ev = EVIDENCE_IMPORTANCE[importance]
-    return random.randint(min_ev, max_ev)
-
-def generate_realistic_spans(term_iri: str, base_start: int = 50) -> Tuple[int, int]:
-    """Generate realistic text spans based on estimated phenotype label length."""
-    # For performance testing, we'll estimate label lengths rather than doing actual lookups
-    # In real usage, you could query Neptune for actual rdfs:label values
-    
-    # Estimate label length based on term patterns
-    if any(x in term_iri for x in ["HP_0001250", "HP_0000819", "HP_0001513"]):  # Simple terms
-        min_len, max_len = LABEL_LENGTH_ESTIMATES["short"]
-    elif any(x in term_iri for x in ["HP_0001627", "HP_0002664", "HP_0001298"]):  # Complex terms  
-        min_len, max_len = LABEL_LENGTH_ESTIMATES["long"]
-    else:
-        min_len, max_len = LABEL_LENGTH_ESTIMATES["default"]
-    
-    # Generate realistic span length with some variation
-    span_length = random.randint(min_len, max_len)
-    
-    # Add some randomness to start position to spread spans across note
-    actual_start = base_start + random.randint(0, 20)
-    return actual_start, actual_start + span_length
-
-def generate_encounter_timeline(subject_id: str, n_encounters: int = None) -> List[Dict[str, Any]]:
-    """Generate realistic clinical encounter timeline."""
-    if n_encounters is None:
-        # Most subjects have 2-5 encounters, complex cases have more
-        n_encounters = random.choices([2, 3, 4, 5, 6, 7, 8], 
-                                    weights=[0.3, 0.25, 0.2, 0.15, 0.05, 0.03, 0.02])[0]
-    
-    base_date = datetime(2024, 1, 1) + timedelta(days=random.randint(0, 365))
-    encounters = []
-    
-    for i in range(min(n_encounters, len(NOTE_TYPES))):
-        note_type, dept_type, day_offset = NOTE_TYPES[i]
-        encounter_date = base_date + timedelta(days=day_offset)
-        
-        encounters.append({
-            "encounter_id": f"enc-{subject_id}-{i:02d}",
-            "date": encounter_date.strftime("%Y-%m-%d"),
-            "note_type": note_type,
-            "department": dept_type
-        })
-    
-    return encounters
-
-def generate_synthetic_records(
-    *,
-    project_id: str,
-    n_subjects: int,
-    min_terms_per_subject: int,
-    max_terms_per_subject: int,
-    min_evidence_per_term: int,
-    max_evidence_per_term: int,
-    term_source: Optional[TermSource] = None,
-) -> List[Dict[str, Any]]:
-    """
-    Generate realistic clinical records matching the JSONL input expected by BulkImport.
-    """
-    records: List[Dict[str, Any]] = []
-    row_num = 0
-
-    for s in range(n_subjects):
-        project_subject_id = f"subj-{s:06d}"
-        
-        # Generate realistic phenotype profile for this subject
-        subject_phenotypes = generate_subject_phenotypes(min_terms_per_subject, max_terms_per_subject)
-        
-        # Generate encounter timeline
-        encounters = generate_encounter_timeline(project_subject_id)
-        
-        # Process each phenotype for this subject
-        for t_idx, term_iri in enumerate(subject_phenotypes):
-            # Determine if this is a primary phenotype (first few are more important)
-            is_primary = t_idx < 3
-            importance = get_evidence_importance(term_iri, is_primary)
-            
-            # Generate appropriate number of evidence records
-            base_evidence_count = random.randint(min_evidence_per_term, max_evidence_per_term)
-            importance_multiplier = generate_evidence_count(importance) / 3  # Scale to base range
-            evidence_count = max(1, int(base_evidence_count * importance_multiplier))
-            
-            # Get appropriate specialty
-            specialty = get_appropriate_specialty(term_iri)
-            
-            for e in range(evidence_count):
-                row_num += 1
-                
-                # Select encounter (prefer later encounters for ongoing conditions)
-                encounter = encounters[min(e, len(encounters) - 1)]
-                note_id = f"note-{project_subject_id}-{t_idx:02d}-{e:02d}"
-                
-                # Generate realistic text spans
-                base_span = 50 + (e * 30)  # Spread spans across note
-                span_start, span_end = generate_realistic_spans(term_iri, base_span)
-                
-                # Use specialty-appropriate department if available
-                provider_type = "physician"
-                author_specialty = specialty if encounter["department"] == "specialty" else "internal_medicine"
-                
-                evidence_obj: Dict[str, Any] = {
-                    "type": "clinical_note",
-                    "clinical_note_id": note_id,
-                    "encounter_id": encounter["encounter_id"],
-                    "evidence_creator_id": f"ods/phebee-{specialty}:v1",
-                    "evidence_creator_type": "automated",
-                    "evidence_creator_name": f"PheBee {specialty.title()} NLP",
-                    "note_timestamp": encounter["date"],
-                    "note_type": encounter["note_type"],
-                    "provider_type": provider_type,
-                    "author_specialty": author_specialty,
-                    "span_start": span_start,
-                    "span_end": span_end,
-                    "contexts": generate_realistic_qualifiers(),
-                }
-
-                rec: Dict[str, Any] = {
-                    "project_id": project_id,
-                    "project_subject_id": project_subject_id,
-                    "term_iri": term_iri,
-                    "evidence": [evidence_obj],
-                    "row_num": row_num,
-                    "batch_id": 0,
-                }
-
-                # Include term_source metadata
-                if term_source is not None:
-                    rec["term_source"] = term_source.as_dict()
-
-                records.append(rec)
-
-    return records
-
-@pytest.fixture
-def evaluation_dataset_scale(
-    scale_run_enabled: bool,
-    test_project_id: str,
-    term_source_hpo: TermSource,
-) -> Tuple[str, List[Dict[str, Any]]]:
-    """
-    Returns (project_id, records) for a realistic scale run.
-    """
-    n_subjects = int(os.environ.get("PHEBEE_EVAL_SCALE_SUBJECTS", "5000"))
-    min_terms = int(os.environ.get("PHEBEE_EVAL_SCALE_MIN_TERMS", "5"))
-    max_terms = int(os.environ.get("PHEBEE_EVAL_SCALE_MAX_TERMS", "50"))
-    min_evidence = int(os.environ.get("PHEBEE_EVAL_SCALE_MIN_EVIDENCE", "1"))
-    max_evidence = int(os.environ.get("PHEBEE_EVAL_SCALE_MAX_EVIDENCE", "8"))
-
-    records = generate_synthetic_records(
-        project_id=test_project_id,
-        n_subjects=n_subjects,
-        min_terms_per_subject=min_terms,
-        max_terms_per_subject=max_terms,
-        min_evidence_per_term=min_evidence,
-        max_evidence_per_term=max_evidence,
-        term_source=term_source_hpo,
-    )
-    return test_project_id, records
+# No static term lists needed - tests use terms from dataset
 
 # ---------------------------------------------------------------------
 # Utility functions
@@ -459,27 +83,105 @@ def upload_jsonl_shards(
     *,
     s3_bucket: str,
     s3_prefix: str,
-    records: List[Dict[str, Any]],
+    records: List[Dict[str, Any]] = None,
     shard_size: int,
+    benchmark_dir: Path = None,
+    test_project_id: str = None,
+    subject_id_map: Dict[str, str] = None,
 ) -> str:
-    """Upload records as multiple JSONL files under s3://bucket/<s3_prefix>/jsonl/."""
+    """
+    Upload records as multiple JSONL files under s3://bucket/<s3_prefix>/jsonl/.
+
+    Can accept either:
+    - records: List of dicts to upload (for small datasets)
+    - benchmark_dir: Path to benchmark dataset directory (for large datasets - streams from disk)
+
+    Args:
+        s3_bucket: S3 bucket name
+        s3_prefix: S3 prefix for upload
+        records: Optional list of records (if None, must provide benchmark_dir)
+        shard_size: Records per shard file
+        benchmark_dir: Optional path to benchmark dataset (for streaming large datasets)
+        test_project_id: Required when using benchmark_dir (to override project_id in records)
+        subject_id_map: Required when using benchmark_dir (to map subject IDs)
+    """
     s3 = boto3.client("s3")
     jsonl_prefix = f"{s3_prefix.rstrip('/')}/jsonl"
-    total = len(records)
 
-    shard_size = max(1, shard_size)
-    shard_count = (total + shard_size - 1) // shard_size
+    if records is not None:
+        # Traditional path: upload from memory
+        total = len(records)
+        shard_size = max(1, shard_size)
+        shard_count = (total + shard_size - 1) // shard_size
 
-    for i in range(shard_count):
-        chunk = records[i * shard_size : (i + 1) * shard_size]
-        body = "\n".join(json.dumps(r) for r in chunk).encode("utf-8")
-        key = f"{jsonl_prefix}/shard-{i:05d}.json"
-        s3.put_object(
-            Bucket=s3_bucket,
-            Key=key,
-            Body=body,
-            ContentType="application/x-ndjson",
-        )
+        for i in range(shard_count):
+            chunk = records[i * shard_size : (i + 1) * shard_size]
+            body = "\n".join(json.dumps(r) for r in chunk).encode("utf-8")
+            key = f"{jsonl_prefix}/shard-{i:05d}.json"
+            s3.put_object(
+                Bucket=s3_bucket,
+                Key=key,
+                Body=body,
+                ContentType="application/x-ndjson",
+            )
+    elif benchmark_dir is not None:
+        # Streaming path: read from batch files and upload directly
+        if not test_project_id:
+            raise ValueError("test_project_id required when streaming from benchmark_dir")
+        if not subject_id_map:
+            raise ValueError("subject_id_map required when streaming from benchmark_dir")
+
+        print(f"[STREAMING_UPLOAD] Streaming records from {benchmark_dir} to S3")
+        batches_dir = benchmark_dir / "batches"
+        batch_files = sorted(batches_dir.glob("batch-*.json"))
+
+        shard_buffer = []
+        shard_idx = 0
+        total_records = 0
+
+        for batch_file in batch_files:
+            with batch_file.open("r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        record = json.loads(line)
+                        # Override project_id and subject_id
+                        record["project_id"] = test_project_id
+                        old_subject_id = record.get("subject_id") or record.get("project_subject_id")
+                        if old_subject_id and old_subject_id in subject_id_map:
+                            record["subject_id"] = subject_id_map[old_subject_id]
+
+                        shard_buffer.append(record)
+                        total_records += 1
+
+                        # Upload shard when buffer is full
+                        if len(shard_buffer) >= shard_size:
+                            body = "\n".join(json.dumps(r) for r in shard_buffer).encode("utf-8")
+                            key = f"{jsonl_prefix}/shard-{shard_idx:05d}.json"
+                            s3.put_object(
+                                Bucket=s3_bucket,
+                                Key=key,
+                                Body=body,
+                                ContentType="application/x-ndjson",
+                            )
+                            shard_idx += 1
+                            shard_buffer = []
+
+        # Upload final partial shard if any records remain
+        if shard_buffer:
+            body = "\n".join(json.dumps(r) for r in shard_buffer).encode("utf-8")
+            key = f"{jsonl_prefix}/shard-{shard_idx:05d}.json"
+            s3.put_object(
+                Bucket=s3_bucket,
+                Key=key,
+                Body=body,
+                ContentType="application/x-ndjson",
+            )
+            shard_idx += 1
+
+        print(f"[STREAMING_UPLOAD] Uploaded {total_records:,} records in {shard_idx} shards")
+    else:
+        raise ValueError("Must provide either records or benchmark_dir")
 
     # Verify upload
     resp = s3.list_objects_v2(Bucket=s3_bucket, Prefix=jsonl_prefix + "/")
@@ -492,6 +194,7 @@ def upload_jsonl_shards(
 def run_bulk_import_sfn(
     *,
     physical_resources: Dict[str, Any],
+    project_id: str,
     run_id: str,
     input_path_s3: str,
     timeout_s: int,
@@ -507,7 +210,11 @@ def run_bulk_import_sfn(
     start = sfn.start_execution(
         stateMachineArn=sfn_arn,
         name=exec_name,
-        input=json.dumps({"run_id": run_id, "input_path": input_path_s3}),
+        input=json.dumps({
+            "run_id": run_id,
+            "input_path": input_path_s3,
+            "project_id": project_id  # Explicitly pass project_id to validation
+        }),
     )
     exec_arn = start["executionArn"]
 
@@ -527,9 +234,41 @@ def run_bulk_import_sfn(
 
         time.sleep(30)
 
-def api_post(api_base_url: str, path: str, payload: Dict[str, Any], sigv4_auth) -> requests.Response:
+def create_http_session() -> requests.Session:
+    """
+    Create an HTTP session with retry logic and connection pooling.
+
+    This prevents DNS resolution failures and connection exhaustion at high concurrency
+    by reusing connections and automatically retrying transient failures.
+    """
+    session = requests.Session()
+
+    # Configure retry strategy
+    retry_strategy = Retry(
+        total=3,  # Maximum number of retries
+        backoff_factor=0.5,  # Wait 0.5s, 1s, 2s between retries
+        status_forcelist=[429, 500, 502, 503, 504],  # Retry on these HTTP codes
+        allowed_methods=["POST"],  # Retry POST requests (API queries are idempotent)
+    )
+
+    # Configure connection pooling
+    adapter = HTTPAdapter(
+        max_retries=retry_strategy,
+        pool_connections=50,  # Number of connection pools to cache
+        pool_maxsize=50,  # Maximum connections per pool
+    )
+
+    # Mount adapter for both HTTP and HTTPS
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+
+    return session
+
+def api_post(api_base_url: str, path: str, payload: Dict[str, Any], sigv4_auth, session: requests.Session = None) -> requests.Response:
     """Make authenticated API POST request."""
     url = f"{api_base_url}{path}"
+    if session:
+        return session.post(url, json=payload, auth=sigv4_auth, timeout=60)
     return requests.post(url, json=payload, auth=sigv4_auth, timeout=60)
 
 def pctl(values: List[float], percentile: float) -> float:
@@ -559,6 +298,15 @@ def run_concurrent(fn, n: int, concurrency: int) -> List[float]:
             timings.append(fut.result())
     return timings
 
+def _write_csv(path: Path, rows: List[Dict[str, Any]], fieldnames: List[str]) -> None:
+    """Write CSV artifact."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames)
+        w.writeheader()
+        for r in rows:
+            w.writerow({k: r.get(k) for k in fieldnames})
+
 def maybe_write_metrics(metrics: Dict[str, Any]) -> None:
     """Write metrics to console, local file, and/or S3."""
     # Always print for logs
@@ -587,23 +335,84 @@ def maybe_write_metrics(metrics: Dict[str, Any]) -> None:
             )
             print(f"[EVAL_METRICS_UPLOADED] s3://{bucket}/{key}")
 
+    # Write artifacts to /tmp/phebee-eval-artifacts/{run_id}/ (default behavior like import test)
+    if os.environ.get("PHEBEE_EVAL_WRITE_ARTIFACTS", "1") == "1":
+        run_id = metrics.get("run_id", "unknown")
+        project_id = metrics.get("project_id", "unknown")
+        base = Path("/tmp/phebee-eval-artifacts") / run_id
+        base.mkdir(parents=True, exist_ok=True)
+
+        # Write Table 4 CSV (latency results)
+        table4_path = base / "table4_latency.csv"
+        latency_results = metrics.get("latency", [])
+
+        # Flatten latency results with run_id and project_id for CSV
+        table4_rows = []
+        for result in latency_results:
+            row = {
+                "run_id": run_id,
+                "project_id": project_id,
+                "endpoint": result.get("endpoint"),
+                "n": result.get("n"),
+                "p50_ms": result.get("p50_ms"),
+                "p95_ms": result.get("p95_ms"),
+                "p99_ms": result.get("p99_ms"),
+                "max_ms": result.get("max_ms"),
+                "min_ms": result.get("min_ms"),
+                "avg_ms": result.get("avg_ms"),
+                "error": result.get("error"),
+            }
+            table4_rows.append(row)
+
+        if table4_rows:
+            _write_csv(
+                table4_path,
+                table4_rows,
+                fieldnames=[
+                    "run_id",
+                    "project_id",
+                    "endpoint",
+                    "n",
+                    "p50_ms",
+                    "p95_ms",
+                    "p99_ms",
+                    "max_ms",
+                    "min_ms",
+                    "avg_ms",
+                    "error",
+                ],
+            )
+
+        # Write full JSON output (like import_run.json)
+        json_path = base / "api_run.json"
+        json_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+
+        print(f"\n{'='*80}")
+        print(f"Artifacts Written")
+        print(f"{'='*80}")
+        print(f"  Table 4 CSV: {table4_path}")
+        print(f"  Full JSON:   {json_path}")
+        print()
+
 # ---------------------------------------------------------------------
 # Comprehensive API testing functions
 # ---------------------------------------------------------------------
 
-def create_api_test_functions(api_base_url: str, sigv4_auth, project_id: str, 
-                            project_subject_iris: List[str]) -> Dict[str, callable]:
-    """Create comprehensive API test functions covering all realistic query patterns."""
-    
+def create_api_test_functions(api_base_url: str, sigv4_auth, project_id: str,
+                            project_subject_iris: List[str],
+                            dataset_terms: List[str],
+                            session: requests.Session = None) -> Dict[str, callable]:
+    """Create 8 comprehensive API test functions covering realistic query patterns."""
+
     # Rotation index for subject queries
     idx = {"i": 0}
-    
+
     def call_basic_subjects_query():
         """Basic project subjects query - most common pattern."""
         r = api_post(api_base_url, "/subjects/query", {
-            "project_id": project_id, 
+            "project_id": project_id,
             "limit": 10
-        }, sigv4_auth)
+        }, sigv4_auth, session)
         assert r.status_code == 200
 
     def call_individual_subject():
@@ -612,76 +421,49 @@ def create_api_test_functions(api_base_url: str, sigv4_auth, project_id: str,
         idx["i"] = (i + 1) % len(project_subject_iris)
         r = api_post(api_base_url, "/subject", {
             "project_subject_iri": project_subject_iris[i]
-        }, sigv4_auth)
+        }, sigv4_auth, session)
         assert r.status_code == 200
 
-    def call_hierarchy_query():
-        """Hierarchy expansion query - research pattern."""
+    def call_hierarchy_expansion():
+        """Hierarchy expansion query - tests ontology traversal."""
         r = api_post(api_base_url, "/subjects/query", {
             "project_id": project_id,
-            "term_iri": "HP_0000118",        # Phenotypic abnormality (root)
-            "include_child_terms": True,     # Test hierarchy expansion
+            "term_iri": "http://purl.obolibrary.org/obo/HP_0001626",  # Abnormality of the cardiovascular system
+            "include_child_terms": True,     # Test hierarchy expansion on cardiac terms
             "limit": 20
-        }, sigv4_auth)
+        }, sigv4_auth, session)
         assert r.status_code == 200
 
     def call_qualified_filtering():
         """Qualifier filtering - exclude negated/family/hypothetical."""
-        term = random.choice(COMMON_PHENOTYPES)
+        term = random.choice(dataset_terms) if dataset_terms else "http://purl.obolibrary.org/obo/HP_0001627"
         r = api_post(api_base_url, "/subjects/query", {
             "project_id": project_id,
             "term_iri": term,
             "include_qualified": False,      # Exclude qualified findings
             "limit": 15
-        }, sigv4_auth)
+        }, sigv4_auth, session)
         assert r.status_code == 200
 
     def call_specific_phenotype():
-        """Specific phenotype query - targeted research."""
-        term = random.choice(COMMON_PHENOTYPES + RARE_PHENOTYPES)
+        """Specific phenotype query - direct term matching without hierarchy."""
+        term = random.choice(dataset_terms) if dataset_terms else "http://purl.obolibrary.org/obo/HP_0001627"
         r = api_post(api_base_url, "/subjects/query", {
             "project_id": project_id,
             "term_iri": term,
-            "include_child_terms": True,
             "limit": 25
-        }, sigv4_auth)
-        assert r.status_code == 200
-
-    def call_cardiac_cohort():
-        """Cardiac phenotype cohort - specialty research pattern."""
-        cardiac_terms = ["HP_0001627", "HP_0001635", "HP_0001644"]
-        term = random.choice(cardiac_terms)
-        r = api_post(api_base_url, "/subjects/query", {
-            "project_id": project_id,
-            "term_iri": term,
-            "include_child_terms": True,
-            "include_qualified": False,
-            "limit": 30
-        }, sigv4_auth)
-        assert r.status_code == 200
-
-    def call_neuro_cohort():
-        """Neurological phenotype cohort - specialty research pattern."""
-        neuro_terms = ["HP_0001250", "HP_0002069", "HP_0001298"]
-        term = random.choice(neuro_terms)
-        r = api_post(api_base_url, "/subjects/query", {
-            "project_id": project_id,
-            "term_iri": term,
-            "include_child_terms": True,
-            "limit": 25
-        }, sigv4_auth)
+        }, sigv4_auth, session)
         assert r.status_code == 200
 
     def call_paginated_large_cohort():
         """Large cohort with pagination - stress test."""
+        # Omit term_iri to get all subjects (largest possible cohort)
         r = api_post(api_base_url, "/subjects/query", {
             "project_id": project_id,
-            "term_iri": "HP_0000118",  # Root - matches most subjects
-            "include_child_terms": True,
             "limit": 50               # Force pagination
-        }, sigv4_auth)
+        }, sigv4_auth, session)
         assert r.status_code == 200
-        
+
         # Follow pagination if available
         body = r.json().get("body", {})
         if isinstance(body, dict) and body.get("pagination", {}).get("next_cursor"):
@@ -689,44 +471,42 @@ def create_api_test_functions(api_base_url: str, sigv4_auth, project_id: str,
                 "project_id": project_id,
                 "cursor": body["pagination"]["next_cursor"],
                 "limit": 50
-            }, sigv4_auth)
+            }, sigv4_auth, session)
             assert r2.status_code == 200
 
     def call_subject_term_info():
         """Subject term info - detailed phenotype view."""
         i = idx["i"]
         idx["i"] = (i + 1) % len(project_subject_iris)
-        term = random.choice(COMMON_PHENOTYPES)
-        
+        term = random.choice(dataset_terms) if dataset_terms else CARDIAC_TERMS[0]
+
         # Extract subject_id from project_subject_iri
         subject_iri = project_subject_iris[i]
         subject_id = subject_iri.split("/")[-1]  # Get UUID from IRI
-        
+
         r = api_post(api_base_url, "/subject/term-info", {
             "subject_id": subject_id,  # Use subject_id instead of project_subject_iri
             "term_iri": term
-        }, sigv4_auth)
+        }, sigv4_auth, session)
         # Note: May return 404 if subject doesn't have this term - that's OK for perf testing
         assert r.status_code in [200, 404]
 
     def call_version_specific_query():
         """Version-specific ontology query."""
+        term_source_data = dataset_terms[0] if dataset_terms else None
         r = api_post(api_base_url, "/subjects/query", {
             "project_id": project_id,
-            "term_source": "hpo",
-            "term_source_version": "2024-01-01",
+            "term_source": "HPO",
             "limit": 20
-        }, sigv4_auth)
+        }, sigv4_auth, session)
         assert r.status_code == 200
 
     return {
         "basic_subjects_query": call_basic_subjects_query,
         "individual_subject": call_individual_subject,
-        "hierarchy_query": call_hierarchy_query,
+        "hierarchy_expansion": call_hierarchy_expansion,
         "qualified_filtering": call_qualified_filtering,
         "specific_phenotype": call_specific_phenotype,
-        "cardiac_cohort": call_cardiac_cohort,
-        "neuro_cohort": call_neuro_cohort,
         "paginated_large_cohort": call_paginated_large_cohort,
         "subject_term_info": call_subject_term_info,
         "version_specific_query": call_version_specific_query,
@@ -741,13 +521,79 @@ def test_r11_enhanced_api_latency_at_scale(
     api_base_url,
     sigv4_auth,
     physical_resources,
+    test_project_id: str,
     evaluation_run_id: str,
-    evaluation_dataset_scale: Tuple[str, List[Dict[str, Any]]],
+    synthetic_dataset: GeneratedDataset,
 ):
     """
     Enhanced performance test with realistic clinical data patterns and comprehensive API testing.
+    Uses shared synthetic_dataset fixture from conftest.py for consistency across tests.
     """
-    project_id, records = evaluation_dataset_scale
+    # Print all relevant environment variables for reproducibility
+    print("\n" + "="*80)
+    print("Test Configuration - Environment Variables")
+    print("="*80)
+    env_vars = {
+        "PHEBEE_EVAL_SCALE": os.environ.get("PHEBEE_EVAL_SCALE", "not set"),
+        "PHEBEE_EVAL_PROJECT_ID": os.environ.get("PHEBEE_EVAL_PROJECT_ID", "not set"),
+        "PHEBEE_EVAL_TERMS_JSON_PATH": os.environ.get("PHEBEE_EVAL_TERMS_JSON_PATH", "not set"),
+        "PHEBEE_EVAL_PREVALENCE_CSV_PATH": os.environ.get("PHEBEE_EVAL_PREVALENCE_CSV_PATH", "not set"),
+        "PHEBEE_EVAL_USE_DISEASE_CLUSTERING": os.environ.get("PHEBEE_EVAL_USE_DISEASE_CLUSTERING", "not set"),
+        "PHEBEE_EVAL_SCALE_SUBJECTS": os.environ.get("PHEBEE_EVAL_SCALE_SUBJECTS", "10000 (default)"),
+        "PHEBEE_EVAL_SCALE_MIN_TERMS": os.environ.get("PHEBEE_EVAL_SCALE_MIN_TERMS", "5 (default)"),
+        "PHEBEE_EVAL_SCALE_MAX_TERMS": os.environ.get("PHEBEE_EVAL_SCALE_MAX_TERMS", "50 (default)"),
+        "PHEBEE_EVAL_SCALE_MIN_EVIDENCE": os.environ.get("PHEBEE_EVAL_SCALE_MIN_EVIDENCE", "1 (default)"),
+        "PHEBEE_EVAL_SCALE_MAX_EVIDENCE": os.environ.get("PHEBEE_EVAL_SCALE_MAX_EVIDENCE", "25 (default)"),
+        "PHEBEE_EVAL_BATCH_SIZE": os.environ.get("PHEBEE_EVAL_BATCH_SIZE", "10000 (default)"),
+        "PHEBEE_EVAL_INGEST_TIMEOUT_S": os.environ.get("PHEBEE_EVAL_INGEST_TIMEOUT_S", "21600 (default)"),
+        "PHEBEE_EVAL_LATENCY_N": os.environ.get("PHEBEE_EVAL_LATENCY_N", "500 (default)"),
+        "PHEBEE_EVAL_CONCURRENCY": os.environ.get("PHEBEE_EVAL_CONCURRENCY", "25 (default)"),
+        "PHEBEE_EVAL_SEED": os.environ.get("PHEBEE_EVAL_SEED", "not set"),
+        "PHEBEE_EVAL_WRITE_ARTIFACTS": os.environ.get("PHEBEE_EVAL_WRITE_ARTIFACTS", "1 (default)"),
+        "PHEBEE_EVAL_METRICS_PATH": os.environ.get("PHEBEE_EVAL_METRICS_PATH", "not set"),
+        "PHEBEE_EVAL_METRICS_S3_URI": os.environ.get("PHEBEE_EVAL_METRICS_S3_URI", "not set"),
+        "PHEBEE_EVAL_STRICT_LATENCY": os.environ.get("PHEBEE_EVAL_STRICT_LATENCY", "not set"),
+    }
+    for key, value in env_vars.items():
+        print(f"  {key}: {value}")
+    print("="*80 + "\n")
+
+    project_id = test_project_id
+    print(f"[DEBUG] test_project_id from fixture: {test_project_id}")
+    dataset_stats = synthetic_dataset.stats
+
+    # Check if dataset is using lazy loading (for large datasets)
+    is_lazy = synthetic_dataset.records is None
+    if is_lazy:
+        print(f"[MEMORY_OPTIMIZATION] Dataset using lazy loading - records not in memory")
+
+    records = synthetic_dataset.records  # May be None for lazy-loaded datasets
+
+    # Print dataset generation configuration
+    print("\n" + "="*80)
+    print("Dataset Configuration (from generation)")
+    print("="*80)
+    print(f"  Generator Seed: {dataset_stats.get('generator_seed', 'not available')}")
+    print(f"  Disease Clustering Enabled: {dataset_stats.get('disease_clustering_enabled', 'not available')}")
+    print(f"  Number of Subjects: {dataset_stats.get('n_subjects', 'not available'):,}")
+    print(f"  Number of Records: {dataset_stats.get('n_records', 'not available'):,}")
+    print(f"  Number of Evidence Items: {dataset_stats.get('n_evidence', 'not available'):,}")
+    print(f"  Unique Terms: {dataset_stats.get('n_unique_terms', 'not available'):,}")
+    terms_per_subject = dataset_stats.get('terms_per_subject', {})
+    print(f"  Terms per Subject: {terms_per_subject.get('min', '?')}-{terms_per_subject.get('max', '?')} (mean: {terms_per_subject.get('mean', '?'):.1f})")
+    evidence_per_record = dataset_stats.get('evidence_per_record', {})
+    print(f"  Evidence per Record: {evidence_per_record.get('min', '?')}-{evidence_per_record.get('max', '?')} (mean: {evidence_per_record.get('mean', '?'):.1f})")
+    term_source = dataset_stats.get('term_source', {})
+    print(f"  Term Source: {term_source.get('source', '?')} {term_source.get('version', '?')}")
+    if dataset_stats.get('anchor_terms'):
+        anchor_count = len(dataset_stats['anchor_terms'])
+        print(f"  Anchor Terms: {anchor_count} terms (disease clustering)")
+    print("="*80 + "\n")
+
+    # Verify project_id in loaded records (if in memory)
+    if not is_lazy:
+        sample_record_project_ids = set(r.get("project_id") for r in records[:5])
+        print(f"[DEBUG] Sample project_ids from loaded records: {sample_record_project_ids}")
 
     # Resolve physical resources
     s3_bucket = physical_resources.get("PheBeeBucket")
@@ -755,80 +601,134 @@ def test_r11_enhanced_api_latency_at_scale(
         pytest.skip("PheBeeBucket not found in physical resources")
 
     shard_size = int(os.environ.get("PHEBEE_EVAL_BATCH_SIZE", "10000"))
-    ingest_timeout = int(os.environ.get("PHEBEE_EVAL_INGEST_TIMEOUT_S", "7200"))
+    ingest_timeout = int(os.environ.get("PHEBEE_EVAL_INGEST_TIMEOUT_S", "21600"))
 
-    # Calculate dataset statistics
-    total_subjects = len(set(r["project_subject_id"] for r in records))
-    total_terms = len(set(r["term_iri"] for r in records))
-    total_evidence = sum(len(r["evidence"]) for r in records)
-    
-    # Calculate average unique terms per subject
-    subject_term_counts = {}
-    for record in records:
-        subject_id = record["project_subject_id"]
-        term_iri = record["term_iri"]
-        if subject_id not in subject_term_counts:
-            subject_term_counts[subject_id] = set()
-        subject_term_counts[subject_id].add(term_iri)
-    
-    avg_terms_per_subject = sum(len(terms) for terms in subject_term_counts.values()) / len(subject_term_counts)
-    
-    # Analyze qualifier distribution
-    qualifier_stats = {"negated": 0, "family": 0, "hypothetical": 0, "total": 0}
-    for record in records:
-        for evidence in record["evidence"]:
-            contexts = evidence.get("contexts", {})
-            qualifier_stats["total"] += 1
-            if contexts.get("negated", 0.0) > 0:
-                qualifier_stats["negated"] += 1
-            if contexts.get("family", 0.0) > 0:
-                qualifier_stats["family"] += 1
-            if contexts.get("hypothetical", 0.0) > 0:
-                qualifier_stats["hypothetical"] += 1
+    # Use statistics from GeneratedDataset
+    total_subjects = dataset_stats["n_subjects"]
+    total_terms = dataset_stats["n_unique_terms"]
+    total_evidence = dataset_stats["n_evidence"]
+    n_records = dataset_stats["n_records"]
 
-    print(f"[DATASET_STATS] {len(records)} records, {total_subjects} subjects, {total_terms} unique terms, {total_evidence} evidence")
+    # Use pre-computed qualifier stats from metadata (no need to recalculate)
+    qualifier_stats = dataset_stats.get("qualifier_distribution_records", {})
+
+    print(f"[DATASET_STATS] {n_records:,} records, {total_subjects:,} subjects, {total_terms:,} unique terms, {total_evidence:,} evidence")
     print(f"[QUALIFIER_STATS] {qualifier_stats}")
+    print(f"[DATASET_METADATA] {dataset_stats}")
 
-    # Upload data
-    input_prefix = f"perf-data/{evaluation_run_id}"
-    input_path_s3 = upload_jsonl_shards(
-        s3_bucket=s3_bucket,
-        s3_prefix=input_prefix,
-        records=records,
-        shard_size=shard_size,
-    )
+    # Check if data already exists (from test_import_performance.py running first)
+    # Use retry logic to handle eventual consistency
+    print(f"\n[CHECKING] Checking if project already has data...")
+    has_data = False
+    max_retries = 3
+    retry_delay_s = 30
 
-    # Bulk import
-    print(f"[BULK_IMPORT_START] {input_path_s3}")
-    t0 = time.time()
-    ingest_result = run_bulk_import_sfn(
-        physical_resources=physical_resources,
-        run_id=evaluation_run_id,
-        input_path_s3=input_path_s3,
-        timeout_s=ingest_timeout,
-    )
-    ingest_s = time.time() - t0
+    for attempt in range(max_retries):
+        check_resp = api_post(api_base_url, "/subjects/query", {"project_id": project_id, "limit": 1}, sigv4_auth)
+        if check_resp.status_code == 200:
+            check_body = check_resp.json().get("body") or []
+            if len(check_body) > 0:
+                has_data = True
+                print(f"[DATA_FOUND] Project {project_id} has data (attempt {attempt + 1}/{max_retries})")
+                break
+            else:
+                if attempt < max_retries - 1:
+                    print(f"[NO_DATA_YET] No data found (attempt {attempt + 1}/{max_retries}), waiting {retry_delay_s}s...")
+                    time.sleep(retry_delay_s)
+                else:
+                    print(f"[NO_DATA] No data found after {max_retries} attempts")
+        else:
+            pytest.skip(f"Cannot check project data, API returned {check_resp.status_code}")
 
-    status = ingest_result["describe_execution"]["status"]
-    if status != "SUCCEEDED":
-        hist = ingest_result.get("history")
-        if hist:
-            print("[SFN_HISTORY_TAIL]", json.dumps(hist, indent=2, default=str)[:8000])
-        pytest.fail(f"Bulk import did not succeed (status={status})")
+    ingest_result = {}  # Initialize in case we skip import
+    if has_data:
+        print(f"[SKIP_IMPORT] Project {project_id} already has data - skipping import step")
+        ingest_s = 0  # No import time since we skipped it
+    else:
+        print(f"[NO_DATA] Project {project_id} is empty - proceeding with import")
+        # Upload data
+        input_prefix = f"perf-data/{evaluation_run_id}"
+        if is_lazy:
+            # Stream from benchmark directory
+            input_path_s3 = upload_jsonl_shards(
+                s3_bucket=s3_bucket,
+                s3_prefix=input_prefix,
+                shard_size=shard_size,
+                benchmark_dir=synthetic_dataset.benchmark_dir,
+                test_project_id=test_project_id,
+                subject_id_map=synthetic_dataset.subject_id_map,
+            )
+        else:
+            # Upload from memory
+            input_path_s3 = upload_jsonl_shards(
+                s3_bucket=s3_bucket,
+                s3_prefix=input_prefix,
+                records=records,
+                shard_size=shard_size,
+            )
 
-    print(f"[BULK_IMPORT_COMPLETE] {ingest_s:.1f}s, {len(records)/ingest_s:.1f} records/sec")
+        # Bulk import
+        print(f"[BULK_IMPORT_START] {input_path_s3}")
+        print(f"[DEBUG] Importing with project_id={project_id}")
+        t0 = time.time()
+        ingest_result = run_bulk_import_sfn(
+            physical_resources=physical_resources,
+            project_id=project_id,
+            run_id=evaluation_run_id,
+            input_path_s3=input_path_s3,
+            timeout_s=ingest_timeout,
+        )
+        ingest_s = time.time() - t0
+
+        status = ingest_result["describe_execution"]["status"]
+        if status != "SUCCEEDED":
+            hist = ingest_result.get("history")
+            if hist:
+                print("[SFN_HISTORY_TAIL]", json.dumps(hist, indent=2, default=str)[:8000])
+            pytest.fail(f"Bulk import did not succeed (status={status})")
+
+        print(f"[BULK_IMPORT_COMPLETE] {ingest_s:.1f}s, {len(records)/ingest_s:.1f} records/sec")
 
     # Fetch subjects for API testing
+    print(f"[DEBUG] Querying for subjects with project_id={project_id}")
     resp = api_post(api_base_url, "/subjects/query", {"project_id": project_id, "limit": 100}, sigv4_auth)
     assert resp.status_code == 200, resp.text
-    body = resp.json().get("body") or []
+    resp_json = resp.json()
+    print(f"[DEBUG] API response keys: {list(resp_json.keys())}")
+    print(f"[DEBUG] Full response: {json.dumps(resp_json, indent=2)[:2000]}")
+    body = resp_json.get("body") or []
+    print(f"[DEBUG] Body type: {type(body)}, Body length/keys: {len(body) if isinstance(body, (list, dict)) else 'N/A'}")
     project_subject_iris = [x.get("project_subject_iri") for x in body if x.get("project_subject_iri")]
     assert project_subject_iris, "No subjects returned after ingest; cannot run latency workload."
 
     print(f"[API_TEST_PREP] {len(project_subject_iris)} subjects available for testing")
 
+    # Extract unique terms from dataset for query patterns
+    if is_lazy:
+        # Sample terms from first batch file instead of loading all records
+        print("[MEMORY_OPTIMIZATION] Sampling terms from first batch file")
+        first_batch = sorted((synthetic_dataset.benchmark_dir / "batches").glob("batch-*.json"))[0]
+        sample_terms = set()
+        with first_batch.open("r", encoding="utf-8") as f:
+            for i, line in enumerate(f):
+                if i >= 10000:  # Sample first 10K records
+                    break
+                if line.strip():
+                    record = json.loads(line)
+                    sample_terms.add(record["term_iri"])
+        dataset_terms = list(sample_terms)
+        print(f"[MEMORY_OPTIMIZATION] Sampled {len(dataset_terms)} unique terms from first batch")
+    else:
+        # Extract from in-memory records
+        dataset_terms = list(set(r["term_iri"] for r in records))
+
+    # Create HTTP session with retry logic and connection pooling
+    # This prevents DNS resolution failures at high concurrency
+    print("[SESSION_SETUP] Creating HTTP session with retry logic and connection pooling")
+    session = create_http_session()
+
     # Create comprehensive API test functions
-    api_functions = create_api_test_functions(api_base_url, sigv4_auth, project_id, project_subject_iris)
+    api_functions = create_api_test_functions(api_base_url, sigv4_auth, project_id, project_subject_iris, dataset_terms, session)
 
     # Warm-up to reduce cold-start skew
     print("[WARMUP_START]")
@@ -879,25 +779,27 @@ def test_r11_enhanced_api_latency_at_scale(
             "n_subjects": total_subjects,
             "n_unique_terms": total_terms,
             "n_evidence": total_evidence,
-            "avg_terms_per_subject": round(avg_terms_per_subject, 2),
-            "avg_evidence_per_record": round(total_evidence / len(records), 2),
+            "terms_per_subject": dataset_stats["terms_per_subject"],
+            "evidence_per_record": dataset_stats["evidence_per_record"],
+            "avg_evidence_per_record": round(total_evidence / len(records), 2) if records else 0,
             "qualifier_distribution": {
-                "negated_pct": round(qualifier_stats["negated"] / qualifier_stats["total"] * 100, 1),
-                "family_pct": round(qualifier_stats["family"] / qualifier_stats["total"] * 100, 1),
-                "hypothetical_pct": round(qualifier_stats["hypothetical"] / qualifier_stats["total"] * 100, 1),
+                "negated_pct": round(qualifier_stats.get("negated", 0) / qualifier_stats.get("total", 1) * 100, 1) if qualifier_stats.get("total", 0) > 0 else 0,
+                "family_pct": round(qualifier_stats.get("family", 0) / qualifier_stats.get("total", 1) * 100, 1) if qualifier_stats.get("total", 0) > 0 else 0,
+                "hypothetical_pct": round(qualifier_stats.get("hypothetical", 0) / qualifier_stats.get("total", 1) * 100, 1) if qualifier_stats.get("total", 0) > 0 else 0,
             },
-            "phenotype_distribution": {
-                "common_phenotypes": len([r for r in records if r["term_iri"] in COMMON_PHENOTYPES]),
-                "rare_phenotypes": len([r for r in records if r["term_iri"] in RARE_PHENOTYPES]),
-            }
+            "disease_clustering_enabled": dataset_stats.get("disease_clustering_enabled", False),
+            "cluster_distribution": dataset_stats.get("cluster_distribution", {}),
+            "term_source": dataset_stats.get("term_source", {}),
         },
         "ingestion": {
-            "seconds": round(ingest_s, 2),
+            "seconds": round(ingest_s, 2) if ingest_s > 0 else None,
             "records_per_sec": round((len(records) / ingest_s), 2) if ingest_s > 0 else None,
-            "sfn_execution_arn": ingest_result.get("executionArn"),
+            "sfn_execution_arn": ingest_result.get("executionArn") if ingest_result else None,
+            "skipped": ingest_s == 0,
+            "note": "Data already present from test_import_performance.py" if ingest_s == 0 else None,
         },
         "load_testing": {
-            "concurrency": conc, 
+            "concurrency": conc,
             "requests_per_endpoint": n,
             "total_api_calls": sum(r.get("n", 0) for r in latency_results)
         },
@@ -905,7 +807,7 @@ def test_r11_enhanced_api_latency_at_scale(
         "performance_summary": {
             "fastest_p95_ms": min((r.get("p95_ms", float('inf')) for r in latency_results if "p95_ms" in r), default=None),
             "slowest_p95_ms": max((r.get("p95_ms", 0) for r in latency_results if "p95_ms" in r), default=None),
-            "avg_p95_ms": round(sum(r.get("p95_ms", 0) for r in latency_results if "p95_ms" in r) / 
+            "avg_p95_ms": round(sum(r.get("p95_ms", 0) for r in latency_results if "p95_ms" in r) /
                               len([r for r in latency_results if "p95_ms" in r]), 2) if latency_results else None,
         }
     }

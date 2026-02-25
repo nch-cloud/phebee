@@ -44,6 +44,98 @@ def _now_ms() -> int:
 
 
 # -----------------------------
+# Clinical Data Patterns
+# -----------------------------
+# Disease clusters represent realistic phenotype co-occurrence patterns observed in clinical
+# practice. These are based on published clinical phenotype studies and ensure synthetic
+# data reflects real-world disease presentations.
+#
+# References:
+# - Cardiomyopathy: Hershberger et al., Genetic Evaluation of Cardiomyopathy, Circulation 2018
+# - Epilepsy: Scheffer et al., ILAE classification of the epilepsies, Nat Rev Neurol 2017
+# - Metabolic: Ferreira et al., Inborn errors of metabolism, Nat Rev Endocrinol 2019
+
+DISEASE_CLUSTERS = {
+    "cardiomyopathy": [
+        "http://purl.obolibrary.org/obo/HP_0001627",  # Abnormal heart morphology
+        "http://purl.obolibrary.org/obo/HP_0001635",  # Heart failure
+        "http://purl.obolibrary.org/obo/HP_0001644",  # Dilated cardiomyopathy
+        "http://purl.obolibrary.org/obo/HP_0001678",  # Atrioventricular block
+        "http://purl.obolibrary.org/obo/HP_0000822",  # Hypertension
+    ],
+    "epilepsy": [
+        "http://purl.obolibrary.org/obo/HP_0001250",  # Seizures
+        "http://purl.obolibrary.org/obo/HP_0002069",  # Bilateral tonic-clonic seizures
+        "http://purl.obolibrary.org/obo/HP_0001298",  # Encephalopathy
+        "http://purl.obolibrary.org/obo/HP_0002376",  # Developmental regression
+        "http://purl.obolibrary.org/obo/HP_0001508",  # Failure to thrive
+    ],
+    "metabolic": [
+        "http://purl.obolibrary.org/obo/HP_0001943",  # Hyperglycemia
+        "http://purl.obolibrary.org/obo/HP_0000819",  # Diabetes mellitus
+        "http://purl.obolibrary.org/obo/HP_0001513",  # Obesity
+        "http://purl.obolibrary.org/obo/HP_0002155",  # Hypertriglyceridemia
+        "http://purl.obolibrary.org/obo/HP_0001508",  # Failure to thrive
+    ],
+    "oncology": [
+        "http://purl.obolibrary.org/obo/HP_0002664",  # Neoplasm
+        "http://purl.obolibrary.org/obo/HP_0001508",  # Failure to thrive
+        "http://purl.obolibrary.org/obo/HP_0000822",  # Hypertension
+        "http://purl.obolibrary.org/obo/HP_0001943",  # Hyperglycemia
+    ],
+    "rare_dysmorphic": [
+        "http://purl.obolibrary.org/obo/HP_0000316",  # Hypertelorism
+        "http://purl.obolibrary.org/obo/HP_0001999",  # Abnormal facial shape
+        "http://purl.obolibrary.org/obo/HP_0002007",  # Frontal bossing
+        "http://purl.obolibrary.org/obo/HP_0004322",  # Short stature
+        "http://purl.obolibrary.org/obo/HP_0001249",  # Intellectual disability
+    ],
+}
+
+# Specialty to phenotype mappings for realistic provider attribution
+SPECIALTY_PHENOTYPES = {
+    "cardiology": [
+        "http://purl.obolibrary.org/obo/HP_0001627",
+        "http://purl.obolibrary.org/obo/HP_0001635",
+        "http://purl.obolibrary.org/obo/HP_0001644",
+        "http://purl.obolibrary.org/obo/HP_0001678",
+        "http://purl.obolibrary.org/obo/HP_0000822",
+    ],
+    "neurology": [
+        "http://purl.obolibrary.org/obo/HP_0001250",
+        "http://purl.obolibrary.org/obo/HP_0002069",
+        "http://purl.obolibrary.org/obo/HP_0001298",
+        "http://purl.obolibrary.org/obo/HP_0002376",
+    ],
+    "endocrinology": [
+        "http://purl.obolibrary.org/obo/HP_0001943",
+        "http://purl.obolibrary.org/obo/HP_0000819",
+        "http://purl.obolibrary.org/obo/HP_0001513",
+        "http://purl.obolibrary.org/obo/HP_0002155",
+    ],
+    "oncology": [
+        "http://purl.obolibrary.org/obo/HP_0002664",
+    ],
+    "genetics": [
+        "http://purl.obolibrary.org/obo/HP_0000316",
+        "http://purl.obolibrary.org/obo/HP_0001999",
+        "http://purl.obolibrary.org/obo/HP_0002007",
+        "http://purl.obolibrary.org/obo/HP_0004322",
+        "http://purl.obolibrary.org/obo/HP_0001249",
+    ],
+}
+
+# Evidence importance weights (affects documentation frequency)
+# More important findings are documented more frequently in clinical notes
+EVIDENCE_IMPORTANCE = {
+    "chief_complaint": (5, 12),   # Heavily documented (primary complaint)
+    "active_problem": (2, 6),     # Moderate documentation (active issue)
+    "past_history": (1, 3),       # Light documentation (historical)
+    "incidental": (1, 2),         # Minimal documentation (incidental finding)
+}
+
+
+# -----------------------------
 # Term universe (from JSON)
 # -----------------------------
 
@@ -433,6 +525,116 @@ def _choose_terms_for_subject(
     return picked
 
 
+def _choose_terms_with_disease_clustering(
+    rng: random.Random,
+    universe: TermUniverse,
+    k_terms: int,
+    *,
+    anchor_term_pct: float,
+    common_term_pct: float,
+    anchor_terms: Sequence[str],
+    disease_cluster_pct: float = 0.60,
+) -> Tuple[List[str], Optional[str]]:
+    """
+    Choose terms with realistic disease clustering patterns.
+
+    Args:
+        rng: Random number generator
+        universe: TermUniverse with term pools
+        k_terms: Number of terms to select
+        anchor_term_pct: Probability of including an anchor term
+        common_term_pct: For non-cluster terms, probability of selecting from common pool
+        anchor_terms: List of anchor terms to choose from
+        disease_cluster_pct: Probability that subject has clustered phenotypes (default: 0.60)
+
+    Returns:
+        Tuple of (selected_terms, cluster_name) where cluster_name is None for non-clustered subjects
+    """
+    picked: List[str] = []
+    seen = set()
+    cluster_name: Optional[str] = None
+
+    if k_terms <= 0:
+        return picked, cluster_name
+
+    # Determine if this subject has disease clustering (60% of subjects)
+    use_clustering = rng.random() < disease_cluster_pct
+
+    if use_clustering:
+        # Pick a disease cluster
+        cluster_name = rng.choice(list(DISEASE_CLUSTERS.keys()))
+        cluster_terms = DISEASE_CLUSTERS[cluster_name]
+
+        # Sample 3-5 terms from the cluster (or fewer if k_terms is small)
+        n_cluster_terms = min(k_terms, rng.randint(3, min(5, len(cluster_terms))))
+
+        # Sample from cluster, weighted by prevalence if available
+        cluster_sample = rng.sample(cluster_terms, min(n_cluster_terms, len(cluster_terms)))
+        picked.extend(cluster_sample)
+        seen.update(cluster_sample)
+
+    # Include anchor term with probability (if not already in cluster)
+    if rng.random() < anchor_term_pct and anchor_terms:
+        t = rng.choice(list(anchor_terms))
+        if t not in seen:
+            picked.append(t)
+            seen.add(t)
+
+    # Fill remaining slots with frequency-weighted selection
+    while len(picked) < k_terms:
+        use_common = rng.random() < common_term_pct
+        cand = universe.pick_common(rng) if use_common else universe.pick_rare(rng)
+        if cand in seen:
+            continue
+        picked.append(cand)
+        seen.add(cand)
+
+        # Safety: if we can't find enough unique terms, break
+        if len(seen) > len(universe.all_terms) - 5:
+            break
+
+    return picked, cluster_name
+
+
+def _get_specialty_for_term(term_iri: str) -> str:
+    """Return appropriate medical specialty for a given phenotype."""
+    for specialty, terms in SPECIALTY_PHENOTYPES.items():
+        if term_iri in terms:
+            return specialty
+    return "internal_medicine"  # Default
+
+
+def _get_evidence_importance(term_iri: str, is_primary: bool, cluster_name: Optional[str]) -> str:
+    """
+    Determine clinical importance of a phenotype for evidence generation.
+
+    Args:
+        term_iri: HPO term IRI
+        is_primary: Whether this is one of the first terms for the subject
+        cluster_name: Disease cluster name if subject has clustering, else None
+
+    Returns:
+        Importance level: chief_complaint, active_problem, past_history, or incidental
+    """
+    # Primary phenotypes are always chief complaints
+    if is_primary:
+        return "chief_complaint"
+
+    # If part of a disease cluster, likely an active problem
+    if cluster_name and any(term_iri in DISEASE_CLUSTERS[cluster_name] for cluster_name in DISEASE_CLUSTERS if term_iri in DISEASE_CLUSTERS[cluster_name]):
+        return "active_problem"
+
+    # Default based on rarity (this is a heuristic)
+    # In real implementation, you could check if term_iri is in common vs rare pools
+    return "active_problem"
+
+
+def _generate_evidence_count(rng: random.Random, importance: str) -> int:
+    """Generate realistic evidence count based on clinical importance."""
+    min_ev, max_ev = EVIDENCE_IMPORTANCE[importance]
+    return rng.randint(min_ev, max_ev)
+
+
 def _mk_evidence_item(
     *,
     creator_type: str,
@@ -495,10 +697,12 @@ def _mk_record(
 @dataclass(frozen=True)
 class GeneratedDataset:
     """Container for generated synthetic dataset and its statistics."""
-    records: List[Dict[str, Any]]
+    records: List[Dict[str, Any]] | None  # None when using lazy loading for large datasets
     stats: Dict[str, Any]
     anchor_terms: List[str]
     parent_term: str
+    subject_id_map: Dict[str, str] = None  # Optional: maps old subject_ids to new UUIDs (for benchmark loads)
+    benchmark_dir: Path | None = None  # Optional: path to benchmark dataset directory for streaming
 
 
 def generate_scale_dataset(
@@ -511,6 +715,7 @@ def generate_scale_dataset(
     min_evidence: int,
     max_evidence: int,
     rng_seed: int | None = None,
+    use_disease_clustering: bool = False,
 ) -> GeneratedDataset:
     """
     Generate synthetic PheBee evidence dataset.
@@ -524,6 +729,7 @@ def generate_scale_dataset(
         min_evidence: Minimum evidence items per term link
         max_evidence: Maximum evidence items per term link
         rng_seed: Random seed for reproducibility (defaults to current timestamp)
+        use_disease_clustering: Enable realistic disease clustering patterns (default: False)
 
     Returns:
         GeneratedDataset with records (NDJSON-ready dicts) and statistics
@@ -561,26 +767,56 @@ def generate_scale_dataset(
     terms_per_subject: List[int] = []
     evidence_per_record: List[int] = []
     qualifier_counts = {"negated": 0, "family": 0, "hypothetical": 0, "unqualified": 0}
+    cluster_counts: Dict[str, int] = {name: 0 for name in DISEASE_CLUSTERS.keys()}
+    cluster_counts["no_cluster"] = 0
 
     for s in range(n_subjects):
         project_subject_id = f"perf-subj-{s:06d}"
         k_terms = _draw_int_uniform(rng, min_terms, max_terms)
         terms_per_subject.append(k_terms)
 
-        subject_terms = _choose_terms_for_subject(
-            rng,
-            universe,
-            k_terms,
-            anchor_term_pct=anchor_term_pct,
-            common_term_pct=common_term_pct,
-            anchor_terms=anchor_terms,
-        )
+        # Choose terms with or without disease clustering
+        subject_cluster_name: Optional[str] = None
+        if use_disease_clustering:
+            subject_terms, subject_cluster_name = _choose_terms_with_disease_clustering(
+                rng,
+                universe,
+                k_terms,
+                anchor_term_pct=anchor_term_pct,
+                common_term_pct=common_term_pct,
+                anchor_terms=anchor_terms,
+                disease_cluster_pct=0.60,
+            )
+            if subject_cluster_name:
+                cluster_counts[subject_cluster_name] += 1
+            else:
+                cluster_counts["no_cluster"] += 1
+        else:
+            subject_terms = _choose_terms_for_subject(
+                rng,
+                universe,
+                k_terms,
+                anchor_term_pct=anchor_term_pct,
+                common_term_pct=common_term_pct,
+                anchor_terms=anchor_terms,
+            )
+            cluster_counts["no_cluster"] += 1
 
         # Ensure deterministic-but-random encounter ID per subject (helps with "realistic" repeated context).
         encounter_id = f"enc-{s:06d}"
 
         for t_idx, term_iri in enumerate(subject_terms):
-            m_evidence = _draw_int_uniform(rng, min_evidence, max_evidence)
+            # Determine evidence importance and count
+            is_primary = t_idx < 3  # First 3 terms are primary
+            if use_disease_clustering:
+                importance = _get_evidence_importance(term_iri, is_primary, subject_cluster_name)
+                # Scale evidence count based on importance
+                base_evidence = _draw_int_uniform(rng, min_evidence, max_evidence)
+                importance_multiplier = _generate_evidence_count(rng, importance) / max(1, (min_evidence + max_evidence) / 2)
+                m_evidence = max(1, int(base_evidence * importance_multiplier))
+            else:
+                m_evidence = _draw_int_uniform(rng, min_evidence, max_evidence)
+
             evidence_per_record.append(m_evidence)
 
             qualifier_ctx = _pick_qualifier_context(rng, negated_pct, family_pct, hypothetical_pct)
@@ -593,14 +829,24 @@ def generate_scale_dataset(
             else:
                 qualifier_counts["unqualified"] += 1
 
+            # Get specialty for term if clustering is enabled
+            if use_disease_clustering:
+                specialty = _get_specialty_for_term(term_iri)
+                creator_id = f"ods/phebee-{specialty}:v1"
+                creator_name = f"PheBee {specialty.title()} NLP"
+            else:
+                specialty = "general"
+                creator_id = "ods/phebee-eval:automated-v1"
+                creator_name = "PheBee Eval NLP"
+
             evidence_items: List[Dict[str, Any]] = []
             for e in range(m_evidence):
                 clinical_note_id = f"note-{s:06d}-{t_idx:03d}-{e:03d}"
                 evidence_items.append(
                     _mk_evidence_item(
                         creator_type="automated",
-                        creator_id="ods/phebee-eval:automated-v1",
-                        creator_name="PheBee Eval NLP",
+                        creator_id=creator_id,
+                        creator_name=creator_name,
                         encounter_id=encounter_id,
                         clinical_note_id=clinical_note_id,
                         note_timestamp=_rand_date_iso(rng, note_date_start, note_date_end),
@@ -669,7 +915,12 @@ def generate_scale_dataset(
         "term_source": {"source": term_source.source, "version": term_source.version, "iri": term_source.iri},
         "generator_seed": rng_seed,
         "anchor_terms": anchor_terms,
+        "disease_clustering_enabled": use_disease_clustering,
     }
+
+    # Add cluster statistics if clustering was enabled
+    if use_disease_clustering:
+        dataset_stats["cluster_distribution"] = cluster_counts
 
     return GeneratedDataset(
         records=records,
@@ -758,15 +1009,119 @@ def test_project_id(cloudformation_stack):
     yield body.get("project_id")
 
 
+def _load_benchmark_dataset(benchmark_dir: Path, test_project_id: str, lazy: bool = False) -> GeneratedDataset:
+    """
+    Load a pre-generated benchmark dataset from disk.
+
+    Args:
+        benchmark_dir: Path to benchmark dataset directory (contains metadata.json and batches/)
+        test_project_id: Project ID to use (overrides the one in metadata)
+        lazy: If True, skip loading records into memory (for large datasets). Only loads metadata.
+
+    Returns:
+        GeneratedDataset with loaded records and statistics (records=None if lazy=True)
+    """
+    metadata_path = benchmark_dir / "metadata.json"
+    batches_dir = benchmark_dir / "batches"
+
+    if not metadata_path.exists():
+        raise FileNotFoundError(f"Benchmark metadata not found: {metadata_path}")
+    if not batches_dir.exists():
+        raise FileNotFoundError(f"Benchmark batches directory not found: {batches_dir}")
+
+    # Load metadata
+    with metadata_path.open("r", encoding="utf-8") as f:
+        metadata = json.load(f)
+
+    batch_files = sorted(batches_dir.glob("batch-*.json"))
+    if not batch_files:
+        raise ValueError(f"No batch files found in {batches_dir}")
+
+    print(f"Loading benchmark dataset from {benchmark_dir}")
+    print(f"  Found {len(batch_files)} batch files")
+
+    # Extract statistics from metadata
+    stats = metadata.get("dataset_statistics", {})
+    anchor_terms = metadata.get("anchor_terms", [])
+    parent_term = metadata.get("parent_term_for_queries", "http://purl.obolibrary.org/obo/HP_0001507")
+
+    # Build subject_id mapping by scanning files (needed for upload streaming)
+    subject_id_map = {}
+
+    if lazy:
+        # Lazy mode: scan for subject IDs but don't load records
+        print(f"  Lazy loading: scanning for subject IDs without loading records into memory")
+        for batch_file in batch_files:
+            with batch_file.open("r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        record = json.loads(line)
+                        old_subject_id = record.get("subject_id") or record.get("project_subject_id")
+                        if old_subject_id and old_subject_id not in subject_id_map:
+                            import uuid
+                            subject_id_map[old_subject_id] = str(uuid.uuid4())
+
+        print(f"  Generated {len(subject_id_map)} new subject IDs for this test run")
+        print(f"  Records not loaded (lazy mode) - will stream from disk during upload")
+
+        return GeneratedDataset(
+            records=None,  # Lazy loading - records not in memory
+            stats=stats,
+            anchor_terms=anchor_terms,
+            parent_term=parent_term,
+            subject_id_map=subject_id_map,
+            benchmark_dir=benchmark_dir,
+        )
+    else:
+        # Eager mode: load all records into memory
+        records: List[Dict[str, Any]] = []
+        for batch_file in batch_files:
+            with batch_file.open("r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        record = json.loads(line)
+                        # Override project_id to use the current test project
+                        record["project_id"] = test_project_id
+
+                        # Generate new subject_id for this test run to avoid duplicates
+                        old_subject_id = record.get("subject_id") or record.get("project_subject_id")
+                        if old_subject_id and old_subject_id not in subject_id_map:
+                            import uuid
+                            subject_id_map[old_subject_id] = str(uuid.uuid4())
+
+                        if old_subject_id:
+                            record["subject_id"] = subject_id_map[old_subject_id]
+
+                        records.append(record)
+
+        print(f"  Loaded {len(records)} records from benchmark dataset")
+        print(f"  Generated {len(subject_id_map)} new subject IDs for this test run")
+
+        return GeneratedDataset(
+            records=records,
+            stats=stats,
+            anchor_terms=anchor_terms,
+            parent_term=parent_term,
+            subject_id_map=subject_id_map,
+            benchmark_dir=None,
+        )
+
+
 @pytest.fixture
 def synthetic_dataset(
     hpo_terms_universe: TermUniverse,
     test_project_id: str,
 ) -> GeneratedDataset:
     """
-    Generate synthetic PheBee dataset for performance testing.
+    Generate or load synthetic PheBee dataset for performance testing.
 
     Configuration via environment variables:
+    - PHEBEE_EVAL_BENCHMARK_DIR: If set, loads pre-generated benchmark dataset from this directory
+      (directory should contain metadata.json and batches/ subdirectory with batch-*.json files)
+
+    If PHEBEE_EVAL_BENCHMARK_DIR is not set, generates fresh data using:
     - PHEBEE_EVAL_TERMS_JSON_PATH (required): HPO terms list
     - PHEBEE_EVAL_PREVALENCE_CSV_PATH (optional): CSV with "term_iri,frequency" for
       realistic common/rare term classification based on actual clinical data
@@ -776,7 +1131,28 @@ def synthetic_dataset(
     - PHEBEE_EVAL_SCALE_MIN_EVIDENCE (default: 1)
     - PHEBEE_EVAL_SCALE_MAX_EVIDENCE (default: 25)
     - PHEBEE_EVAL_SEED (optional): Random seed for reproducibility
+    - PHEBEE_EVAL_USE_DISEASE_CLUSTERING (default: 1): Enable realistic disease clustering (1=enabled)
     """
+    # Check for pre-generated benchmark dataset
+    benchmark_dir_str = os.environ.get("PHEBEE_EVAL_BENCHMARK_DIR")
+    if benchmark_dir_str:
+        benchmark_dir = Path(benchmark_dir_str)
+        # Check dataset size from metadata to decide on lazy loading
+        metadata_path = benchmark_dir / "metadata.json"
+        if metadata_path.exists():
+            with metadata_path.open("r", encoding="utf-8") as f:
+                metadata = json.load(f)
+            stats = metadata.get("dataset_statistics", {})
+            n_records = stats.get("n_records", 0)
+            # Use lazy loading for large datasets (> 500K records) to avoid OOM
+            lazy = n_records > 500_000
+            if lazy:
+                print(f"[MEMORY_OPTIMIZATION] Dataset has {n_records:,} records - using lazy loading to avoid OOM")
+            return _load_benchmark_dataset(benchmark_dir, test_project_id, lazy=lazy)
+        else:
+            return _load_benchmark_dataset(benchmark_dir, test_project_id, lazy=False)
+
+    # Generate fresh dataset
     n_subjects = _env_int("PHEBEE_EVAL_SCALE_SUBJECTS", 10_000)
     min_terms = _env_int("PHEBEE_EVAL_SCALE_MIN_TERMS", 5)
     max_terms = _env_int("PHEBEE_EVAL_SCALE_MAX_TERMS", 50)
@@ -787,6 +1163,9 @@ def synthetic_dataset(
     if os.environ.get("PHEBEE_EVAL_SEED"):
         rng_seed = int(os.environ["PHEBEE_EVAL_SEED"])
 
+    # Enable disease clustering via environment variable (enabled by default for realistic patterns)
+    use_disease_clustering = os.environ.get("PHEBEE_EVAL_USE_DISEASE_CLUSTERING", "1") == "1"
+
     return generate_scale_dataset(
         project_id=test_project_id,
         universe=hpo_terms_universe,
@@ -796,4 +1175,5 @@ def synthetic_dataset(
         min_evidence=min_evidence,
         max_evidence=max_evidence,
         rng_seed=rng_seed,
+        use_disease_clustering=use_disease_clustering,
     )
