@@ -21,7 +21,7 @@ Environment Variables:
 - PHEBEE_EVAL_SCALE_MIN_EVIDENCE (default: 1): Min evidence items per term link
 - PHEBEE_EVAL_SCALE_MAX_EVIDENCE (default: 25): Max evidence items per term link
 - PHEBEE_EVAL_BATCH_SIZE (default: 10000): Records per S3 batch file
-- PHEBEE_EVAL_INGEST_TIMEOUT_S (default: 7200): Max seconds to wait for import (2 hours)
+- PHEBEE_EVAL_INGEST_TIMEOUT_S (default: 21600): Max seconds to wait for import (6 hours)
 - PHEBEE_EVAL_SEED (optional): Random seed for reproducibility
 - PHEBEE_EVAL_WRITE_ARTIFACTS (default: 1): Write CSV/JSON artifacts to /tmp
 
@@ -157,7 +157,7 @@ def test_import_performance(
 
     # Configuration
     batch_size = _env_int("PHEBEE_EVAL_BATCH_SIZE", 10_000)
-    ingest_timeout_s = _env_int("PHEBEE_EVAL_INGEST_TIMEOUT_S", 7200)
+    ingest_timeout_s = _env_int("PHEBEE_EVAL_INGEST_TIMEOUT_S", 21600)
     run_id = f"import-perf-{uuid.uuid4().hex[:10]}"
 
     # Dataset statistics

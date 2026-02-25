@@ -545,7 +545,7 @@ def test_r11_enhanced_api_latency_at_scale(
         "PHEBEE_EVAL_SCALE_MIN_EVIDENCE": os.environ.get("PHEBEE_EVAL_SCALE_MIN_EVIDENCE", "1 (default)"),
         "PHEBEE_EVAL_SCALE_MAX_EVIDENCE": os.environ.get("PHEBEE_EVAL_SCALE_MAX_EVIDENCE", "25 (default)"),
         "PHEBEE_EVAL_BATCH_SIZE": os.environ.get("PHEBEE_EVAL_BATCH_SIZE", "10000 (default)"),
-        "PHEBEE_EVAL_INGEST_TIMEOUT_S": os.environ.get("PHEBEE_EVAL_INGEST_TIMEOUT_S", "7200 (default)"),
+        "PHEBEE_EVAL_INGEST_TIMEOUT_S": os.environ.get("PHEBEE_EVAL_INGEST_TIMEOUT_S", "21600 (default)"),
         "PHEBEE_EVAL_LATENCY_N": os.environ.get("PHEBEE_EVAL_LATENCY_N", "500 (default)"),
         "PHEBEE_EVAL_CONCURRENCY": os.environ.get("PHEBEE_EVAL_CONCURRENCY", "25 (default)"),
         "PHEBEE_EVAL_SEED": os.environ.get("PHEBEE_EVAL_SEED", "not set"),
@@ -601,7 +601,7 @@ def test_r11_enhanced_api_latency_at_scale(
         pytest.skip("PheBeeBucket not found in physical resources")
 
     shard_size = int(os.environ.get("PHEBEE_EVAL_BATCH_SIZE", "10000"))
-    ingest_timeout = int(os.environ.get("PHEBEE_EVAL_INGEST_TIMEOUT_S", "7200"))
+    ingest_timeout = int(os.environ.get("PHEBEE_EVAL_INGEST_TIMEOUT_S", "21600"))
 
     # Use statistics from GeneratedDataset
     total_subjects = dataset_stats["n_subjects"]

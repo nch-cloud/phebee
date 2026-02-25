@@ -199,7 +199,7 @@ pytest -v -s tests/integration/performance/test_import_performance.py \
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PHEBEE_EVAL_PROJECT_ID` | None | Use existing project instead of creating new one. Required when running tests separately. |
-| `PHEBEE_EVAL_INGEST_TIMEOUT_S` | 7,200 | Timeout in seconds for bulk import Step Function (2 hours) |
+| `PHEBEE_EVAL_INGEST_TIMEOUT_S` | 21,600 | Timeout in seconds for bulk import Step Function (6 hours) |
 | `PHEBEE_EVAL_LATENCY_N` | 500 | Number of requests per API endpoint pattern |
 | `PHEBEE_EVAL_CONCURRENCY` | 25 | Number of concurrent workers for load testing |
 | `PHEBEE_EVAL_STRICT_LATENCY` | 0 | Enforce p95 ≤ 5000ms performance gates (1=enabled, 0=disabled) |
@@ -331,11 +331,11 @@ If you see errors about SAM CLI failing during test setup, ensure you're running
 
 ### Import test times out
 
-**Cause:** Dataset is too large for the configured timeout.
+**Cause:** Dataset is too large for the configured timeout (default: 6 hours).
 
 **Solution:** Increase timeout or reduce dataset size:
 ```bash
-export PHEBEE_EVAL_INGEST_TIMEOUT_S=14400  # 4 hours
+export PHEBEE_EVAL_INGEST_TIMEOUT_S=28800  # 8 hours for very large imports
 # OR
 export PHEBEE_EVAL_SCALE_SUBJECTS=5000  # Smaller dataset
 ```
