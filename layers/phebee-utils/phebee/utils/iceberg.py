@@ -343,7 +343,7 @@ def create_evidence_record(
         "termlink_id": termlink_id,
         "term_iri": term_iri,
         "note_context": {
-            "note_timestamp": note_timestamp,
+            "note_date": note_timestamp,
             "note_type": note_type,
             "provider_type": provider_type,
             "author_specialty": author_specialty
@@ -373,11 +373,11 @@ def create_evidence_record(
     if record.get('note_context'):
         nc = record['note_context']
         timestamp_part = 'NULL'
-        if nc.get('note_timestamp'):
+        if nc.get('note_date'):
             # Parse ISO 8601 timestamp and convert to Athena format (YYYY-MM-DD HH:MM:SS)
             try:
                 # Handle both Z suffix and +00:00 timezone formats
-                ts_str = nc['note_timestamp'].replace('Z', '+00:00')
+                ts_str = nc['note_date'].replace('Z', '+00:00')
                 dt = datetime.fromisoformat(ts_str)
                 timestamp_part = f"TIMESTAMP '{dt.strftime('%Y-%m-%d %H:%M:%S')}'"
             except Exception:
@@ -436,19 +436,19 @@ def create_evidence_record(
         text_annotation,
         qualifiers
     ) VALUES (
-        '{evidence_id}',
-        '{run_id or f"manual-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"}',
-        '{batch_id or ''}',
-        '{evidence_type}',
-        '{assertion_type}',
-        TIMESTAMP '{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}',
-        DATE '{datetime.utcnow().date().isoformat()}',
-        '{source_level}',
-        '{subject_id}',
-        {f"'{encounter_id}'" if encounter_id else 'NULL'},
-        {f"'{clinical_note_id}'" if clinical_note_id else 'NULL'},
-        '{termlink_id}',
-        '{term_iri}',
+        '{record["evidence_id"]}',
+        '{record["run_id"]}',
+        '{record["batch_id"] or ""}',
+        '{record["evidence_type"]}',
+        '{record["assertion_type"]}',
+        TIMESTAMP '{record["created_timestamp"]}',
+        DATE '{record["created_date"]}',
+        '{record["source_level"]}',
+        '{record["subject_id"]}',
+        {f"'{record["encounter_id"]}'" if record["encounter_id"] else 'NULL'},
+        {f"'{record["clinical_note_id"]}'" if record["clinical_note_id"] else 'NULL'},
+        '{record["termlink_id"]}',
+        '{record["term_iri"]}',
         {term_source_value},
         {note_context_value},
         {creator_value},
