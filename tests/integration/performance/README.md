@@ -243,14 +243,12 @@ pytest -v -s tests/integration/performance/test_import_performance.py \
 For manuscript reproducibility, generate a benchmark dataset with a fixed seed:
 
 ```bash
-export PHEBEE_EVAL_TERMS_JSON_PATH="./data/hpo_terms_v2026-01-08.json"
-export PHEBEE_EVAL_PREVALENCE_CSV_PATH="/path/to/term_frequencies.csv"
+export PHEBEE_EVAL_SCALE_SUBJECTS=1000
+export PHEBEE_EVAL_TERMS_JSON_PATH="tests/integration/performance/data/hpo_terms_v2026-01-08.json"
+export PHEBEE_EVAL_PREVALENCE_CSV_PATH="tests/integration/performance/data/term_frequencies.csv"
 export PHEBEE_EVAL_SEED=42
-export PHEBEE_EVAL_SCALE_SUBJECTS=50000
 
-python generate_benchmark_dataset.py \
-  --project-id phebee-manuscript-2026 \
-  --use-disease-clustering
+python tests/integration/performance/generate_benchmark_dataset.py
 ```
 
 **Output Structure:**
@@ -286,7 +284,7 @@ tar -xzf benchmark_dataset.tar.gz -C tests/integration/performance/data/benchmar
 # Point tests to the pre-generated dataset
 export PHEBEE_EVAL_SCALE=1
 export PHEBEE_EVAL_TERMS_JSON_PATH="tests/integration/performance/data/hpo_terms_v2026-01-08.json"
-export PHEBEE_EVAL_BENCHMARK_DIR="tests/integration/performance/data/benchmark/10000-subjects-seed42"
+export PHEBEE_EVAL_BENCHMARK_DIR="tests/data/benchmark/10000-subjects-seed42"
 
 # Run tests using the static benchmark dataset (from project root, use -s to see output)
 pytest -v -s tests/integration/performance/test_import_performance.py \
