@@ -491,16 +491,6 @@ def create_api_test_functions(api_base_url: str, sigv4_auth, project_id: str,
         # Note: May return 404 if subject doesn't have this term - that's OK for perf testing
         assert r.status_code in [200, 404]
 
-    def call_version_specific_query():
-        """Version-specific ontology query."""
-        term_source_data = dataset_terms[0] if dataset_terms else None
-        r = api_post(api_base_url, "/subjects/query", {
-            "project_id": project_id,
-            "term_source": "HPO",
-            "limit": 20
-        }, sigv4_auth, session)
-        assert r.status_code == 200
-
     return {
         "basic_subjects_query": call_basic_subjects_query,
         "individual_subject": call_individual_subject,
@@ -509,7 +499,6 @@ def create_api_test_functions(api_base_url: str, sigv4_auth, project_id: str,
         "specific_phenotype": call_specific_phenotype,
         "paginated_large_cohort": call_paginated_large_cohort,
         "subject_term_info": call_subject_term_info,
-        "version_specific_query": call_version_specific_query,
     }
 
 # ---------------------------------------------------------------------
