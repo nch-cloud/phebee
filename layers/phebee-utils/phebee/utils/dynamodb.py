@@ -287,20 +287,24 @@ def get_term_descendants_from_cache(term_id: str, term_source: str, term_source_
     table = _get_table()
 
     try:
+        pk = f'TERM_DESCENDANTS#{term_source.upper()}#{term_source_version}'
+        print(f"[CACHE_READ] Checking cache for {term_id} (PK={pk})")
         response = table.get_item(
             Key={
-                'PK': f'TERM_DESCENDANTS#{term_source.upper()}#{term_source_version}',
+                'PK': pk,
                 'SK': term_id
             }
         )
 
         item = response.get('Item')
         if item and 'descendants' in item:
+            print(f"[CACHE_HIT] Found {len(item['descendants'])} descendants for {term_id} in cache")
             return item['descendants']
 
+        print(f"[CACHE_MISS] No cache entry found for {term_id} (PK={pk}, SK={term_id})")
         return None
     except ClientError as e:
-        # Log error but don't fail - just cache miss
+        print(f"[CACHE_READ_ERROR] Failed to read term descendants cache for {term_id}: {e}")
         return None
 
 
@@ -317,15 +321,18 @@ def put_term_descendants_to_cache(term_id: str, term_source: str, term_source_ve
     table = _get_table()
 
     try:
+        pk = f'TERM_DESCENDANTS#{term_source.upper()}#{term_source_version}'
+        print(f"[CACHE_WRITE] Writing {len(descendants)} descendants for {term_id} to DynamoDB (PK={pk})")
         table.put_item(
             Item={
-                'PK': f'TERM_DESCENDANTS#{term_source.upper()}#{term_source_version}',
+                'PK': pk,
                 'SK': term_id,
                 'descendants': descendants,
                 'descendant_count': len(descendants),
                 'cached_at': datetime.utcnow().isoformat() + 'Z'
             }
         )
+        print(f"[CACHE_WRITE_SUCCESS] Successfully wrote cache entry (PK={pk}, SK={term_id})")
     except ClientError as e:
-        # Log error but don't fail the request
+        print(f"[CACHE_WRITE_ERROR] Failed to write term descendants cache for {term_id} ({len(descendants)} descendants): {e}")
         pass

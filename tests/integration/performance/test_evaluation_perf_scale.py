@@ -9,7 +9,7 @@ How to run:
   PHEBEE_EVAL_USE_DISEASE_CLUSTERING=1 \
   PHEBEE_EVAL_TERMS_JSON_PATH=data/hpo_terms.json \
   PHEBEE_EVAL_SCALE_SUBJECTS=10000 \
-  PHEBEE_EVAL_LATENCY_N=500 \
+  PHEBEE_EVAL_LATENCY_N=100 \
   PHEBEE_EVAL_CONCURRENCY=25 \
   pytest -v -s test_evaluation_perf_scale.py
 
@@ -546,7 +546,7 @@ def test_r11_enhanced_api_latency_at_scale(
         "PHEBEE_EVAL_SCALE_MAX_EVIDENCE": os.environ.get("PHEBEE_EVAL_SCALE_MAX_EVIDENCE", "50 (default, production p95)"),
         "PHEBEE_EVAL_BATCH_SIZE": os.environ.get("PHEBEE_EVAL_BATCH_SIZE", "10000 (default)"),
         "PHEBEE_EVAL_INGEST_TIMEOUT_S": os.environ.get("PHEBEE_EVAL_INGEST_TIMEOUT_S", "21600 (default)"),
-        "PHEBEE_EVAL_LATENCY_N": os.environ.get("PHEBEE_EVAL_LATENCY_N", "500 (default)"),
+        "PHEBEE_EVAL_LATENCY_N": os.environ.get("PHEBEE_EVAL_LATENCY_N", "100 (default)"),
         "PHEBEE_EVAL_CONCURRENCY": os.environ.get("PHEBEE_EVAL_CONCURRENCY", "25 (default)"),
         "PHEBEE_EVAL_SEED": os.environ.get("PHEBEE_EVAL_SEED", "not set"),
         "PHEBEE_EVAL_WRITE_ARTIFACTS": os.environ.get("PHEBEE_EVAL_WRITE_ARTIFACTS", "1 (default)"),
@@ -687,7 +687,7 @@ def test_r11_enhanced_api_latency_at_scale(
                 print("[SFN_HISTORY_TAIL]", json.dumps(hist, indent=2, default=str)[:8000])
             pytest.fail(f"Bulk import did not succeed (status={status})")
 
-        print(f"[BULK_IMPORT_COMPLETE] {ingest_s:.1f}s, {len(records)/ingest_s:.1f} records/sec")
+        print(f"[BULK_IMPORT_COMPLETE] {ingest_s:.1f}s, {n_records/ingest_s:.1f} records/sec")
 
     # Fetch subjects for API testing
     print(f"[DEBUG] Querying for subjects with project_id={project_id}")
@@ -739,7 +739,7 @@ def test_r11_enhanced_api_latency_at_scale(
             print(f"[WARMUP_WARNING] {name} failed: {e}")
 
     # Test parameters
-    n = int(os.environ.get("PHEBEE_EVAL_LATENCY_N", "500"))
+    n = int(os.environ.get("PHEBEE_EVAL_LATENCY_N", "100"))
     conc = int(os.environ.get("PHEBEE_EVAL_CONCURRENCY", "25"))
 
     print(f"[LATENCY_TEST_START] {n} requests per endpoint, {conc} concurrent")
@@ -775,13 +775,13 @@ def test_r11_enhanced_api_latency_at_scale(
         "run_id": evaluation_run_id,
         "project_id": project_id,
         "dataset": {
-            "n_records": len(records),
+            "n_records": n_records,
             "n_subjects": total_subjects,
             "n_unique_terms": total_terms,
             "n_evidence": total_evidence,
             "terms_per_subject": dataset_stats["terms_per_subject"],
             "evidence_per_record": dataset_stats["evidence_per_record"],
-            "avg_evidence_per_record": round(total_evidence / len(records), 2) if records else 0,
+            "avg_evidence_per_record": round(total_evidence / n_records, 2) if n_records > 0 else 0,
             "qualifier_distribution": {
                 "negated_pct": round(qualifier_stats.get("negated", 0) / qualifier_stats.get("total", 1) * 100, 1) if qualifier_stats.get("total", 0) > 0 else 0,
                 "family_pct": round(qualifier_stats.get("family", 0) / qualifier_stats.get("total", 1) * 100, 1) if qualifier_stats.get("total", 0) > 0 else 0,
@@ -793,7 +793,7 @@ def test_r11_enhanced_api_latency_at_scale(
         },
         "ingestion": {
             "seconds": round(ingest_s, 2) if ingest_s > 0 else None,
-            "records_per_sec": round((len(records) / ingest_s), 2) if ingest_s > 0 else None,
+            "records_per_sec": round((n_records / ingest_s), 2) if ingest_s > 0 else None,
             "sfn_execution_arn": ingest_result.get("executionArn") if ingest_result else None,
             "skipped": ingest_s == 0,
             "note": "Data already present from test_import_performance.py" if ingest_s == 0 else None,

@@ -932,6 +932,7 @@ Resources:
       Policies:
         - !Ref PheBeeNeptuneReadPolicy
         - !Ref PheBeeDynamoDBReadPolicy
+        - !Ref PheBeeDynamoDBWritePolicy
         - !Ref PheBeeS3WritePolicy
         - !Ref PheBeeIcebergPolicy
 

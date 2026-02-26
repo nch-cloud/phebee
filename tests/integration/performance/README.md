@@ -200,7 +200,7 @@ pytest -v -s tests/integration/performance/test_import_performance.py \
 |----------|---------|-------------|
 | `PHEBEE_EVAL_PROJECT_ID` | None | Use existing project instead of creating new one. Required when running tests separately. |
 | `PHEBEE_EVAL_INGEST_TIMEOUT_S` | 21,600 | Timeout in seconds for bulk import Step Function (6 hours) |
-| `PHEBEE_EVAL_LATENCY_N` | 500 | Number of requests per API endpoint pattern |
+| `PHEBEE_EVAL_LATENCY_N` | 100 | Number of requests per API endpoint pattern (100 provides stable p50/p95 estimates) |
 | `PHEBEE_EVAL_CONCURRENCY` | 25 | Number of concurrent workers for load testing |
 | `PHEBEE_EVAL_STRICT_LATENCY` | 0 | Enforce p95 ≤ 5000ms performance gates (1=enabled, 0=disabled) |
 | `PHEBEE_EVAL_WRITE_ARTIFACTS` | 1 | Write CSV/JSON artifacts to /tmp/phebee-eval-artifacts/ |

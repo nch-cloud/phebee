@@ -18,7 +18,7 @@ from rdflib import Graph, URIRef, Literal as RdfLiteral, Namespace
 from rdflib.namespace import RDF, DCTERMS, XSD
 
 from phebee.constants import PHEBEE
-from phebee.utils.dynamodb import get_term_descendants_from_cache, put_term_descendants_to_cache
+from phebee.utils.dynamodb import get_term_descendants_from_cache, put_term_descendants_to_cache, get_current_term_source_version
 
 logger = logging.getLogger(__name__)
 
@@ -1638,23 +1638,12 @@ def query_subject_with_hierarchy(
     # Build version filter
     version_filter = f"AND h.version = '{ontology_version}'" if ontology_version else ""
 
-    # If no version specified, get latest version first
-    version_query = ""
+    # If no version specified, get latest version first from DynamoDB
     if not ontology_version:
-        version_query = f"""
-        SELECT version
-        FROM {database_name}.{hierarchy_table}
-        WHERE ontology_source = '{ontology_source}'
-        ORDER BY version DESC
-        LIMIT 1
-        """
-        try:
-            version_results = query_iceberg_evidence(version_query)
-            if version_results:
-                ontology_version = version_results[0]['version']
-                version_filter = f"AND h.version = '{ontology_version}'"
-        except:
-            pass  # Continue without version filter if query fails
+        # Use DynamoDB to get current version (fast, cached, uses InstallTimestamp)
+        ontology_version = get_current_term_source_version(ontology_source.upper())
+        if ontology_version:
+            version_filter = f"AND h.version = '{ontology_version}'"
 
     # Join query
     query = f"""
@@ -2594,31 +2583,14 @@ def query_term_ancestors(
     if not database_name or not table_name:
         raise ValueError("Database and table name must be provided or set in environment")
 
-    # If no version specified, get the latest version
+    # If no version specified, get the latest version from DynamoDB
     if not version:
-        version_query = f"""
-        SELECT version
-        FROM {database_name}.{table_name}
-        WHERE LOWER(ontology_source) = LOWER('{ontology_source}')
-        GROUP BY version
-        ORDER BY version DESC
-        LIMIT 1
-        """
-
-        try:
-            result = _execute_athena_query(version_query, wait_for_completion=True)
-            version_rows = _get_query_results(result)
-
-            if not version_rows:
-                logger.warning(f"No versions found for ontology source: {ontology_source}")
-                return []
-
-            version = version_rows[0]['version']
-            logger.info(f"Using latest version {version} for {ontology_source}")
-
-        except Exception as e:
-            logger.error(f"Failed to get latest version for {ontology_source}: {e}")
+        # Use DynamoDB to get current version (fast, cached, uses InstallTimestamp)
+        version = get_current_term_source_version(ontology_source.upper())
+        if not version:
+            logger.warning(f"No current version found for ontology source: {ontology_source}")
             return []
+        logger.info(f"Using current version {version} for {ontology_source}")
 
     # Query ancestors for the specific term
     query = f"""
@@ -2686,31 +2658,14 @@ def query_term_descendants(
     if not database_name or not table_name:
         raise ValueError("Database and table name must be provided or set in environment")
 
-    # If no version specified, get the latest version
+    # If no version specified, get the latest version from DynamoDB
     if not version:
-        version_query = f"""
-        SELECT version
-        FROM {database_name}.{table_name}
-        WHERE LOWER(ontology_source) = LOWER('{ontology_source}')
-        GROUP BY version
-        ORDER BY version DESC
-        LIMIT 1
-        """
-
-        try:
-            result = _execute_athena_query(version_query, wait_for_completion=True)
-            version_rows = _get_query_results(result)
-
-            if not version_rows:
-                logger.warning(f"No versions found for ontology source: {ontology_source}")
-                return []
-
-            version = version_rows[0]['version']
-            logger.info(f"Using latest version {version} for {ontology_source}")
-
-        except Exception as e:
-            logger.error(f"Failed to get latest version for {ontology_source}: {e}")
+        # Use DynamoDB to get current version (fast, cached, uses InstallTimestamp)
+        version = get_current_term_source_version(ontology_source.upper())
+        if not version:
+            logger.warning(f"No current version found for ontology source: {ontology_source}")
             return []
+        logger.info(f"Using current version {version} for {ontology_source}")
 
     # Check DynamoDB cache first
     cached_descendants = get_term_descendants_from_cache(term_id, ontology_source, version)

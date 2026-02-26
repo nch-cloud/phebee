@@ -278,12 +278,6 @@ def test_import_performance(
         )
 
     print(f"\nStep Functions execution completed successfully.")
-    print(f"Waiting additional time for data indexing/propagation...")
-
-    # Wait for data to be indexed and queryable (Neptune/DynamoDB eventual consistency)
-    indexing_wait_s = 60
-    print(f"  Sleeping {indexing_wait_s}s to allow data to become queryable...")
-    time.sleep(indexing_wait_s)
 
     # Calculate throughput
     recs_per_sec = stats["n_records"] / t_ingest_s if t_ingest_s > 0 else None
