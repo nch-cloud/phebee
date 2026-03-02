@@ -12,7 +12,7 @@ not comprehensive business logic tests.
 import pytest
 import requests
 
-pytestmark = [pytest.mark.integration, pytest.mark.api, pytest.mark.slow]
+pytestmark = [pytest.mark.integration, pytest.mark.api]
 
 
 def test_get_source_endpoint_success(api_base_url, sigv4_auth, hpo_update_execution):

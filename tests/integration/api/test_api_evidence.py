@@ -13,7 +13,7 @@ import pytest
 import requests
 import uuid
 
-pytestmark = [pytest.mark.integration, pytest.mark.api, pytest.mark.slow]
+pytestmark = [pytest.mark.integration, pytest.mark.api]
 
 
 def test_create_evidence_endpoint(api_base_url, sigv4_auth, test_subject, standard_hpo_terms):

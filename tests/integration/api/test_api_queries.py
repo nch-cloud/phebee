@@ -15,7 +15,7 @@ import pytest
 import requests
 import uuid
 
-pytestmark = [pytest.mark.integration, pytest.mark.api, pytest.mark.slow]
+pytestmark = [pytest.mark.integration, pytest.mark.api]
 
 
 def test_query_subjects_endpoint(api_base_url, sigv4_auth, test_project_id):

@@ -65,11 +65,22 @@ This document outlines our planned milestones and the focus areas for each versi
 
 ### Planned Features
 
-- Run PheBee term link import using automated feed of clinical data.
-- Deep testing of phenotype links for both content and provenance.
-- Revise any services that underperform at scale or for which additional metadata is deemed necessary.
+- Run PheBee term link import using automated feed of clinical data
+- Deep testing of phenotype links for both content and provenance
+- Revise any services that underperform at scale or for which additional metadata is deemed necessary
+- Performance testing of API endpoints at scale
+- Expose term and evidence-level data in Iceberg tables
+
+---
+
+# Future Improvements
+
+### Planned Features
+
 - Add built-in Sagemaker notebook deployment to CloudFormation stack
 - Evaluate additional automated ontology integrations
+- Evaluate production usage patterns and consider further caching to speed up commonly-used paths
+- Allow dynamic semantic queries through API
 
 ---
 

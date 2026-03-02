@@ -140,7 +140,7 @@ pytest -v -s tests/integration/performance/test_import_performance.py \
 
 ### Query Patterns Tested
 
-The API latency test executes 8 comprehensive query patterns representing realistic clinical and research use cases:
+The API latency test executes 7 comprehensive query patterns representing realistic clinical and research use cases:
 
 | # | Pattern | Description | Use Case |
 |---|---------|-------------|----------|
@@ -151,7 +151,6 @@ The API latency test executes 8 comprehensive query patterns representing realis
 | 5 | **specific_phenotype** | Direct term query without hierarchy | Research: exact term matching |
 | 6 | **paginated_large_cohort** | Large result set with pagination | Broad cohort queries with cursor |
 | 7 | **subject_term_info** | Detailed subject-term evidence | Curator: evidence review |
-| 8 | **version_specific_query** | Ontology version filtering | Research: specific HPO version |
 
 **Step 5: Run additional evaluations (optional)**
 
@@ -370,4 +369,4 @@ The artifacts are still written to `/tmp/phebee-eval-artifacts/` even without `-
 
 ---
 
-**Last Updated:** 2026-02-25
+**Last Updated:** 2026-03-02
