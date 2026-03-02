@@ -44,9 +44,11 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import boto3
 import pytest
+from botocore.exceptions import ClientError, EndpointConnectionError
 
 pytestmark = [pytest.mark.integration, pytest.mark.perf]
 
@@ -67,16 +69,49 @@ def _env_int(name: str, default: int) -> int:
 # -----------------------------
 
 
-def _s3_put_jsonl(bucket: str, key: str, records: List[Dict[str, Any]]) -> None:
-    """Upload records to S3 as newline-delimited JSON."""
+def _s3_put_jsonl(bucket: str, key: str, records: List[Dict[str, Any]], retries: int = 3) -> None:
+    """Upload records to S3 as newline-delimited JSON using optimized Transfer Manager."""
+    from io import BytesIO
+    from boto3.s3.transfer import TransferConfig
+
     s3 = boto3.client("s3")
-    body = "\n".join(json.dumps(r) for r in records) + "\n"
-    s3.put_object(
-        Bucket=bucket,
-        Key=key,
-        Body=body.encode("utf-8"),
-        ContentType="application/x-ndjson",
+
+    # Use Transfer Manager config for better performance
+    # - Multipart uploads for files > 8MB
+    # - Larger chunk sizes for better throughput
+    config = TransferConfig(
+        multipart_threshold=8 * 1024 * 1024,  # 8MB
+        max_concurrency=10,
+        multipart_chunksize=8 * 1024 * 1024,  # 8MB chunks
+        use_threads=True
     )
+
+    for attempt in range(retries):
+        try:
+            # Create in-memory file object
+            buffer = BytesIO()
+            for record in records:
+                line = json.dumps(record) + "\n"
+                buffer.write(line.encode("utf-8"))
+            buffer.seek(0)
+
+            # Upload using upload_fileobj (uses Transfer Manager)
+            s3.upload_fileobj(
+                buffer,
+                bucket,
+                key,
+                Config=config,
+                ExtraArgs={"ContentType": "application/x-ndjson"}
+            )
+            return  # Success
+        except (ClientError, EndpointConnectionError) as e:
+            if attempt == retries - 1:
+                # Last attempt failed
+                raise
+            # Exponential backoff: 1s, 2s, 4s
+            wait_time = 2 ** attempt
+            print(f"  Upload failed for {key}, retrying in {wait_time}s... (attempt {attempt + 1}/{retries})")
+            time.sleep(wait_time)
 
 
 def _start_sfn_execution(state_machine_arn: str, project_id: str, run_id: str, input_path: str) -> str:
@@ -112,6 +147,15 @@ def _wait_for_sfn(execution_arn: str, timeout_s: int = 7200, poll_s: int = 10) -
 def _split_batches(records: List[Dict[str, Any]], batch_size: int) -> List[List[Dict[str, Any]]]:
     """Split records into batches for S3 upload."""
     return [records[i : i + batch_size] for i in range(0, len(records), batch_size)]
+
+
+def _upload_batch_worker(bucket: str, key: str, records: List[Dict[str, Any]], batch_idx: int) -> tuple:
+    """Worker function for parallel batch uploads. Returns (batch_idx, num_records, success)."""
+    try:
+        _s3_put_jsonl(bucket, key, records)
+        return (batch_idx, len(records), True, None)
+    except Exception as e:
+        return (batch_idx, len(records), False, str(e))
 
 
 def _write_csv(path: Path, rows: List[Dict[str, Any]], fieldnames: List[str]) -> None:
@@ -194,63 +238,140 @@ def test_import_performance(
     s3_prefix = f"perf-data/{run_id}/jsonl"
 
     if is_lazy:
-        # Lazy loading: stream from benchmark directory
-        print(f"  Streaming from benchmark directory: {synthetic_dataset.benchmark_dir}")
-        s3 = boto3.client("s3")
+        # Lazy loading: pre-process to temp directory, then use AWS CLI for fast upload
+        import tempfile
+        import shutil
+        import subprocess
+
+        print(f"  Processing from benchmark directory: {synthetic_dataset.benchmark_dir}")
         batches_dir = synthetic_dataset.benchmark_dir / "batches"
         batch_files = sorted(batches_dir.glob("batch-*.json"))
 
-        upload_buffer = []
-        upload_idx = 0
-        total_uploaded = 0
+        # Create temp directory for processed batches
+        temp_dir = Path(tempfile.mkdtemp(prefix="phebee-upload-"))
+        print(f"  Temp directory: {temp_dir}")
 
-        for batch_file in batch_files:
-            with batch_file.open("r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        record = json.loads(line)
-                        # Override project_id and subject_id for test isolation
-                        record["project_id"] = test_project_id
-                        old_subject_id = record.get("subject_id") or record.get("project_subject_id")
-                        if old_subject_id and old_subject_id in synthetic_dataset.subject_id_map:
-                            record["subject_id"] = synthetic_dataset.subject_id_map[old_subject_id]
+        try:
+            # Pre-process batches in parallel: read, modify IDs, write to temp
+            print(f"  Pre-processing {len(batch_files)} batches with ID corrections (20 parallel workers)...")
 
-                        upload_buffer.append(record)
+            def process_batch_file(batch_file: Path, output_dir: Path) -> tuple:
+                """Read batch, modify IDs, write to output directory."""
+                try:
+                    records = []
+                    with batch_file.open("r", encoding="utf-8") as f:
+                        for line in f:
+                            line = line.strip()
+                            if line:
+                                record = json.loads(line)
+                                # Override project_id and subject_id for test isolation
+                                record["project_id"] = test_project_id
+                                old_subject_id = record.get("subject_id") or record.get("project_subject_id")
+                                if old_subject_id and old_subject_id in synthetic_dataset.subject_id_map:
+                                    record["subject_id"] = synthetic_dataset.subject_id_map[old_subject_id]
+                                records.append(record)
 
-                        # Upload when buffer reaches batch_size
-                        if len(upload_buffer) >= batch_size:
-                            key = f"{s3_prefix}/batch-{upload_idx:05d}.json"
-                            _s3_put_jsonl(bucket, key, upload_buffer)
-                            total_uploaded += len(upload_buffer)
-                            if upload_idx == 0 or (upload_idx + 1) % 10 == 0:
-                                print(f"  Uploaded batch {upload_idx+1}: {len(upload_buffer):,} records (total: {total_uploaded:,})")
-                            upload_idx += 1
-                            upload_buffer = []
+                    # Write to temp directory
+                    output_file = output_dir / batch_file.name
+                    with output_file.open("w", encoding="utf-8") as f:
+                        for record in records:
+                            f.write(json.dumps(record) + "\n")
 
-        # Upload final partial batch
-        if upload_buffer:
-            key = f"{s3_prefix}/batch-{upload_idx:05d}.json"
-            _s3_put_jsonl(bucket, key, upload_buffer)
-            total_uploaded += len(upload_buffer)
-            upload_idx += 1
+                    return (batch_file.name, len(records), True, None)
+                except Exception as e:
+                    return (batch_file.name, 0, False, str(e))
 
-        print(f"  Streaming upload complete: {upload_idx} batches, {total_uploaded:,} records")
-        n_batches = upload_idx
+            # Process all batches in parallel
+            failed = []
+            completed = 0
+            with ThreadPoolExecutor(max_workers=20) as executor:
+                futures = {
+                    executor.submit(process_batch_file, bf, temp_dir): bf
+                    for bf in batch_files
+                }
+
+                for future in as_completed(futures):
+                    name, n_records, success, error = future.result()
+                    completed += 1
+
+                    if not success:
+                        failed.append((name, error))
+                        print(f"  ERROR: {name} failed: {error}")
+                    elif completed % 500 == 0 or completed == len(batch_files):
+                        print(f"  Progress: {completed}/{len(batch_files)} batches processed")
+
+            if failed:
+                raise Exception(f"{len(failed)} batches failed to process")
+
+            print(f"  All batches processed successfully")
+
+            # Use AWS CLI to sync temp directory to S3 (much faster than boto3)
+            print(f"  Uploading to S3 using AWS CLI...")
+            s3_dest = f"s3://{bucket}/{s3_prefix}/"
+
+            sync_cmd = [
+                "aws", "s3", "sync",
+                str(temp_dir),
+                s3_dest,
+                "--exclude", "*",
+                "--include", "*.json",
+                "--content-type", "application/x-ndjson"
+            ]
+
+            result = subprocess.run(sync_cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                print(f"  AWS CLI error: {result.stderr}")
+                raise Exception(f"AWS CLI sync failed with code {result.returncode}")
+
+            print(f"  Upload complete: {len(batch_files)} batches uploaded")
+            n_batches = len(batch_files)
+
+        finally:
+            # Clean up temp directory
+            print(f"  Cleaning up temp directory...")
+            shutil.rmtree(temp_dir, ignore_errors=True)
     else:
-        # In-memory: split and upload
+        # In-memory: split and upload in parallel
         batches = _split_batches(records, batch_size=max(1, batch_size))
 
         print(f"  Splitting into {len(batches)} batches of ~{batch_size:,} records each")
+        print(f"  Uploading with {min(10, len(batches))} parallel workers...")
+
+        # Prepare batches for upload
+        upload_tasks = []
         for i, batch in enumerate(batches):
             # Update batch_id in each record
             for r in batch:
                 r["batch_id"] = i
             key = f"{s3_prefix}/batch-{i:05d}.json"
-            _s3_put_jsonl(bucket, key, batch)
-            if i == 0 or (i + 1) % 10 == 0 or i == len(batches) - 1:
-                print(f"  Uploaded batch {i+1}/{len(batches)}: {len(batch):,} records")
+            upload_tasks.append((bucket, key, batch, i))
 
+        # Upload in parallel
+        failed_batches = []
+        completed = 0
+        with ThreadPoolExecutor(max_workers=min(10, len(batches))) as executor:
+            futures = {
+                executor.submit(_upload_batch_worker, bucket, key, batch, idx): idx
+                for bucket, key, batch, idx in upload_tasks
+            }
+
+            for future in as_completed(futures):
+                batch_idx, num_records, success, error = future.result()
+                completed += 1
+
+                if not success:
+                    failed_batches.append((batch_idx, error))
+                    print(f"  ERROR: Batch {batch_idx+1} failed: {error}")
+                elif completed == 1 or completed % 50 == 0 or completed == len(batches):
+                    print(f"  Progress: {completed}/{len(batches)} batches uploaded")
+
+        if failed_batches:
+            print(f"\n  WARNING: {len(failed_batches)} batches failed to upload:")
+            for batch_idx, error in failed_batches[:5]:  # Show first 5 errors
+                print(f"    Batch {batch_idx}: {error}")
+            raise Exception(f"{len(failed_batches)} batches failed to upload")
+
+        print(f"  Upload complete: {len(batches)} batches uploaded successfully")
         n_batches = len(batches)
 
     input_path = f"s3://{bucket}/{s3_prefix}"
