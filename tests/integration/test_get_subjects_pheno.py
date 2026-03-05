@@ -680,3 +680,353 @@ def test_get_subjects_pagination_info(invoke_get_subjects_pheno, create_subject_
     assert pagination["limit"] == 2
     assert pagination["has_more"] is True
     assert pagination["next_cursor"] is not None
+
+
+# ============================================================================
+# PAGINATION EDGE CASES AND FILTERING TESTS
+# ============================================================================
+
+def test_get_subjects_pagination_last_page(invoke_get_subjects_pheno, create_subject_with_evidence):
+    """
+    Test: Verify last page has has_more=false and next_cursor=null.
+
+    Setup: Create 5 subjects
+    Action: Paginate with limit=2 until last page
+    Verify: Final page has has_more=false, next_cursor is null/None
+    """
+    # Create 5 subjects
+    subjs = [
+        create_subject_with_evidence(term_iri="http://purl.obolibrary.org/obo/HP_0001249")
+        for _ in range(5)
+    ]
+
+    # Paginate through all results
+    cursor = None
+    page_count = 0
+    final_pagination = None
+
+    while True:
+        result = invoke_get_subjects_pheno(
+            project_id=subjs[0]["project_id"],
+            limit=2,
+            cursor=cursor
+        )
+
+        assert result["statusCode"] == 200
+        body = result["decompressed_body"]
+        pagination = body["pagination"]
+        page_count += 1
+
+        if not pagination["has_more"]:
+            final_pagination = pagination
+            break
+
+        cursor = pagination["next_cursor"]
+        assert cursor is not None, f"has_more=true but next_cursor is None on page {page_count}"
+
+        # Safety: prevent infinite loop
+        if page_count > 10:
+            pytest.fail("Too many pages - possible infinite loop")
+
+    # Verify final page state
+    assert final_pagination is not None
+    assert final_pagination["has_more"] is False
+    assert final_pagination["next_cursor"] is None or final_pagination["next_cursor"] == ""
+    assert page_count == 3  # 5 subjects / 2 per page = 3 pages
+
+
+def test_get_subjects_pagination_under_limit(invoke_get_subjects_pheno, create_subject_with_evidence):
+    """
+    Test: Query with limit larger than result set.
+
+    Setup: Create 3 subjects
+    Action: Query with limit=10
+    Verify: Returns all 3 subjects, has_more=false, no cursor
+    """
+    # Create 3 subjects
+    subjs = [
+        create_subject_with_evidence(term_iri="http://purl.obolibrary.org/obo/HP_0001249")
+        for _ in range(3)
+    ]
+
+    result = invoke_get_subjects_pheno(
+        project_id=subjs[0]["project_id"],
+        limit=10
+    )
+
+    assert result["statusCode"] == 200
+    body = result["decompressed_body"]
+    subjects = body["body"]
+    pagination = body["pagination"]
+
+    # Should return all 3 subjects
+    assert len(subjects) == 3
+
+    # Should indicate no more pages
+    assert pagination["has_more"] is False
+    assert pagination["next_cursor"] is None or pagination["next_cursor"] == ""
+
+
+def test_get_subjects_pagination_exact_limit(invoke_get_subjects_pheno, create_subject_with_evidence):
+    """
+    Test: Query with limit exactly matching result set size.
+
+    Setup: Create 4 subjects
+    Action: Query with limit=4
+    Verify: Returns all 4 subjects, has_more=false (boundary case)
+    """
+    # Create exactly 4 subjects
+    subjs = [
+        create_subject_with_evidence(term_iri="http://purl.obolibrary.org/obo/HP_0001249")
+        for _ in range(4)
+    ]
+
+    result = invoke_get_subjects_pheno(
+        project_id=subjs[0]["project_id"],
+        limit=4
+    )
+
+    assert result["statusCode"] == 200
+    body = result["decompressed_body"]
+    subjects = body["body"]
+    pagination = body["pagination"]
+
+    # Should return all 4 subjects
+    assert len(subjects) == 4
+
+    # Edge case: exactly limit results should show has_more=false
+    assert pagination["has_more"] is False
+    assert pagination["next_cursor"] is None or pagination["next_cursor"] == ""
+
+
+def test_get_subjects_pagination_with_term_filter(invoke_get_subjects_pheno, create_subject_with_evidence):
+    """
+    Test: Pagination maintains term_iri filter across pages.
+
+    Setup: Create 5 subjects with matching term, 2 with different term
+    Action: Paginate with term_iri filter, limit=2
+    Verify: All pages only return filtered subjects, cursor maintains context
+    """
+    # Create 5 subjects with HP_0001249
+    match_subjs = [
+        create_subject_with_evidence(term_iri="http://purl.obolibrary.org/obo/HP_0001249")
+        for _ in range(5)
+    ]
+
+    # Create 2 subjects with different term (should not appear)
+    no_match_subjs = [
+        create_subject_with_evidence(term_iri="http://purl.obolibrary.org/obo/HP_0002297")
+        for _ in range(2)
+    ]
+
+    all_retrieved_ids = []
+    cursor = None
+
+    # Paginate through filtered results
+    while True:
+        result = invoke_get_subjects_pheno(
+            project_id=match_subjs[0]["project_id"],
+            term_iri="http://purl.obolibrary.org/obo/HP_0001249",
+            include_child_terms=False,
+            limit=2,
+            cursor=cursor
+        )
+
+        assert result["statusCode"] == 200
+        body = result["decompressed_body"]
+        subjects = body["body"]
+        pagination = body["pagination"]
+
+        all_retrieved_ids.extend([s["project_subject_id"] for s in subjects])
+
+        if not pagination["has_more"]:
+            break
+
+        cursor = pagination["next_cursor"]
+
+    # Verify all matching subjects retrieved
+    expected_ids = [s["project_subject_id"] for s in match_subjs]
+    for expected_id in expected_ids:
+        assert expected_id in all_retrieved_ids
+
+    # Verify non-matching subjects NOT retrieved
+    no_match_ids = [s["project_subject_id"] for s in no_match_subjs]
+    for no_match_id in no_match_ids:
+        assert no_match_id not in all_retrieved_ids
+
+    # Verify count matches (5 matching subjects)
+    assert len(all_retrieved_ids) == 5
+
+
+def test_get_subjects_pagination_with_qualifier_filter(invoke_get_subjects_pheno, create_subject_with_evidence):
+    """
+    Test: Pagination maintains include_qualified=false filter across pages.
+
+    Setup: Create 3 unqualified subjects, 3 negated subjects
+    Action: Paginate with include_qualified=false, limit=2
+    Verify: All pages only return unqualified subjects
+    """
+    # Create 3 unqualified subjects
+    unqualified_subjs = [
+        create_subject_with_evidence(
+            term_iri="http://purl.obolibrary.org/obo/HP_0001249",
+            qualifiers=[]
+        )
+        for _ in range(3)
+    ]
+
+    # Create 3 negated subjects (should not appear)
+    negated_subjs = [
+        create_subject_with_evidence(
+            term_iri="http://purl.obolibrary.org/obo/HP_0001249",
+            qualifiers=["negated"]
+        )
+        for _ in range(3)
+    ]
+
+    all_retrieved_ids = []
+    cursor = None
+
+    # Paginate through filtered results
+    while True:
+        result = invoke_get_subjects_pheno(
+            project_id=unqualified_subjs[0]["project_id"],
+            term_iri="http://purl.obolibrary.org/obo/HP_0001249",
+            include_child_terms=False,
+            include_qualified=False,
+            limit=2,
+            cursor=cursor
+        )
+
+        assert result["statusCode"] == 200
+        body = result["decompressed_body"]
+        subjects = body["body"]
+        pagination = body["pagination"]
+
+        all_retrieved_ids.extend([s["project_subject_id"] for s in subjects])
+
+        if not pagination["has_more"]:
+            break
+
+        cursor = pagination["next_cursor"]
+
+    # Verify all unqualified subjects retrieved
+    unqualified_ids = [s["project_subject_id"] for s in unqualified_subjs]
+    for expected_id in unqualified_ids:
+        assert expected_id in all_retrieved_ids
+
+    # Verify negated subjects NOT retrieved
+    negated_ids = [s["project_subject_id"] for s in negated_subjs]
+    for negated_id in negated_ids:
+        assert negated_id not in all_retrieved_ids
+
+    # Verify count (3 unqualified subjects)
+    assert len(all_retrieved_ids) == 3
+
+
+def test_get_subjects_pagination_with_project_subject_ids_filter(invoke_get_subjects_pheno, create_subject_with_evidence):
+    """
+    Test: Pagination maintains project_subject_ids filter across pages.
+
+    Setup: Create 6 subjects, but only 4 in filter list
+    Action: Paginate with project_subject_ids filter, limit=2
+    Verify: All pages only return specified subjects
+    """
+    # Create 6 subjects with known IDs
+    all_subjs = [
+        create_subject_with_evidence(project_subject_id=f"filter-subj-{i}")
+        for i in range(6)
+    ]
+
+    # Filter for only 4 of them
+    filter_ids = ["filter-subj-0", "filter-subj-2", "filter-subj-3", "filter-subj-5"]
+
+    all_retrieved_ids = []
+    cursor = None
+
+    # Paginate through filtered results
+    while True:
+        result = invoke_get_subjects_pheno(
+            project_id=all_subjs[0]["project_id"],
+            project_subject_ids=filter_ids,
+            limit=2,
+            cursor=cursor
+        )
+
+        assert result["statusCode"] == 200
+        body = result["decompressed_body"]
+        subjects = body["body"]
+        pagination = body["pagination"]
+
+        all_retrieved_ids.extend([s["project_subject_id"] for s in subjects])
+
+        if not pagination["has_more"]:
+            break
+
+        cursor = pagination["next_cursor"]
+
+    # Verify all filtered subjects retrieved
+    for expected_id in filter_ids:
+        assert expected_id in all_retrieved_ids
+
+    # Verify non-filtered subjects NOT retrieved
+    assert "filter-subj-1" not in all_retrieved_ids
+    assert "filter-subj-4" not in all_retrieved_ids
+
+    # Verify count (4 subjects in filter)
+    assert len(all_retrieved_ids) == 4
+
+
+def test_get_subjects_pagination_ordering_consistency(invoke_get_subjects_pheno, create_subject_with_evidence):
+    """
+    Test: Verify pagination ordering is consistent across pages.
+
+    Setup: Create 6 subjects
+    Action: Fetch first 3 pages with limit=2, then fetch all at once with limit=10
+    Verify: Paginated order matches bulk order (no reordering between fetches)
+    """
+    # Create 6 subjects
+    subjs = [
+        create_subject_with_evidence(term_iri="http://purl.obolibrary.org/obo/HP_0001249")
+        for _ in range(6)
+    ]
+    project_id = subjs[0]["project_id"]
+
+    # Fetch via pagination
+    paginated_ids = []
+    cursor = None
+
+    while True:
+        result = invoke_get_subjects_pheno(
+            project_id=project_id,
+            limit=2,
+            cursor=cursor
+        )
+
+        assert result["statusCode"] == 200
+        body = result["decompressed_body"]
+        subjects = body["body"]
+        pagination = body["pagination"]
+
+        paginated_ids.extend([s["project_subject_id"] for s in subjects])
+
+        if not pagination["has_more"]:
+            break
+
+        cursor = pagination["next_cursor"]
+
+    # Fetch all at once
+    result_bulk = invoke_get_subjects_pheno(
+        project_id=project_id,
+        limit=10
+    )
+
+    assert result_bulk["statusCode"] == 200
+    bulk_body = result_bulk["decompressed_body"]
+    bulk_ids = [s["project_subject_id"] for s in bulk_body["body"]]
+
+    # Verify ordering is consistent
+    # The paginated IDs should match the bulk IDs in the same order
+    assert len(paginated_ids) == len(bulk_ids)
+    for i, (paginated_id, bulk_id) in enumerate(zip(paginated_ids, bulk_ids)):
+        assert paginated_id == bulk_id, f"Order mismatch at position {i}: {paginated_id} != {bulk_id}"

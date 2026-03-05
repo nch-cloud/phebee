@@ -151,13 +151,41 @@ pytest -m perf -v -s
 
 ### Using Existing Stack
 
-To run tests against an already-deployed stack:
+To speed up local development, you can run tests against an already-deployed stack instead of deploying a new stack each time. There are two methods:
+
+#### Method 1: Command-line flag (one-time use)
 
 ```bash
 pytest tests/integration --existing-stack phebee-integration-test -v
 ```
 
-This skips deployment and uses the specified stack name, making test suite execution significantly faster.
+This skips deployment and uses the specified stack name for that test run only.
+
+#### Method 2: Configuration file (persistent)
+
+Create a `.phebee-test-stack` file in the project root directory:
+
+```bash
+# From project root
+echo "phebee-integration-test" > .phebee-test-stack
+```
+
+Once created, all test runs will automatically use this stack without needing to pass `--existing-stack`:
+
+```bash
+# Automatically uses stack from .phebee-test-stack
+pytest tests/integration -v
+```
+
+**Stack name resolution order:**
+1. `--existing-stack` command-line flag (highest priority)
+2. `.phebee-test-stack` file in project root
+3. Generate new stack name and deploy (slowest)
+
+**Notes:**
+- The `.phebee-test-stack` file should contain only the stack name (single line, no extra whitespace)
+- This file is already in `.gitignore` and won't be committed
+- Performance tests **must** be run from the project root so the file can be found
 
 ---
 
@@ -174,7 +202,7 @@ This skips deployment and uses the specified stack name, making test suite execu
 **For Stack Deployment**:
 - Tests use `pytest.ini` configuration
 - Stack deployment controlled by `conftest.py` fixtures
-- Can override with `--existing-stack` flag
+- Can override with `--existing-stack` flag or `.phebee-test-stack` file
 
 ### Fixtures
 
@@ -191,10 +219,16 @@ Shared fixtures are defined in `conftest.py` files:
 
 **Cause**: SAM CLI couldn't deploy the stack during test setup.
 
-**Solution**: Deploy manually first:
+**Solution**: Deploy manually first, then use the existing stack:
 ```bash
 sam build && sam deploy --config-env integration-test
+
+# Option 1: Use command-line flag
 pytest tests/integration --existing-stack phebee-integration-test -v
+
+# Option 2: Create config file (recommended for repeated testing)
+echo "phebee-integration-test" > .phebee-test-stack
+pytest tests/integration -v
 ```
 
 ### "No module named 'src'"

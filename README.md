@@ -200,8 +200,15 @@ pytest -m integration --profile=dev --config-env=dev -v
 Use an existing deployed stack:
 
 ```bash
+# Using command-line flag
 pytest -m integration --existing-stack <your-stack-name> -v
+
+# Or create .phebee-test-stack file for persistent configuration
+echo "your-stack-name" > .phebee-test-stack
+pytest -m integration -v
 ```
+
+See [Testing Guide](tests/README.md#using-existing-stack) for details.
 
 Run a specific test:
 
