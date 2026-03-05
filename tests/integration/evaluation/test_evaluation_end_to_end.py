@@ -177,7 +177,7 @@ def _mk_term_source_hpo() -> TermSource:
         "PHEBEE_EVAL_HPO_VERSION_IRI",
         f"http://purl.obolibrary.org/obo/hp/releases/{version}/hp.owl",
     )
-    return TermSource(source="HPO", version=version, iri=iri)
+    return TermSource(source="hpo", version=version, iri=iri)
 
 
 def generate_synthetic_jsonl_records(

@@ -1641,7 +1641,7 @@ def query_subject_with_hierarchy(
     # If no version specified, get latest version first from DynamoDB
     if not ontology_version:
         # Use DynamoDB to get current version (fast, cached, uses InstallTimestamp)
-        ontology_version = get_current_term_source_version(ontology_source.upper())
+        ontology_version = get_current_term_source_version(ontology_source.lower())
         if ontology_version:
             version_filter = f"AND h.version = '{ontology_version}'"
 
