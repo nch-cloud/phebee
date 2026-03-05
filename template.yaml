@@ -1489,7 +1489,7 @@ Resources:
     Properties:
       Name: !Sub ${AppName}-BulkEvidenceProcessor
       Type: Spark
-      ReleaseLabel: emr-7.12.0
+      ReleaseLabel: emr-7.10.0
       AutoStartConfiguration:
         Enabled: true
       AutoStopConfiguration:
