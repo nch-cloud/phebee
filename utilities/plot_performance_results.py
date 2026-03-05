@@ -84,18 +84,107 @@ def aggregate_replicates(results_list: List[Dict[str, Any]]) -> List[Dict[str, A
     return list(aggregated.values())
 
 
+def print_data_tables(results_list: List[Dict[str, Any]],
+                      dataset_size: int,
+                      concurrency: int,
+                      metric: str = 'p95'):
+    """
+    Print formatted tables showing the data values used in both panels.
+
+    Args:
+        results_list: Aggregated results
+        dataset_size: Dataset size used for Panel A
+        concurrency: Concurrency level used for Panel B
+        metric: Metric used for Panel B
+    """
+    print("\n" + "="*80)
+    print("DATA TABLES")
+    print("="*80)
+
+    # Panel A: Concurrency Scaling Table
+    print(f"\nPanel A: Concurrency Scaling (N={dataset_size//1000}K subjects)")
+    print("-" * 80)
+
+    # Filter to specific dataset size
+    size_results = [r for r in results_list if r['dataset']['n_subjects'] == dataset_size]
+    size_results = sorted(size_results, key=lambda x: x['load_testing']['concurrency'])
+
+    if size_results:
+        # Get endpoints
+        endpoints = [e['endpoint'] for e in size_results[0]['latency']
+                    if e['endpoint'] != 'version_specific_query']
+        concurrency_levels = [r['load_testing']['concurrency'] for r in size_results]
+
+        # Print header
+        print(f"{'Endpoint':<30}", end='')
+        for conc in concurrency_levels:
+            print(f"  c={conc:>2} P50    c={conc:>2} P95", end='')
+        print()
+        print("-" * 80)
+
+        # Print data for each endpoint
+        for endpoint in endpoints:
+            print(f"{endpoint:<30}", end='')
+            for result in size_results:
+                endpoint_data = next((e for e in result['latency'] if e['endpoint'] == endpoint), None)
+                if endpoint_data:
+                    p50 = endpoint_data['p50_ms'] / 1000
+                    p95 = endpoint_data['p95_ms'] / 1000
+                    print(f"  {p50:>6.3f}s  {p95:>6.3f}s", end='')
+                else:
+                    print(f"  {'N/A':>6}   {'N/A':>6}", end='')
+            print()
+
+    # Panel B: Dataset Scaling Table
+    print(f"\nPanel B: Dataset Size Scaling (c={concurrency}, {metric.upper()})")
+    print("-" * 80)
+
+    # Filter to specific concurrency
+    conc_results = [r for r in results_list if r['load_testing']['concurrency'] == concurrency]
+    conc_results = sorted(conc_results, key=lambda x: x['dataset']['n_subjects'])
+
+    if conc_results:
+        # Get dataset sizes and endpoints
+        dataset_sizes = [r['dataset']['n_subjects'] for r in conc_results]
+        endpoints = [e['endpoint'] for e in conc_results[0]['latency']
+                    if e['endpoint'] != 'version_specific_query']
+
+        # Print header
+        print(f"{'Endpoint':<30}", end='')
+        for size in dataset_sizes:
+            print(f"  {size//1000:>4}K", end='')
+        print()
+        print("-" * 80)
+
+        # Print data for each endpoint
+        for endpoint in endpoints:
+            print(f"{endpoint:<30}", end='')
+            for result in conc_results:
+                endpoint_data = next((e for e in result['latency'] if e['endpoint'] == endpoint), None)
+                if endpoint_data:
+                    value = endpoint_data[f'{metric}_ms'] / 1000
+                    print(f"  {value:>6.3f}s", end='')
+                else:
+                    print(f"  {'N/A':>6}", end='')
+            print()
+
+    print("\n" + "="*80 + "\n")
+
+
 def plot_concurrency_scaling(ax, results_list: List[Dict[str, Any]],
                              dataset_size: int = None, metric: str = 'p95',
-                             show_p95_bars: bool = False):
+                             show_p95_bars: bool = True):
     """
     Panel A: Clustered stacked bar chart showing how endpoints scale with concurrency.
+
+    Shows P50 (darker solid bars) and P95 (lighter bars on top) by default.
 
     Args:
         ax: Matplotlib axis
         results_list: List of result dictionaries
         dataset_size: Target dataset size (if None, uses largest available)
-        metric: Which metric to plot ('p50', 'p95', or 'p99')
-        show_p95_bars: If True and metric='p50', show stacked bars with P50+P95
+        metric: Which metric to plot (ignored when show_p95_bars=True)
+        show_p95_bars: If True, show stacked bars with P50+P95 (default: True)
     """
     # Filter to specific dataset size
     if dataset_size is None:
@@ -121,8 +210,8 @@ def plot_concurrency_scaling(ax, results_list: List[Dict[str, Any]],
     # Color palette
     colors = ['#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6', '#1abc9c', '#34495e']
 
-    # If showing stacked P50+P95 bars
-    if show_p95_bars and metric == 'p50':
+    # If showing stacked P50+P95 bars (default behavior)
+    if show_p95_bars:
         n_endpoints = len(endpoints)
         n_concurrency = len(concurrency_levels)
         bar_width = 0.8 / n_concurrency  # Width of each bar
@@ -284,19 +373,19 @@ def create_performance_figure(results_list: List[Dict[str, Any]],
                               metric: str = 'p95',
                               panel_a_size: int = None,
                               panel_b_conc: int = 1,
-                              show_p95_bars: bool = False):
+                              show_p95_bars: bool = True):
     """
     Create two-panel figure:
-    - Panel A: Concurrency scaling (c=1, c=10, c=25) for a specific dataset size
+    - Panel A: Concurrency scaling with stacked P50+P95 bars (c=1, c=10, c=25) for a specific dataset size
     - Panel B: Dataset size scaling (1K, 5K, 10K, ...) at a specific concurrency
 
     Args:
         results_list: List of result dictionaries
         output_file: Output file path
-        metric: Metric to plot ('p50', 'p95', or 'p99')
+        metric: Metric to plot for Panel B ('p50', 'p95', or 'p99')
         panel_a_size: Dataset size for Panel A (if None, uses largest)
         panel_b_conc: Concurrency level for Panel B (default: 1)
-        show_p95_bars: If True and metric='p50', show clustered stacked bars
+        show_p95_bars: If True, Panel A shows stacked P50+P95 bars (default: True)
 
     If multiple replicates exist for the same (dataset_size, concurrency, endpoint),
     the median value across replicates is used.
@@ -305,6 +394,13 @@ def create_performance_figure(results_list: List[Dict[str, Any]],
     print(f"\nAggregating {len(results_list)} result files...")
     results_list = aggregate_replicates(results_list)
     print(f"Aggregated to {len(results_list)} unique conditions (median across replicates)\n")
+
+    # Determine actual dataset size for Panel A (default to largest)
+    if panel_a_size is None:
+        panel_a_size = max(r['dataset']['n_subjects'] for r in results_list)
+
+    # Print data tables
+    print_data_tables(results_list, panel_a_size, panel_b_conc, metric)
 
     # Create figure with two panels
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
@@ -349,27 +445,24 @@ Examples:
   # Specify output file and metric
   python plot_performance_results.py -o figure1.png -m p95 results_*.json
 
-  # Show p50 with p95 as stacked bars (shows both typical and tail latency)
-  python plot_performance_results.py -m p50 --show-p95-bars results_*.json
-
   # Use 5K dataset for Panel A concurrency comparison
   python plot_performance_results.py --panel-a-size 5000 results_*.json
 
-  # Show p99 metric
-  python plot_performance_results.py -m p99 results_*.json
+  # Show p95 metric for Panel B
+  python plot_performance_results.py -m p95 results_*.json
         """
     )
     parser.add_argument('results', nargs='+', help='JSON result files from performance tests')
     parser.add_argument('-o', '--output', default='performance_figure.png',
                        help='Output file path (default: performance_figure.png)')
     parser.add_argument('-m', '--metric', default='p95', choices=['p50', 'p95', 'p99'],
-                       help='Metric to use for both panels (default: p95)')
+                       help='Metric to use for Panel B dataset scaling (default: p95)')
     parser.add_argument('--panel-a-size', type=int, default=None,
                        help='Dataset size for Panel A concurrency plot (default: largest)')
     parser.add_argument('--panel-b-conc', type=int, default=1,
                        help='Concurrency level for Panel B dataset scaling (default: 1)')
-    parser.add_argument('--show-p95-bars', action='store_true',
-                       help='Show clustered stacked bars with P50 (solid) and P95 (hatched) (only with -m p50)')
+    parser.add_argument('--no-stacked-bars', dest='show_p95_bars', action='store_false',
+                       help='Use line plots for Panel A instead of default stacked P50+P95 bars')
 
     args = parser.parse_args()
 
