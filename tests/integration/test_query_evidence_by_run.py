@@ -11,7 +11,7 @@ import concurrent.futures
 from phebee.utils.aws import get_client
 
 
-def invoke_query_evidence_by_run(run_id, cloudformation_stack, limit=None, next_token=None):
+def invoke_query_evidence_by_run(run_id, app_name, limit=None, next_token=None):
     """Helper to invoke QueryEvidenceByRun lambda."""
     lambda_client = get_client("lambda")
 
@@ -22,7 +22,7 @@ def invoke_query_evidence_by_run(run_id, cloudformation_stack, limit=None, next_
         payload["next_token"] = next_token
 
     response = lambda_client.invoke(
-        FunctionName=f"{cloudformation_stack}-QueryEvidenceByRunFunction",
+        FunctionName=f"{app_name}-QueryEvidenceByRunFunction",
         InvocationType="RequestResponse",
         Payload=json.dumps(payload).encode("utf-8")
     )
@@ -159,11 +159,11 @@ def shared_run_evidence(physical_resources, module_test_subject, standard_hpo_te
     }
 
 
-def test_query_evidence_by_run_success(cloudformation_stack, shared_run_evidence):
+def test_query_evidence_by_run_success(app_name, shared_run_evidence):
     """Test 1: Query run_id returns all evidence."""
     run_id = shared_run_evidence["run_id"]
 
-    result = invoke_query_evidence_by_run(run_id, cloudformation_stack)
+    result = invoke_query_evidence_by_run(run_id, app_name)
 
     assert result["statusCode"] == 200
     body = json.loads(result["body"])
@@ -176,12 +176,12 @@ def test_query_evidence_by_run_success(cloudformation_stack, shared_run_evidence
     assert body["total_count"] == 20
 
 
-def test_query_evidence_pagination(cloudformation_stack, shared_run_evidence):
+def test_query_evidence_pagination(app_name, shared_run_evidence):
     """Test 2: Pagination with limit=8 across 3 pages."""
     run_id = shared_run_evidence["run_id"]
 
     # First page with limit=8
-    result1 = invoke_query_evidence_by_run(run_id, cloudformation_stack, limit=8)
+    result1 = invoke_query_evidence_by_run(run_id, app_name, limit=8)
     assert result1["statusCode"] == 200
     body1 = json.loads(result1["body"])
 
@@ -191,7 +191,7 @@ def test_query_evidence_pagination(cloudformation_stack, shared_run_evidence):
     assert body1["total_count"] == 20  # Total count on first page
 
     # Second page
-    result2 = invoke_query_evidence_by_run(run_id, cloudformation_stack, limit=8, next_token=body1["next_token"])
+    result2 = invoke_query_evidence_by_run(run_id, app_name, limit=8, next_token=body1["next_token"])
     body2 = json.loads(result2["body"])
 
     assert body2["evidence_count"] == 8
@@ -199,19 +199,19 @@ def test_query_evidence_pagination(cloudformation_stack, shared_run_evidence):
     assert "total_count" not in body2  # No count on subsequent pages
 
     # Third page
-    result3 = invoke_query_evidence_by_run(run_id, cloudformation_stack, limit=8, next_token=body2["next_token"])
+    result3 = invoke_query_evidence_by_run(run_id, app_name, limit=8, next_token=body2["next_token"])
     body3 = json.loads(result3["body"])
 
     assert body3["evidence_count"] == 4  # Remaining records
     assert body3["has_more"] is False
 
 
-def test_query_evidence_limit_parameter(cloudformation_stack, shared_run_evidence):
+def test_query_evidence_limit_parameter(app_name, shared_run_evidence):
     """Test 3: Limit parameter restricts results correctly."""
     run_id = shared_run_evidence["run_id"]
 
     # Query with limit=5
-    result = invoke_query_evidence_by_run(run_id, cloudformation_stack, limit=5)
+    result = invoke_query_evidence_by_run(run_id, app_name, limit=5)
 
     assert result["statusCode"] == 200
     body = json.loads(result["body"])
@@ -221,8 +221,8 @@ def test_query_evidence_limit_parameter(cloudformation_stack, shared_run_evidenc
     assert body["has_more"] is True
 
 
-def test_query_evidence_max_10k_limit(cloudformation_stack):
-    """Test 4: Limit capped at 10k even if higher requested."""
+def test_query_evidence_max_10k_limit(app_name):
+    """Test4: Limit capped at 10k even if higher requested."""
     result = invoke_query_evidence_by_run(
         "nonexistent-run",
         cloudformation_stack,
@@ -236,11 +236,11 @@ def test_query_evidence_max_10k_limit(cloudformation_stack):
     assert body["limit"] == 10000
 
 
-def test_query_evidence_empty_run(cloudformation_stack):
-    """Test 5: Query for run_id with no data returns empty array."""
+def test_query_evidence_empty_run(app_name):
+    """Test5: Query for run_id with no data returns empty array."""
     run_id = f"nonexistent-run-{int(time.time())}"
 
-    result = invoke_query_evidence_by_run(run_id, cloudformation_stack)
+    result = invoke_query_evidence_by_run(run_id, app_name)
 
     assert result["statusCode"] == 200
     body = json.loads(result["body"])
@@ -252,12 +252,12 @@ def test_query_evidence_empty_run(cloudformation_stack):
     assert body["total_count"] == 0
 
 
-def test_query_evidence_missing_run_id(cloudformation_stack):
-    """Test 6: Missing run_id returns 400 error."""
+def test_query_evidence_missing_run_id(app_name):
+    """Test6: Missing run_id returns 400 error."""
     lambda_client = get_client("lambda")
 
     response = lambda_client.invoke(
-        FunctionName=f"{cloudformation_stack}-QueryEvidenceByRunFunction",
+        FunctionName=f"{app_name}-QueryEvidenceByRunFunction",
         InvocationType="RequestResponse",
         Payload=json.dumps({}).encode("utf-8")  # No run_id
     )
@@ -269,12 +269,12 @@ def test_query_evidence_missing_run_id(cloudformation_stack):
     assert "run_id is required" in body["message"]
 
 
-def test_query_evidence_total_count_first_page(cloudformation_stack, shared_run_evidence):
+def test_query_evidence_total_count_first_page(app_name, shared_run_evidence):
     """Test 7: First page includes total_count."""
     run_id = shared_run_evidence["run_id"]
 
     # First page query
-    result = invoke_query_evidence_by_run(run_id, cloudformation_stack)
+    result = invoke_query_evidence_by_run(run_id, app_name)
 
     assert result["statusCode"] == 200
     body = json.loads(result["body"])
@@ -304,7 +304,7 @@ def test_query_evidence_creator_struct_parsed(
         evidence_creator_name="Test Creator"
     )
 
-    result = invoke_query_evidence_by_run(run_id, cloudformation_stack)
+    result = invoke_query_evidence_by_run(run_id, app_name)
 
     assert result["statusCode"] == 200
     body = json.loads(result["body"])
@@ -320,11 +320,11 @@ def test_query_evidence_creator_struct_parsed(
     assert creator.get("creator_type") == "automated"
 
 
-def test_query_evidence_fields_complete(cloudformation_stack, shared_run_evidence):
+def test_query_evidence_fields_complete(app_name, shared_run_evidence):
     """Test 10: All evidence fields present in response."""
     run_id = shared_run_evidence["run_id"]
 
-    result = invoke_query_evidence_by_run(run_id, cloudformation_stack, limit=1)
+    result = invoke_query_evidence_by_run(run_id, app_name, limit=1)
 
     assert result["statusCode"] == 200
     body = json.loads(result["body"])
@@ -350,11 +350,11 @@ def test_query_evidence_fields_complete(cloudformation_stack, shared_run_evidenc
     assert evidence["subject_id"] == shared_run_evidence["subject_id"]
 
 
-def test_query_evidence_ordered_by_timestamp(cloudformation_stack, shared_run_evidence):
+def test_query_evidence_ordered_by_timestamp(app_name, shared_run_evidence):
     """Test 11: Results ordered by created_timestamp ascending."""
     run_id = shared_run_evidence["run_id"]
 
-    result = invoke_query_evidence_by_run(run_id, cloudformation_stack)
+    result = invoke_query_evidence_by_run(run_id, app_name)
 
     assert result["statusCode"] == 200
     body = json.loads(result["body"])
@@ -388,7 +388,7 @@ def test_query_evidence_concurrent_queries(
 
     # Query all runs concurrently
     def query_run(run_id):
-        return invoke_query_evidence_by_run(run_id, cloudformation_stack)
+        return invoke_query_evidence_by_run(run_id, app_name)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
         futures = [executor.submit(query_run, run_id) for run_id in run_ids]
@@ -404,13 +404,13 @@ def test_query_evidence_concurrent_queries(
         assert body["total_count"] == 2
 
 
-def test_query_evidence_idempotent(cloudformation_stack, shared_run_evidence):
+def test_query_evidence_idempotent(app_name, shared_run_evidence):
     """Test 16: Same query twice returns same results."""
     run_id = shared_run_evidence["run_id"]
 
     # Query twice
-    result1 = invoke_query_evidence_by_run(run_id, cloudformation_stack, limit=10)
-    result2 = invoke_query_evidence_by_run(run_id, cloudformation_stack, limit=10)
+    result1 = invoke_query_evidence_by_run(run_id, app_name, limit=10)
+    result2 = invoke_query_evidence_by_run(run_id, app_name, limit=10)
 
     assert result1["statusCode"] == result2["statusCode"]
 
@@ -422,28 +422,28 @@ def test_query_evidence_idempotent(cloudformation_stack, shared_run_evidence):
     assert body1["has_more"] == body2["has_more"]
 
 
-def test_query_evidence_has_more_flag(cloudformation_stack, shared_run_evidence):
+def test_query_evidence_has_more_flag(app_name, shared_run_evidence):
     """Test 19: has_more flag indicates more pages available."""
     run_id = shared_run_evidence["run_id"]
 
     # Query with limit=10 (has more since we have 20)
-    result1 = invoke_query_evidence_by_run(run_id, cloudformation_stack, limit=10)
+    result1 = invoke_query_evidence_by_run(run_id, app_name, limit=10)
     body1 = json.loads(result1["body"])
 
     assert body1["has_more"] is True
 
     # Query all (no more)
-    result2 = invoke_query_evidence_by_run(run_id, cloudformation_stack, limit=30)
+    result2 = invoke_query_evidence_by_run(run_id, app_name, limit=30)
     body2 = json.loads(result2["body"])
 
     assert body2["has_more"] is False
 
 
-def test_query_evidence_response_structure(cloudformation_stack, shared_run_evidence):
+def test_query_evidence_response_structure(app_name, shared_run_evidence):
     """Test: Response has all required fields."""
     run_id = shared_run_evidence["run_id"]
 
-    result = invoke_query_evidence_by_run(run_id, cloudformation_stack)
+    result = invoke_query_evidence_by_run(run_id, app_name)
 
     assert result["statusCode"] == 200
     body = json.loads(result["body"])
@@ -465,12 +465,12 @@ def test_query_evidence_response_structure(cloudformation_stack, shared_run_evid
     assert isinstance(body["has_more"], bool)
 
 
-def test_query_evidence_null_run_id(cloudformation_stack):
+def test_query_evidence_null_run_id(app_name):
     """Test: Null run_id returns 400 error."""
     lambda_client = get_client("lambda")
 
     response = lambda_client.invoke(
-        FunctionName=f"{cloudformation_stack}-QueryEvidenceByRunFunction",
+        FunctionName=f"{app_name}-QueryEvidenceByRunFunction",
         InvocationType="RequestResponse",
         Payload=json.dumps({"run_id": None}).encode("utf-8")
     )
@@ -480,12 +480,12 @@ def test_query_evidence_null_run_id(cloudformation_stack):
     assert result["statusCode"] == 400
 
 
-def test_query_evidence_empty_string_run_id(cloudformation_stack):
+def test_query_evidence_empty_string_run_id(app_name):
     """Test: Empty string run_id returns 400 error."""
     lambda_client = get_client("lambda")
 
     response = lambda_client.invoke(
-        FunctionName=f"{cloudformation_stack}-QueryEvidenceByRunFunction",
+        FunctionName=f"{app_name}-QueryEvidenceByRunFunction",
         InvocationType="RequestResponse",
         Payload=json.dumps({"run_id": ""}).encode("utf-8")
     )

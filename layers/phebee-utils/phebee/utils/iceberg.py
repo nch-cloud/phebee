@@ -2796,7 +2796,7 @@ def reset_iceberg_tables() -> bool:
     bucket_name = os.environ.get('PHEBEE_BUCKET_NAME') if not managed else None
 
     for table_name, table_desc in tables:
-        delete_query = f"DELETE FROM {database_name}.{table_name}"
+        delete_query = f'DELETE FROM {database_name}.{table_name}'
 
         logger.info(f"Clearing Iceberg table: {table_desc}")
 

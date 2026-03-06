@@ -129,6 +129,27 @@ def cloudformation_stack(request, aws_session, profile_name):
     if not existing_stack:
         # Tear down the stack after tests
         try:
+            # Empty S3 bucket before deletion to avoid "bucket not empty" errors
+            try:
+                resources = cf_client.list_stack_resources(StackName=stack_name)
+                bucket_name = None
+                for resource in resources.get("StackResourceSummaries", []):
+                    if resource["LogicalResourceId"] == "PheBeeBucket":
+                        bucket_name = resource["PhysicalResourceId"]
+                        break
+
+                if bucket_name:
+                    print(f"Emptying S3 bucket {bucket_name} before stack deletion...")
+                    s3 = boto3.resource('s3')
+                    bucket = s3.Bucket(bucket_name)
+
+                    # Delete all objects and versions
+                    bucket.object_versions.all().delete()
+                    print(f"Successfully emptied bucket {bucket_name}")
+            except Exception as e:
+                print(f"Warning: Failed to empty S3 bucket: {e}")
+                # Continue with deletion attempt anyway
+
             teardown_args = ["sam", "delete", "--stack-name", stack_name, "--no-prompts"]
             if profile_name:
                 teardown_args.extend(["--profile", profile_name])
@@ -189,6 +210,16 @@ def stack_outputs(cloudformation_stack):
     response = cf_client.describe_stacks(StackName=cloudformation_stack)
     outputs = response["Stacks"][0].get("Outputs", [])
     return {o["OutputKey"]: o["OutputValue"] for o in outputs}
+
+
+@pytest.fixture(scope="session")
+def app_name(physical_resources):
+    """Get the AppName parameter value from stack outputs.
+
+    Use this for constructing Lambda function names instead of stack name.
+    Lambda functions are named as: {app_name}-FunctionName
+    """
+    return physical_resources["AppName"]
 
 
 @pytest.fixture(scope="session")
@@ -299,7 +330,7 @@ def set_env_variables_from_stack(cloudformation_stack):
 # ============================================================================
 
 @pytest.fixture
-def test_project_id(cloudformation_stack):
+def test_project_id(physical_resources):
     """Create a test project and return its ID."""
     lambda_client = get_client("lambda")
     project_id = f"test_project_{uuid.uuid4().hex[:8]}"
@@ -309,7 +340,7 @@ def test_project_id(cloudformation_stack):
 
     # Create the project
     create_response = lambda_client.invoke(
-        FunctionName=f"{cloudformation_stack}-CreateProjectFunction",
+        FunctionName=f"{physical_resources['AppName']}-CreateProjectFunction",
         InvocationType="RequestResponse",
         Payload=json.dumps({"body": json.dumps(payload)}),
     )

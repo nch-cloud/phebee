@@ -12,20 +12,17 @@ from phebee.utils.aws import get_client
 
 
 @pytest.fixture
-def s3_bucket(cloudformation_stack):
-    """Get S3 bucket name from CloudFormation stack."""
-    cf_client = get_client("cloudformation")
-    response = cf_client.describe_stacks(StackName=cloudformation_stack)
-    outputs = {o['OutputKey']: o['OutputValue'] for o in response['Stacks'][0]['Outputs']}
-    return outputs['PheBeeBucketName']
+def s3_bucket(physical_resources):
+    """Get S3 bucket name from stack resources."""
+    return physical_resources['PheBeeBucketName']
 
 
-def invoke_validate_bulk_import(run_id, input_path, cloudformation_stack):
+def invoke_validate_bulk_import(run_id, input_path, app_name):
     """Helper to invoke ValidateBulkImport lambda."""
     lambda_client = get_client("lambda")
 
     response = lambda_client.invoke(
-        FunctionName=f"{cloudformation_stack}-ValidateBulkImportFunction",
+        FunctionName=f"{app_name}-ValidateBulkImportFunction",
         InvocationType="RequestResponse",
         Payload=json.dumps({
             "run_id": run_id,
@@ -77,7 +74,7 @@ def cleanup_s3_prefix(bucket, prefix):
         print(f"Warning: Cleanup failed: {e}")
 
 
-def test_validate_valid_bulk_import(cloudformation_stack, s3_bucket):
+def test_validate_valid_bulk_import(app_name,s3_bucket):
     """Test 1: Validate path with JSONL files succeeds."""
     run_id = f"test-run-{int(time.time())}"
     project_id = "test-project-123"
@@ -89,7 +86,7 @@ def test_validate_valid_bulk_import(cloudformation_stack, s3_bucket):
         upload_test_jsonl_files(s3_bucket, prefix, file_count=2)
 
         # Validate
-        result = invoke_validate_bulk_import(run_id, input_path, cloudformation_stack)
+        result = invoke_validate_bulk_import(run_id, input_path, app_name)
 
         assert result["statusCode"] == 200
         assert "body" in result
@@ -108,7 +105,7 @@ def test_validate_valid_bulk_import(cloudformation_stack, s3_bucket):
         cleanup_s3_prefix(s3_bucket, prefix)
 
 
-def test_validate_multiple_jsonl_files(cloudformation_stack, s3_bucket):
+def test_validate_multiple_jsonl_files(app_name,s3_bucket):
     """Test 2: Multiple JSONL files are all found and counted."""
     run_id = f"test-run-{int(time.time())}"
     prefix = f"test/runs/{run_id}/"
@@ -118,7 +115,7 @@ def test_validate_multiple_jsonl_files(cloudformation_stack, s3_bucket):
         # Upload 5 files
         uploaded = upload_test_jsonl_files(s3_bucket, prefix, file_count=5)
 
-        result = invoke_validate_bulk_import(run_id, input_path, cloudformation_stack)
+        result = invoke_validate_bulk_import(run_id, input_path, app_name)
 
         assert result["statusCode"] == 200
         body = result["body"]
@@ -133,7 +130,7 @@ def test_validate_multiple_jsonl_files(cloudformation_stack, s3_bucket):
         cleanup_s3_prefix(s3_bucket, prefix)
 
 
-def test_validate_missing_jsonl_directory(cloudformation_stack, s3_bucket):
+def test_validate_missing_jsonl_directory(app_name,s3_bucket):
     """Test 3: Path without jsonl/ subdirectory raises error."""
     run_id = f"test-run-{int(time.time())}"
     prefix = f"test/runs/{run_id}/"
@@ -149,7 +146,7 @@ def test_validate_missing_jsonl_directory(cloudformation_stack, s3_bucket):
         )
 
         # Validation should fail
-        result = invoke_validate_bulk_import(run_id, input_path, cloudformation_stack)
+        result = invoke_validate_bulk_import(run_id, input_path, app_name)
 
         # Lambda returns error in response
         assert "errorMessage" in result or "errorType" in result
@@ -160,7 +157,7 @@ def test_validate_missing_jsonl_directory(cloudformation_stack, s3_bucket):
         cleanup_s3_prefix(s3_bucket, prefix)
 
 
-def test_validate_empty_jsonl_directory(cloudformation_stack, s3_bucket):
+def test_validate_empty_jsonl_directory(app_name,s3_bucket):
     """Test 4: Empty jsonl/ directory raises error."""
     run_id = f"test-run-{int(time.time())}"
     prefix = f"test/runs/{run_id}/"
@@ -175,7 +172,7 @@ def test_validate_empty_jsonl_directory(cloudformation_stack, s3_bucket):
             Body=b""
         )
 
-        result = invoke_validate_bulk_import(run_id, input_path, cloudformation_stack)
+        result = invoke_validate_bulk_import(run_id, input_path, app_name)
 
         # Lambda returns error in response
         assert "errorMessage" in result or "errorType" in result
@@ -186,7 +183,7 @@ def test_validate_empty_jsonl_directory(cloudformation_stack, s3_bucket):
         cleanup_s3_prefix(s3_bucket, prefix)
 
 
-def test_validate_non_jsonl_files_ignored(cloudformation_stack, s3_bucket):
+def test_validate_non_jsonl_files_ignored(app_name,s3_bucket):
     """Test 5: Non-JSONL files are ignored."""
     run_id = f"test-run-{int(time.time())}"
     prefix = f"test/runs/{run_id}/"
@@ -209,7 +206,7 @@ def test_validate_non_jsonl_files_ignored(cloudformation_stack, s3_bucket):
         s3_client.put_object(Bucket=s3_bucket, Key=f"{jsonl_prefix}data.csv", Body=b"csv")
         s3_client.put_object(Bucket=s3_bucket, Key=f"{jsonl_prefix}data.parquet", Body=b"parquet")
 
-        result = invoke_validate_bulk_import(run_id, input_path, cloudformation_stack)
+        result = invoke_validate_bulk_import(run_id, input_path, app_name)
 
         assert result["statusCode"] == 200
         body = result["body"]
@@ -221,13 +218,13 @@ def test_validate_non_jsonl_files_ignored(cloudformation_stack, s3_bucket):
         cleanup_s3_prefix(s3_bucket, prefix)
 
 
-def test_validate_missing_run_id(cloudformation_stack, s3_bucket):
+def test_validate_missing_run_id(app_name,s3_bucket):
     """Test 6: Missing run_id raises error."""
     lambda_client = get_client("lambda")
 
     with pytest.raises(Exception) as exc_info:
         response = lambda_client.invoke(
-            FunctionName=f"{cloudformation_stack}-ValidateBulkImportFunction",
+            FunctionName=f"{app_name}-ValidateBulkImportFunction",
             InvocationType="RequestResponse",
             Payload=json.dumps({
                 "input_path": f"s3://{s3_bucket}/test/"
@@ -240,13 +237,13 @@ def test_validate_missing_run_id(cloudformation_stack, s3_bucket):
     assert "run_id and input_path are required" in str(exc_info.value)
 
 
-def test_validate_missing_input_path(cloudformation_stack, s3_bucket):
+def test_validate_missing_input_path(app_name,s3_bucket):
     """Test 7: Missing input_path raises error."""
     lambda_client = get_client("lambda")
 
     with pytest.raises(Exception) as exc_info:
         response = lambda_client.invoke(
-            FunctionName=f"{cloudformation_stack}-ValidateBulkImportFunction",
+            FunctionName=f"{app_name}-ValidateBulkImportFunction",
             InvocationType="RequestResponse",
             Payload=json.dumps({
                 "run_id": "test-run-123"
@@ -283,7 +280,7 @@ def test_validate_nonexistent_bucket(cloudformation_stack):
     assert "Bucket not found" in error_msg or "NoSuchBucket" in error_msg
 
 
-def test_validate_nonexistent_prefix(cloudformation_stack, s3_bucket):
+def test_validate_nonexistent_prefix(app_name,s3_bucket):
     """Test 10: Nonexistent prefix raises error."""
     result = invoke_validate_bulk_import(
         "test-run",
@@ -297,7 +294,7 @@ def test_validate_nonexistent_prefix(cloudformation_stack, s3_bucket):
     assert "No JSONL files found" in error_msg
 
 
-def test_extract_project_id_from_path(cloudformation_stack, s3_bucket):
+def test_extract_project_id_from_path(app_name,s3_bucket):
     """Test 11: Project ID is correctly extracted from path."""
     run_id = f"test-run-{int(time.time())}"
     project_id = "my-project-123"
@@ -307,7 +304,7 @@ def test_extract_project_id_from_path(cloudformation_stack, s3_bucket):
     try:
         upload_test_jsonl_files(s3_bucket, prefix)
 
-        result = invoke_validate_bulk_import(run_id, input_path, cloudformation_stack)
+        result = invoke_validate_bulk_import(run_id, input_path, app_name)
 
         assert result["statusCode"] == 200
         body = result["body"]
@@ -319,7 +316,7 @@ def test_extract_project_id_from_path(cloudformation_stack, s3_bucket):
         cleanup_s3_prefix(s3_bucket, prefix)
 
 
-def test_project_id_not_in_path(cloudformation_stack, s3_bucket):
+def test_project_id_not_in_path(app_name,s3_bucket):
     """Test 12: Path without 'projects/' structure returns None for project_id."""
     run_id = f"test-run-{int(time.time())}"
     prefix = f"test/data/{run_id}/"
@@ -328,7 +325,7 @@ def test_project_id_not_in_path(cloudformation_stack, s3_bucket):
     try:
         upload_test_jsonl_files(s3_bucket, prefix)
 
-        result = invoke_validate_bulk_import(run_id, input_path, cloudformation_stack)
+        result = invoke_validate_bulk_import(run_id, input_path, app_name)
 
         assert result["statusCode"] == 200
         body = result["body"]
@@ -340,7 +337,7 @@ def test_project_id_not_in_path(cloudformation_stack, s3_bucket):
         cleanup_s3_prefix(s3_bucket, prefix)
 
 
-def test_validate_mixed_jsonl_and_json(cloudformation_stack, s3_bucket):
+def test_validate_mixed_jsonl_and_json(app_name,s3_bucket):
     """Test 16: Both .jsonl and .json extensions are accepted."""
     run_id = f"test-run-{int(time.time())}"
     prefix = f"test/runs/{run_id}/"
@@ -354,7 +351,7 @@ def test_validate_mixed_jsonl_and_json(cloudformation_stack, s3_bucket):
         s3_client.put_object(Bucket=s3_bucket, Key=f"{jsonl_prefix}data1.jsonl", Body=b'{"test": 1}\n')
         s3_client.put_object(Bucket=s3_bucket, Key=f"{jsonl_prefix}data2.json", Body=b'{"test": 2}\n')
 
-        result = invoke_validate_bulk_import(run_id, input_path, cloudformation_stack)
+        result = invoke_validate_bulk_import(run_id, input_path, app_name)
 
         assert result["statusCode"] == 200
         body = result["body"]
@@ -365,7 +362,7 @@ def test_validate_mixed_jsonl_and_json(cloudformation_stack, s3_bucket):
         cleanup_s3_prefix(s3_bucket, prefix)
 
 
-def test_validate_response_structure(cloudformation_stack, s3_bucket):
+def test_validate_response_structure(app_name,s3_bucket):
     """Test 17: Response has required fields."""
     run_id = f"test-run-{int(time.time())}"
     prefix = f"test/runs/{run_id}/"
@@ -374,7 +371,7 @@ def test_validate_response_structure(cloudformation_stack, s3_bucket):
     try:
         upload_test_jsonl_files(s3_bucket, prefix)
 
-        result = invoke_validate_bulk_import(run_id, input_path, cloudformation_stack)
+        result = invoke_validate_bulk_import(run_id, input_path, app_name)
 
         assert result["statusCode"] == 200
         assert "body" in result
@@ -393,7 +390,7 @@ def test_validate_response_structure(cloudformation_stack, s3_bucket):
         cleanup_s3_prefix(s3_bucket, prefix)
 
 
-def test_validate_idempotency(cloudformation_stack, s3_bucket):
+def test_validate_idempotency(app_name,s3_bucket):
     """Test 19: Same validation twice returns identical results."""
     run_id = f"test-run-{int(time.time())}"
     prefix = f"test/runs/{run_id}/"
@@ -402,8 +399,8 @@ def test_validate_idempotency(cloudformation_stack, s3_bucket):
     try:
         upload_test_jsonl_files(s3_bucket, prefix, file_count=3)
 
-        result1 = invoke_validate_bulk_import(run_id, input_path, cloudformation_stack)
-        result2 = invoke_validate_bulk_import(run_id, input_path, cloudformation_stack)
+        result1 = invoke_validate_bulk_import(run_id, input_path, app_name)
+        result2 = invoke_validate_bulk_import(run_id, input_path, app_name)
 
         assert result1["statusCode"] == result2["statusCode"]
 
@@ -418,7 +415,7 @@ def test_validate_idempotency(cloudformation_stack, s3_bucket):
         cleanup_s3_prefix(s3_bucket, prefix)
 
 
-def test_validate_concurrent_validations(cloudformation_stack, s3_bucket):
+def test_validate_concurrent_validations(app_name,s3_bucket):
     """Test 20: Concurrent validations don't interfere."""
     run_ids = [f"test-run-{int(time.time())}-{i}" for i in range(3)]
     prefixes = [f"test/runs/{run_id}/" for run_id in run_ids]
@@ -431,7 +428,7 @@ def test_validate_concurrent_validations(cloudformation_stack, s3_bucket):
         # Validate concurrently
         def validate(run_id, prefix):
             input_path = f"s3://{s3_bucket}/{prefix}"
-            return invoke_validate_bulk_import(run_id, input_path, cloudformation_stack)
+            return invoke_validate_bulk_import(run_id, input_path, app_name)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
             futures = [

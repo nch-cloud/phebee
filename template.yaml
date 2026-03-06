@@ -61,8 +61,8 @@ Parameters:
 
   IcebergDatabase:
     Type: String
-    Default: "phebee"
-    Description: "Glue database name for Iceberg tables"
+    Default: ""
+    Description: "Glue database name for Iceberg tables. If empty, will use 'phebee-{AppName}'"
   
   IcebergEvidenceTable:
     Type: String
@@ -131,6 +131,8 @@ Conditions:
   ShouldEnableS3Logging: !Not [!Equals [!Ref S3AccessLogBucketName, ""]]
 
   EnableScheduledOntologyUpdate: !Equals [!Ref RunOntologyUpdatesOnSchedule, "true"]
+
+  IcebergDatabaseProvided: !Not [!Equals [!Ref IcebergDatabase, ""]]
 
   ShouldCreateEvidenceTable: !Equals [!Ref CreateEvidenceTableFlag, "true"]
 
@@ -708,7 +710,7 @@ Resources:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
           Region: !Sub ${AWS::Region}
           PheBeeDynamoTable: !Ref DynamoDBTable
-          ICEBERG_DATABASE: !Ref IcebergDatabase
+          ICEBERG_DATABASE: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
           ICEBERG_SUBJECT_TERMS_BY_SUBJECT_TABLE: !Ref IcebergSubjectTermsBySubjectTable
           PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
       VpcConfig:
@@ -733,7 +735,7 @@ Resources:
         - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
-          ICEBERG_DATABASE: !Ref IcebergDatabase
+          ICEBERG_DATABASE: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
           ICEBERG_EVIDENCE_TABLE: !Ref IcebergEvidenceTable
           ICEBERG_SUBJECT_TERMS_BY_SUBJECT_TABLE: !Ref IcebergSubjectTermsBySubjectTable
           ICEBERG_SUBJECT_TERMS_BY_PROJECT_TERM_TABLE: !Ref IcebergSubjectTermsByProjectTermTable
@@ -759,7 +761,7 @@ Resources:
           Region: !Sub ${AWS::Region}
           PheBeeBus: !Ref PheBeeBus
           PheBeeDynamoTable: !Ref DynamoDBTable
-          ICEBERG_DATABASE: !Ref IcebergDatabase
+          ICEBERG_DATABASE: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
           ICEBERG_EVIDENCE_TABLE: !Ref IcebergEvidenceTable
           ICEBERG_SUBJECT_TERMS_BY_SUBJECT_TABLE: !Ref IcebergSubjectTermsBySubjectTable
           ICEBERG_SUBJECT_TERMS_BY_PROJECT_TERM_TABLE: !Ref IcebergSubjectTermsByProjectTermTable
@@ -791,7 +793,7 @@ Resources:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
           Region: !Sub ${AWS::Region}
-          ICEBERG_DATABASE: !Ref IcebergDatabase
+          ICEBERG_DATABASE: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
           ICEBERG_EVIDENCE_TABLE: !Ref IcebergEvidenceTable
           ICEBERG_SUBJECT_TERMS_BY_SUBJECT_TABLE: !Ref IcebergSubjectTermsBySubjectTable
           ICEBERG_SUBJECT_TERMS_BY_PROJECT_TERM_TABLE: !Ref IcebergSubjectTermsByProjectTermTable
@@ -848,7 +850,7 @@ Resources:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
           Region: !Sub ${AWS::Region}
           PheBeeDynamoTable: !Ref DynamoDBTable
-          ICEBERG_DATABASE: !Ref IcebergDatabase
+          ICEBERG_DATABASE: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
           ICEBERG_EVIDENCE_TABLE: !Ref IcebergEvidenceTable
           ICEBERG_SUBJECT_TERMS_BY_PROJECT_TERM_TABLE: !Ref IcebergSubjectTermsByProjectTermTable
           ICEBERG_SUBJECT_TERMS_BY_SUBJECT_TABLE: !Ref IcebergSubjectTermsBySubjectTable
@@ -919,7 +921,7 @@ Resources:
           PheBeeBucketName: !Ref PheBeeBucket
           PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
           PheBeeDynamoTable: !Ref DynamoDBTable
-          ICEBERG_DATABASE: !Ref IcebergDatabase
+          ICEBERG_DATABASE: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
           ICEBERG_SUBJECT_TERMS_BY_SUBJECT_TABLE: !Ref IcebergSubjectTermsBySubjectTable
           ICEBERG_SUBJECT_TERMS_BY_PROJECT_TERM_TABLE: !Ref IcebergSubjectTermsByProjectTermTable
           ICEBERG_ONTOLOGY_HIERARCHY_TABLE: !Ref IcebergOntologyHierarchyTable
@@ -951,7 +953,7 @@ Resources:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
           NeptuneClusterIdentifier: !Ref PheBeeNeptuneCluster
           PheBeeDynamoTable: !Ref DynamoDBTable
-          ICEBERG_DATABASE: !Ref IcebergDatabase
+          ICEBERG_DATABASE: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
           ICEBERG_EVIDENCE_TABLE: !Ref IcebergEvidenceTable
           ICEBERG_SUBJECT_TERMS_BY_SUBJECT_TABLE: !Ref IcebergSubjectTermsBySubjectTable
           ICEBERG_SUBJECT_TERMS_BY_PROJECT_TERM_TABLE: !Ref IcebergSubjectTermsByProjectTermTable
@@ -981,7 +983,7 @@ Resources:
         - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
-          ICEBERG_DATABASE: !Ref IcebergDatabase
+          ICEBERG_DATABASE: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
           ICEBERG_EVIDENCE_TABLE: !Ref IcebergEvidenceTable
           ICEBERG_SUBJECT_TERMS_BY_SUBJECT_TABLE: !Ref IcebergSubjectTermsBySubjectTable
           ICEBERG_SUBJECT_TERMS_BY_PROJECT_TERM_TABLE: !Ref IcebergSubjectTermsByProjectTermTable
@@ -1014,7 +1016,7 @@ Resources:
         - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
-          ICEBERG_DATABASE: !Ref IcebergDatabase
+          ICEBERG_DATABASE: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
           ICEBERG_EVIDENCE_TABLE: !Ref IcebergEvidenceTable
           PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
           EVIDENCE_TABLE: !Sub ${AppName}_evidence
@@ -1033,7 +1035,7 @@ Resources:
         - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
-          ICEBERG_DATABASE: !Ref IcebergDatabase
+          ICEBERG_DATABASE: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
           ICEBERG_EVIDENCE_TABLE: !Ref IcebergEvidenceTable
           ICEBERG_SUBJECT_TERMS_BY_SUBJECT_TABLE: !Ref IcebergSubjectTermsBySubjectTable
           ICEBERG_SUBJECT_TERMS_BY_PROJECT_TERM_TABLE: !Ref IcebergSubjectTermsByProjectTermTable
@@ -1057,7 +1059,7 @@ Resources:
         - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
-          ICEBERG_DATABASE: !Ref IcebergDatabase
+          ICEBERG_DATABASE: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
           ICEBERG_EVIDENCE_TABLE: !Ref IcebergEvidenceTable
           PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
       Policies:
@@ -1271,7 +1273,7 @@ Resources:
         - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
-          ICEBERG_DATABASE: !Ref IcebergDatabase
+          ICEBERG_DATABASE: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
           ICEBERG_EVIDENCE_TABLE: !Ref IcebergEvidenceTable
           ICEBERG_SUBJECT_TERMS_BY_SUBJECT_TABLE: !Ref IcebergSubjectTermsBySubjectTable
           ICEBERG_SUBJECT_TERMS_BY_PROJECT_TERM_TABLE: !Ref IcebergSubjectTermsByProjectTermTable
@@ -1305,8 +1307,12 @@ Resources:
                 - glue:UpdateTable
               Resource:
                 - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog"
-                - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/${IcebergDatabase}"
-                - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/${IcebergDatabase}/*"
+                - !Sub
+                  - "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/${DbName}"
+                  - DbName: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
+                - !Sub
+                  - "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/${DbName}/*"
+                  - DbName: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
             - Effect: Allow
               Action:
                 - dynamodb:Query
@@ -1327,7 +1333,7 @@ Resources:
         - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
-          ICEBERG_DATABASE: !Ref IcebergDatabase
+          ICEBERG_DATABASE: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
           ICEBERG_ONTOLOGY_HIERARCHY_TABLE: !Ref IcebergOntologyHierarchyTable
           PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
       Policies:
@@ -1363,8 +1369,12 @@ Resources:
                 - glue:UpdateTable
               Resource:
                 - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog"
-                - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/${IcebergDatabase}"
-                - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/${IcebergDatabase}/*"
+                - !Sub
+                  - "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/${DbName}"
+                  - DbName: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
+                - !Sub
+                  - "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/${DbName}/*"
+                  - DbName: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
 
   InsertOntologyHierarchyBatchFunction:
     Type: AWS::Serverless::Function
@@ -1378,7 +1388,7 @@ Resources:
         - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
-          ICEBERG_DATABASE: !Ref IcebergDatabase
+          ICEBERG_DATABASE: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
           ICEBERG_ONTOLOGY_HIERARCHY_TABLE: !Ref IcebergOntologyHierarchyTable
           PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
       Policies:
@@ -1414,8 +1424,12 @@ Resources:
                 - glue:UpdateTable
               Resource:
                 - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog"
-                - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/${IcebergDatabase}"
-                - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/${IcebergDatabase}/*"
+                - !Sub
+                  - "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/${DbName}"
+                  - DbName: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
+                - !Sub
+                  - "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/${DbName}/*"
+                  - DbName: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
 
   CleanupS3PrefixFunction:
     Type: AWS::Serverless::Function
@@ -1449,7 +1463,7 @@ Resources:
         - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
-          ICEBERG_DATABASE: !Ref IcebergDatabase
+          ICEBERG_DATABASE: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
           ICEBERG_ONTOLOGY_HIERARCHY_TABLE: !Ref IcebergOntologyHierarchyTable
           PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
       Policies:
@@ -1480,8 +1494,12 @@ Resources:
                 - glue:UpdateTable
               Resource:
                 - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog"
-                - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/${IcebergDatabase}"
-                - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/${IcebergDatabase}/*"
+                - !Sub
+                  - "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/${DbName}"
+                  - DbName: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
+                - !Sub
+                  - "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/${DbName}/*"
+                  - DbName: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
 
   # EMR Serverless Application
   EMRServerlessApplication:
@@ -1589,7 +1607,7 @@ Resources:
         PheBeeBucketName: !Ref PheBeeBucket
         DynamoDBTableName: !Ref DynamoDBTable
         AWSRegion: !Ref AWS::Region
-        IcebergDatabase: !Ref IcebergDatabase
+        IcebergDatabase: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
         IcebergEvidenceTable: !Ref IcebergEvidenceTable
         IcebergSubjectTermsBySubjectTable: !Ref IcebergSubjectTermsBySubjectTable
         IcebergSubjectTermsByProjectTermTable: !Ref IcebergSubjectTermsByProjectTermTable
@@ -1785,7 +1803,7 @@ Resources:
         InsertOntologyHierarchyBatchFunction: !GetAtt InsertOntologyHierarchyBatchFunction.Arn
         CleanupS3PrefixFunction: !GetAtt CleanupS3PrefixFunction.Arn
         DeleteOntologyHierarchyPartitionFunction: !GetAtt DeleteOntologyHierarchyPartitionFunction.Arn
-        AthenaDatabase: !Ref IcebergDatabase
+        AthenaDatabase: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
         AthenaOntologyHierarchyTable: !Ref IcebergOntologyHierarchyTable
         PheBeeBucketName: !Ref PheBeeBucket
         PheBeeBus: !Ref PheBeeBus
@@ -1845,7 +1863,7 @@ Resources:
         InsertOntologyHierarchyBatchFunction: !GetAtt InsertOntologyHierarchyBatchFunction.Arn
         CleanupS3PrefixFunction: !GetAtt CleanupS3PrefixFunction.Arn
         DeleteOntologyHierarchyPartitionFunction: !GetAtt DeleteOntologyHierarchyPartitionFunction.Arn
-        AthenaDatabase: !Ref IcebergDatabase
+        AthenaDatabase: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
         AthenaOntologyHierarchyTable: !Ref IcebergOntologyHierarchyTable
         PheBeeBucketName: !Ref PheBeeBucket
         PheBeeBus: !Ref PheBeeBus
@@ -1990,7 +2008,7 @@ Resources:
     Properties:
       CatalogId: !Ref AWS::AccountId
       DatabaseInput:
-        Name: !Ref IcebergDatabase
+        Name: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
 
   CreateEvidenceTableResource:
     Type: Custom::IcebergTable
@@ -1998,7 +2016,7 @@ Resources:
     DependsOn: IcebergGlueDatabase
     Properties:
       ServiceToken: !GetAtt CreateEvidenceTableFunction.Arn
-      Database: !Ref IcebergDatabase
+      Database: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
       Table: !Ref IcebergEvidenceTable
       S3Location: !Sub "s3://${PheBeeBucket}/iceberg/evidence/"
       QueryResultsS3: !Sub "s3://${PheBeeBucket}/athena-results/${AppName}/"
@@ -2010,7 +2028,7 @@ Resources:
     DependsOn: IcebergGlueDatabase
     Properties:
       ServiceToken: !GetAtt CreateSubjectTermsBySubjectTableFunction.Arn
-      Database: !Ref IcebergDatabase
+      Database: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
       Table: !Ref IcebergSubjectTermsBySubjectTable
       S3Location: !Sub "s3://${PheBeeBucket}/iceberg/subject_terms_by_subject/"
       QueryResultsS3: !Sub "s3://${PheBeeBucket}/athena-results/${AppName}/"
@@ -2022,7 +2040,7 @@ Resources:
     DependsOn: IcebergGlueDatabase
     Properties:
       ServiceToken: !GetAtt CreateSubjectTermsByProjectTermTableFunction.Arn
-      Database: !Ref IcebergDatabase
+      Database: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
       Table: !Ref IcebergSubjectTermsByProjectTermTable
       S3Location: !Sub "s3://${PheBeeBucket}/iceberg/subject_terms_by_project_term/"
       QueryResultsS3: !Sub "s3://${PheBeeBucket}/athena-results/${AppName}/"
@@ -2034,7 +2052,7 @@ Resources:
     DependsOn: IcebergGlueDatabase
     Properties:
       ServiceToken: !GetAtt CreateOntologyHierarchyTableFunction.Arn
-      Database: !Ref IcebergDatabase
+      Database: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
       Table: !Ref IcebergOntologyHierarchyTable
       S3Location: !Sub "s3://${PheBeeBucket}/iceberg/ontology_hierarchy/"
       QueryResultsS3: !Sub "s3://${PheBeeBucket}/athena-results/${AppName}/"
@@ -2255,7 +2273,7 @@ Outputs:
 
   AthenaDatabase:
     Description: Glue database name for Athena queries
-    Value: !Ref IcebergDatabase
+    Value: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
     Export:
       Name: !Sub "${AppName}-AthenaDatabase"
   

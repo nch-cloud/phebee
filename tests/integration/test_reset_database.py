@@ -11,12 +11,12 @@ from phebee.utils.aws import get_client
 pytestmark = pytest.mark.run_last
 
 
-def test_reset_database_basic_success(cloudformation_stack):
+def test_reset_database_basic_success(app_name):
     """Test that reset_database returns success response."""
     lambda_client = get_client("lambda")
 
     response = lambda_client.invoke(
-        FunctionName=f"{cloudformation_stack}-ResetDatabaseFunction",
+        FunctionName=f"{app_name}-ResetDatabaseFunction",
         InvocationType="RequestResponse",
         Payload=json.dumps({}).encode("utf-8")
     )
@@ -28,12 +28,12 @@ def test_reset_database_basic_success(cloudformation_stack):
     assert "message" not in result  # No error message on success
 
 
-def test_reset_database_response_structure(cloudformation_stack):
+def test_reset_database_response_structure(app_name):
     """Test that reset_database returns expected response structure."""
     lambda_client = get_client("lambda")
 
     response = lambda_client.invoke(
-        FunctionName=f"{cloudformation_stack}-ResetDatabaseFunction",
+        FunctionName=f"{app_name}-ResetDatabaseFunction",
         InvocationType="RequestResponse",
         Payload=json.dumps({}).encode("utf-8")
     )
@@ -47,14 +47,14 @@ def test_reset_database_response_structure(cloudformation_stack):
     assert isinstance(result["success"], bool)
 
 
-def test_reset_database_idempotency(cloudformation_stack):
+def test_reset_database_idempotency(app_name):
     """Test that reset_database can be called multiple times without error."""
     lambda_client = get_client("lambda")
 
     # Call reset multiple times
     for _ in range(3):
         response = lambda_client.invoke(
-            FunctionName=f"{cloudformation_stack}-ResetDatabaseFunction",
+            FunctionName=f"{app_name}-ResetDatabaseFunction",
             InvocationType="RequestResponse",
             Payload=json.dumps({}).encode("utf-8")
         )
@@ -65,13 +65,13 @@ def test_reset_database_idempotency(cloudformation_stack):
         assert result["success"] is True
 
 
-def test_reset_database_with_empty_payload(cloudformation_stack):
+def test_reset_database_with_empty_payload(app_name):
     """Test that reset_database works with empty payload."""
     lambda_client = get_client("lambda")
 
     # Call reset with empty dict payload
     response = lambda_client.invoke(
-        FunctionName=f"{cloudformation_stack}-ResetDatabaseFunction",
+        FunctionName=f"{app_name}-ResetDatabaseFunction",
         InvocationType="RequestResponse",
         Payload=json.dumps({}).encode("utf-8")
     )
@@ -82,13 +82,13 @@ def test_reset_database_with_empty_payload(cloudformation_stack):
     assert result["success"] is True
 
 
-def test_reset_database_with_no_payload(cloudformation_stack):
+def test_reset_database_with_no_payload(app_name):
     """Test that reset_database works with no payload at all."""
     lambda_client = get_client("lambda")
 
     # Call reset with no payload (empty string)
     response = lambda_client.invoke(
-        FunctionName=f"{cloudformation_stack}-ResetDatabaseFunction",
+        FunctionName=f"{app_name}-ResetDatabaseFunction",
         InvocationType="RequestResponse",
         Payload=b""
     )
@@ -99,7 +99,7 @@ def test_reset_database_with_no_payload(cloudformation_stack):
     assert result["success"] is True
 
 
-def test_reset_database_clears_iceberg_tables(cloudformation_stack, test_project_id, query_athena, standard_hpo_terms):
+def test_reset_database_clears_iceberg_tables(app_name, test_project_id, query_athena, standard_hpo_terms):
     """Test that reset_database actually deletes all data from Iceberg tables.
 
     Verifies that reset_database clears all three Iceberg tables:
@@ -111,7 +111,7 @@ def test_reset_database_clears_iceberg_tables(cloudformation_stack, test_project
 
     # 1. Create a subject with evidence to populate all Iceberg tables
     create_subject_response = lambda_client.invoke(
-        FunctionName=f"{cloudformation_stack}-CreateSubjectFunction",
+        FunctionName=f"{app_name}-CreateSubjectFunction",
         InvocationType="RequestResponse",
         Payload=json.dumps({
             "body": json.dumps({
@@ -129,7 +129,7 @@ def test_reset_database_clears_iceberg_tables(cloudformation_stack, test_project
     # 2. Create evidence (this populates evidence table and triggers subject_terms updates)
     term_iri = standard_hpo_terms["seizure"]
     create_evidence_response = lambda_client.invoke(
-        FunctionName=f"{cloudformation_stack}-CreateEvidenceFunction",
+        FunctionName=f"{app_name}-CreateEvidenceFunction",
         InvocationType="RequestResponse",
         Payload=json.dumps({
             "body": json.dumps({
@@ -159,7 +159,7 @@ def test_reset_database_clears_iceberg_tables(cloudformation_stack, test_project
 
     # 4. Reset the database
     reset_response = lambda_client.invoke(
-        FunctionName=f"{cloudformation_stack}-ResetDatabaseFunction",
+        FunctionName=f"{app_name}-ResetDatabaseFunction",
         InvocationType="RequestResponse",
         Payload=json.dumps({}).encode("utf-8")
     )

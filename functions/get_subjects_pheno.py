@@ -38,6 +38,9 @@ def lambda_handler(event, context):
 
     term_iri = body.get("term_iri")
     term_source = body.get("term_source", "hpo")
+    # Normalize term_source to lowercase for consistency
+    if term_source:
+        term_source = term_source.lower()
     # Get user-specified version (if provided) or use latest from DynamoDB
     term_source_version = body.get("term_source_version")
 

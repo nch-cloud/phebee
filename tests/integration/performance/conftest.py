@@ -953,7 +953,7 @@ def hpo_terms_universe() -> TermUniverse:
 
 
 @pytest.fixture(scope="session")
-def test_project_id(cloudformation_stack):
+def test_project_id(app_name):
     """
     Override parent conftest fixture with session scope for performance tests.
 
@@ -987,7 +987,7 @@ def test_project_id(cloudformation_stack):
 
     # Create the project by invoking the deployed Lambda
     create_response = lambda_client.invoke(
-        FunctionName=f"{cloudformation_stack}-CreateProjectFunction",
+        FunctionName=f"{app_name}-CreateProjectFunction",
         InvocationType="RequestResponse",
         Payload=json.dumps({"body": json.dumps(payload)}),
     )
