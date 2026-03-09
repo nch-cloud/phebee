@@ -71,7 +71,7 @@ def get_evidence_from_iceberg(query_athena, evidence_id: str) -> dict:
             clinical_note_id,
             created_timestamp,
             created_date
-        FROM phebee.evidence
+        FROM evidence
         WHERE evidence_id = '{evidence_id}'
     """)
 
@@ -85,7 +85,7 @@ def count_evidence_for_termlink(query_athena, termlink_id: str) -> int:
     """Count evidence records with given termlink_id."""
     results = query_athena(f"""
         SELECT COUNT(*) as count
-        FROM phebee.evidence
+        FROM evidence
         WHERE termlink_id = '{termlink_id}'
     """)
     return int(results[0]["count"]) if results else 0
@@ -102,7 +102,7 @@ def get_subject_terms(query_athena, subject_uuid: str, termlink_id: str, project
     by_subject_results = query_athena(f"""
         SELECT subject_id, term_iri, termlink_id, qualifiers, evidence_count,
                first_evidence_date, last_evidence_date
-        FROM phebee.subject_terms_by_subject
+        FROM subject_terms_by_subject
         WHERE subject_id = '{subject_uuid}' AND termlink_id = '{termlink_id}'
     """)
     assert len(by_subject_results) > 0, \
@@ -113,7 +113,7 @@ def get_subject_terms(query_athena, subject_uuid: str, termlink_id: str, project
     by_project_results = query_athena(f"""
         SELECT project_id, subject_id, term_iri, termlink_id, qualifiers,
                evidence_count, first_evidence_date, last_evidence_date
-        FROM phebee.subject_terms_by_project_term
+        FROM subject_terms_by_project_term
         WHERE project_id = '{project_id}' AND subject_id = '{subject_uuid}'
           AND termlink_id = '{termlink_id}'
     """)
@@ -269,7 +269,7 @@ def test_create_evidence_full_fields(physical_resources, test_subject, query_ath
             note_context.provider_type as provider_type,
             note_context.author_specialty as author_specialty,
             note_context.note_type as note_type
-        FROM phebee.evidence
+        FROM evidence
         WHERE evidence_id = '{evidence_id}'
     """)
 

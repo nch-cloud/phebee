@@ -149,9 +149,9 @@ def test_reset_database_clears_iceberg_tables(app_name, test_project_id, query_a
     termlink_id = evidence_body["termlink_id"]
 
     # 3. Verify data exists in all three Iceberg tables before reset
-    evidence_count_before = int(query_athena("SELECT COUNT(*) as count FROM phebee.evidence")[0]["count"])
-    by_subject_count_before = int(query_athena("SELECT COUNT(*) as count FROM phebee.subject_terms_by_subject")[0]["count"])
-    by_project_term_count_before = int(query_athena("SELECT COUNT(*) as count FROM phebee.subject_terms_by_project_term")[0]["count"])
+    evidence_count_before = int(query_athena("SELECT COUNT(*) as count FROM evidence")[0]["count"])
+    by_subject_count_before = int(query_athena("SELECT COUNT(*) as count FROM subject_terms_by_subject")[0]["count"])
+    by_project_term_count_before = int(query_athena("SELECT COUNT(*) as count FROM subject_terms_by_project_term")[0]["count"])
 
     assert evidence_count_before > 0, f"Expected evidence table to have data, got {evidence_count_before}"
     assert by_subject_count_before > 0, f"Expected subject_terms_by_subject table to have data, got {by_subject_count_before}"
@@ -168,9 +168,9 @@ def test_reset_database_clears_iceberg_tables(app_name, test_project_id, query_a
     assert reset_result["success"] is True
 
     # 5. Verify all Iceberg tables are empty after reset
-    evidence_count_after = int(query_athena("SELECT COUNT(*) as count FROM phebee.evidence")[0]["count"])
-    by_subject_count_after = int(query_athena("SELECT COUNT(*) as count FROM phebee.subject_terms_by_subject")[0]["count"])
-    by_project_term_count_after = int(query_athena("SELECT COUNT(*) as count FROM phebee.subject_terms_by_project_term")[0]["count"])
+    evidence_count_after = int(query_athena("SELECT COUNT(*) as count FROM evidence")[0]["count"])
+    by_subject_count_after = int(query_athena("SELECT COUNT(*) as count FROM subject_terms_by_subject")[0]["count"])
+    by_project_term_count_after = int(query_athena("SELECT COUNT(*) as count FROM subject_terms_by_project_term")[0]["count"])
 
     assert evidence_count_after == 0, f"Expected evidence table to be empty after reset, got {evidence_count_after} rows"
     assert by_subject_count_after == 0, f"Expected subject_terms_by_subject table to be empty after reset, got {by_subject_count_after} rows"

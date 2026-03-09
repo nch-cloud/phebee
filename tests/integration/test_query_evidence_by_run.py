@@ -225,7 +225,7 @@ def test_query_evidence_max_10k_limit(app_name):
     """Test4: Limit capped at 10k even if higher requested."""
     result = invoke_query_evidence_by_run(
         "nonexistent-run",
-        cloudformation_stack,
+        app_name,
         limit=20000
     )
 
@@ -285,7 +285,7 @@ def test_query_evidence_total_count_first_page(app_name, shared_run_evidence):
 
 
 def test_query_evidence_creator_struct_parsed(
-    cloudformation_stack,
+    app_name,
     test_subject,
     create_evidence_helper,
     standard_hpo_terms
@@ -366,7 +366,7 @@ def test_query_evidence_ordered_by_timestamp(app_name, shared_run_evidence):
 
 
 def test_query_evidence_concurrent_queries(
-    cloudformation_stack,
+    app_name,
     test_subject,
     create_evidence_helper,
     standard_hpo_terms

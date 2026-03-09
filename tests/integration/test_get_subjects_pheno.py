@@ -101,7 +101,7 @@ def create_subject_with_evidence(physical_resources, test_project_id, create_evi
             # Get termlink_id from evidence table via Athena
             results = query_athena(f"""
                 SELECT termlink_id
-                FROM phebee.evidence
+                FROM evidence
                 WHERE evidence_id = '{evidence["evidence_id"]}'
             """)
             if results:

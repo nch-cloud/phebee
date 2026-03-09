@@ -411,7 +411,7 @@ def test_import_phenopackets_evidence_created(golden_phenopacket_import, query_a
         subject_list = "', '".join(subject_ids)
         query = f"""
             SELECT COUNT(*) as count
-            FROM phebee.evidence
+            FROM evidence
             WHERE subject_id IN ('{subject_list}')
         """
 
@@ -458,7 +458,7 @@ def test_import_phenopackets_content_accuracy(golden_phenopacket_import, query_a
         subject_list = "', '".join(subject_ids)
         query = f"""
             SELECT term_iri, COUNT(*) as count
-            FROM phebee.evidence
+            FROM evidence
             WHERE subject_id IN ('{subject_list}')
             GROUP BY term_iri
         """
@@ -482,7 +482,7 @@ def test_import_phenopackets_content_accuracy(golden_phenopacket_import, query_a
         # Query to verify creator and qualifiers
         query = f"""
             SELECT creator.creator_id as creator_id, cardinality(qualifiers) as qualifier_count
-            FROM phebee.evidence
+            FROM evidence
             WHERE subject_id IN ('{subject_list}')
             LIMIT 5
         """
@@ -535,7 +535,7 @@ def test_import_phenopackets_materialization_completed(golden_phenopacket_import
         subject_list = "', '".join(subject_ids)
         query = f"""
             SELECT COUNT(*) as count
-            FROM phebee.subject_terms_by_subject
+            FROM subject_terms_by_subject
             WHERE subject_id IN ('{subject_list}')
         """
 
@@ -550,7 +550,7 @@ def test_import_phenopackets_materialization_completed(golden_phenopacket_import
         # Query subject_terms_by_project_term table
         query = f"""
             SELECT COUNT(*) as count
-            FROM phebee.subject_terms_by_project_term
+            FROM subject_terms_by_project_term
             WHERE project_id = '{project_id}'
         """
 

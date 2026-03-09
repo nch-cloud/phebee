@@ -390,7 +390,7 @@ def test_get_subject_termlink_id_consistency(physical_resources, test_subject, t
 
     # Get termlink_id from evidence table
     evidence_results = query_athena(f"""
-        SELECT termlink_id FROM phebee.evidence
+        SELECT termlink_id FROM evidence
         WHERE evidence_id = '{evidence["evidence_id"]}'
     """)
     expected_termlink_id = evidence_results[0]["termlink_id"]

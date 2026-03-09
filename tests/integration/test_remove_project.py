@@ -143,7 +143,7 @@ def count_evidence_for_subject(query_athena, subject_id):
     """Count evidence records for a subject."""
     results = query_athena(f"""
         SELECT COUNT(*) as count
-        FROM phebee.evidence
+        FROM evidence
         WHERE subject_id = '{subject_id}'
     """)
     return int(results[0]["count"]) if results else 0
@@ -153,7 +153,7 @@ def count_subject_terms_by_subject(query_athena, subject_id):
     """Count subject_terms_by_subject rows for a subject."""
     results = query_athena(f"""
         SELECT COUNT(*) as count
-        FROM phebee.subject_terms_by_subject
+        FROM subject_terms_by_subject
         WHERE subject_id = '{subject_id}'
     """)
     return int(results[0]["count"]) if results else 0
@@ -164,13 +164,13 @@ def count_subject_terms_by_project(query_athena, project_id, subject_id=None):
     if subject_id:
         results = query_athena(f"""
             SELECT COUNT(*) as count
-            FROM phebee.subject_terms_by_project_term
+            FROM subject_terms_by_project_term
             WHERE project_id = '{project_id}' AND subject_id = '{subject_id}'
         """)
     else:
         results = query_athena(f"""
             SELECT COUNT(*) as count
-            FROM phebee.subject_terms_by_project_term
+            FROM subject_terms_by_project_term
             WHERE project_id = '{project_id}'
         """)
     return int(results[0]["count"]) if results else 0

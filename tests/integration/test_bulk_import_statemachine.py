@@ -193,7 +193,7 @@ def test_bulk_import_evidence_in_iceberg(golden_bulk_import_execution, query_ath
     # Query evidence count
     query = f"""
         SELECT COUNT(*) as count
-        FROM phebee.evidence
+        FROM evidence
         WHERE run_id = '{run_id}'
     """
 
@@ -218,7 +218,7 @@ def test_bulk_import_subjects_processed(golden_bulk_import_execution, query_athe
     # Query distinct subjects
     query = f"""
         SELECT COUNT(DISTINCT subject_id) as subject_count
-        FROM phebee.evidence
+        FROM evidence
         WHERE run_id = '{run_id}'
     """
 
@@ -353,10 +353,10 @@ def test_bulk_import_query_tables_materialized(golden_bulk_import_execution, que
     by_subject_query = f"""
         SELECT COUNT(DISTINCT subject_id) as subject_count,
                COUNT(*) as total_records
-        FROM phebee.subject_terms_by_subject
+        FROM subject_terms_by_subject
         WHERE subject_id IN (
             SELECT DISTINCT subject_id
-            FROM phebee.evidence
+            FROM evidence
             WHERE run_id = '{golden_bulk_import_execution["run_id"]}'
         )
     """
@@ -381,10 +381,10 @@ def test_bulk_import_query_tables_materialized(golden_bulk_import_execution, que
         SELECT COUNT(DISTINCT subject_id) as subject_count,
                COUNT(DISTINCT term_id) as term_count,
                COUNT(*) as total_records
-        FROM phebee.subject_terms_by_project_term
+        FROM subject_terms_by_project_term
         WHERE subject_id IN (
             SELECT DISTINCT subject_id
-            FROM phebee.evidence
+            FROM evidence
             WHERE run_id = '{golden_bulk_import_execution["run_id"]}'
         )
     """
@@ -418,7 +418,7 @@ def test_bulk_import_query_tables_materialized(golden_bulk_import_execution, que
     raw_evidence_query = f"""
         SELECT subject_id,
                COUNT(*) as raw_evidence_count
-        FROM phebee.evidence
+        FROM evidence
         WHERE run_id = '{golden_bulk_import_execution["run_id"]}'
         GROUP BY subject_id
         ORDER BY subject_id
@@ -437,10 +437,10 @@ def test_bulk_import_query_tables_materialized(golden_bulk_import_execution, que
         SELECT subject_id,
                COUNT(*) as materialized_rows,
                MAX(evidence_count) as evidence_count
-        FROM phebee.subject_terms_by_subject
+        FROM subject_terms_by_subject
         WHERE subject_id IN (
             SELECT DISTINCT subject_id
-            FROM phebee.evidence
+            FROM evidence
             WHERE run_id = '{golden_bulk_import_execution["run_id"]}'
         )
         GROUP BY subject_id
@@ -468,10 +468,10 @@ def test_bulk_import_query_tables_materialized(golden_bulk_import_execution, que
         SELECT MIN(evidence_count) as min_evidence,
                MAX(evidence_count) as max_evidence,
                AVG(evidence_count) as avg_evidence
-        FROM phebee.subject_terms_by_subject
+        FROM subject_terms_by_subject
         WHERE subject_id IN (
             SELECT DISTINCT subject_id
-            FROM phebee.evidence
+            FROM evidence
             WHERE run_id = '{golden_bulk_import_execution["run_id"]}'
         )
     """
@@ -742,10 +742,10 @@ def test_bulk_import_incremental_merge_evidence_counts(incremental_bulk_import_e
     query = f"""
         SELECT subject_id,
                evidence_count
-        FROM phebee.subject_terms_by_subject
+        FROM subject_terms_by_subject
         WHERE subject_id IN (
             SELECT DISTINCT subject_id
-            FROM phebee.evidence
+            FROM evidence
             WHERE run_id = '{run_id}'
         )
         ORDER BY subject_id
@@ -788,7 +788,7 @@ def test_bulk_import_incremental_merge_date_ranges(incremental_bulk_import_execu
         SELECT
             CAST(MIN(note_context.note_date) AS DATE) as min_evidence_date,
             CAST(MAX(note_context.note_date) AS DATE) as max_evidence_date
-        FROM phebee.evidence
+        FROM evidence
         WHERE run_id IN ('{first_run_id}', '{second_run_id}')
     """
 
@@ -803,10 +803,10 @@ def test_bulk_import_incremental_merge_date_ranges(incremental_bulk_import_execu
         SELECT subject_id,
                first_evidence_date,
                last_evidence_date
-        FROM phebee.subject_terms_by_subject
+        FROM subject_terms_by_subject
         WHERE subject_id IN (
             SELECT DISTINCT subject_id
-            FROM phebee.evidence
+            FROM evidence
             WHERE run_id = '{second_run_id}'
         )
         ORDER BY subject_id
@@ -857,10 +857,10 @@ def test_bulk_import_incremental_merge_no_duplicates(incremental_bulk_import_exe
     query = f"""
         SELECT subject_id,
                COUNT(*) as row_count
-        FROM phebee.subject_terms_by_subject
+        FROM subject_terms_by_subject
         WHERE subject_id IN (
             SELECT DISTINCT subject_id
-            FROM phebee.evidence
+            FROM evidence
             WHERE run_id = '{run_id}'
         )
         GROUP BY subject_id

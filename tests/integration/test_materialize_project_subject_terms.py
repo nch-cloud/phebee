@@ -70,7 +70,7 @@ def test_materialize_project_with_evidence(
     # Verify data in by_subject table
     by_subject_query = f"""
         SELECT subject_id, term_iri, evidence_count
-        FROM phebee.subject_terms_by_subject
+        FROM subject_terms_by_subject
         WHERE subject_id = '{subject_uuid}'
     """
     by_subject_results = query_athena(by_subject_query)
@@ -82,7 +82,7 @@ def test_materialize_project_with_evidence(
     # Verify data in by_project_term table
     by_project_query = f"""
         SELECT project_id, subject_id, term_iri, evidence_count
-        FROM phebee.subject_terms_by_project_term
+        FROM subject_terms_by_project_term
         WHERE project_id = '{test_project_id}'
         AND subject_id = '{subject_uuid}'
     """
@@ -235,7 +235,7 @@ def test_materialize_replaces_existing_data(
     # Verify new data in tables
     by_subject_query = f"""
         SELECT COUNT(*) as term_count
-        FROM phebee.subject_terms_by_subject
+        FROM subject_terms_by_subject
         WHERE subject_id = '{subject_uuid}'
     """
     results = query_athena(by_subject_query)
@@ -271,7 +271,7 @@ def test_materialize_qualifiers_preserved(
     # Query for qualifiers in by_subject table
     query = f"""
         SELECT qualifiers
-        FROM phebee.subject_terms_by_subject
+        FROM subject_terms_by_subject
         WHERE subject_id = '{subject_uuid}'
         AND term_iri = '{standard_hpo_terms["seizure"]}'
     """
@@ -317,7 +317,7 @@ def test_materialize_evidence_dates_aggregated(
             first_evidence_date,
             last_evidence_date,
             evidence_count
-        FROM phebee.subject_terms_by_subject
+        FROM subject_terms_by_subject
         WHERE subject_id = '{subject_uuid}'
         AND term_iri = '{standard_hpo_terms["seizure"]}'
     """
@@ -370,7 +370,7 @@ def test_materialize_idempotency(
     # Verify no duplication in tables
     by_subject_query = f"""
         SELECT COUNT(*) as term_count
-        FROM phebee.subject_terms_by_subject
+        FROM subject_terms_by_subject
         WHERE subject_id = '{subject_uuid}'
     """
     results = query_athena(by_subject_query)
@@ -432,7 +432,7 @@ def test_materialize_multiple_subjects(
     for subject_uuid in subject_uuids:
         query = f"""
             SELECT subject_id, evidence_count
-            FROM phebee.subject_terms_by_subject
+            FROM subject_terms_by_subject
             WHERE subject_id = '{subject_uuid}'
         """
         results = query_athena(query)
@@ -474,7 +474,7 @@ def test_materialize_project_term_partitioning(
     # Query by project and term
     query = f"""
         SELECT project_id, term_iri, COUNT(*) as subject_count
-        FROM phebee.subject_terms_by_project_term
+        FROM subject_terms_by_project_term
         WHERE project_id = '{test_project_id}'
         AND term_iri = '{standard_hpo_terms["seizure"]}'
         GROUP BY project_id, term_iri

@@ -88,6 +88,8 @@ def cloudformation_stack(request, aws_session, profile_name):
             )
 
             # Step 2: Deploy the SAM application
+            # Override AppName to match the stack name so each test stack gets a unique database
+            # Include all other parameters from the config to avoid replacing them
             deploy_args = [
                 "sam",
                 "deploy",
@@ -101,14 +103,42 @@ def cloudformation_stack(request, aws_session, profile_name):
                 "--resolve-s3",
                 "--config-env",
                 config_env,
+                "--parameter-overrides",
+                f"AppName={stack_name}",
+                "VpcId=vpc-0fb3357255060ae8a",
+                "SubnetId1=subnet-0e8bcc643bbef00e7",
+                "SubnetId2=subnet-0a35943802948655b",
+                "S3AccessLogBucketName=nch-igm-s3-access-logs-595936048629-us-east-2",
+                "RunOntologyUpdatesOnSchedule=false",
+                "CreateEvidenceTableFlag=true",
             ]
             if profile_name:
                 deploy_args.extend(["--profile", profile_name])
-            subprocess.run(deploy_args, check=True)
+
+            result = subprocess.run(deploy_args, capture_output=True, text=True)
+            if result.returncode != 0:
+                print(f"SAM deploy failed with exit code {result.returncode}")
+                print(f"STDOUT:\n{result.stdout}")
+                print(f"STDERR:\n{result.stderr}")
+                pytest.fail(f"SAM deploy failed: {result.stderr}")
+            print(result.stdout)
 
             # Step 3: Wait for stack creation
             waiter = cf_client.get_waiter("stack_create_complete")
             waiter.wait(StackName=stack_name)
+
+            # Step 4: Deploy EMR scripts to S3
+            print("Deploying EMR scripts to S3...")
+            script_path = os.path.join(os.path.dirname(__file__), "..", "..", "utilities", "deploy-scripts.sh")
+            deploy_script_args = ["bash", script_path, stack_name]
+            if profile_name:
+                # Set AWS_PROFILE environment variable for the script
+                env = os.environ.copy()
+                env["AWS_PROFILE"] = profile_name
+                subprocess.run(deploy_script_args, check=True, env=env)
+            else:
+                subprocess.run(deploy_script_args, check=True)
+            print("EMR scripts deployed successfully")
 
         except subprocess.CalledProcessError as e:
             print(f"Stack creation failed: {e}")
@@ -140,20 +170,102 @@ def cloudformation_stack(request, aws_session, profile_name):
 
                 if bucket_name:
                     print(f"Emptying S3 bucket {bucket_name} before stack deletion...")
-                    s3 = boto3.resource('s3')
-                    bucket = s3.Bucket(bucket_name)
+                    s3_client = boto3.client('s3')
 
-                    # Delete all objects and versions
-                    bucket.object_versions.all().delete()
-                    print(f"Successfully emptied bucket {bucket_name}")
+                    # First pass: Delete all object versions (for versioned buckets)
+                    try:
+                        paginator = s3_client.get_paginator('list_object_versions')
+                        pages = paginator.paginate(Bucket=bucket_name)
+
+                        delete_count = 0
+                        for page in pages:
+                            objects_to_delete = []
+
+                            # Collect current versions
+                            for version in page.get('Versions', []):
+                                objects_to_delete.append({
+                                    'Key': version['Key'],
+                                    'VersionId': version['VersionId']
+                                })
+
+                            # Collect delete markers
+                            for marker in page.get('DeleteMarkers', []):
+                                objects_to_delete.append({
+                                    'Key': marker['Key'],
+                                    'VersionId': marker['VersionId']
+                                })
+
+                            # Delete in batch
+                            if objects_to_delete:
+                                s3_client.delete_objects(
+                                    Bucket=bucket_name,
+                                    Delete={'Objects': objects_to_delete}
+                                )
+                                delete_count += len(objects_to_delete)
+
+                        print(f"Deleted {delete_count} versioned objects")
+                    except Exception as e:
+                        print(f"Version deletion skipped (may not be versioned): {e}")
+
+                    # Second pass: Delete any remaining objects (for non-versioned or newly created)
+                    paginator = s3_client.get_paginator('list_objects_v2')
+                    pages = paginator.paginate(Bucket=bucket_name)
+
+                    delete_count = 0
+                    for page in pages:
+                        objects_to_delete = []
+                        for obj in page.get('Contents', []):
+                            objects_to_delete.append({'Key': obj['Key']})
+
+                        if objects_to_delete:
+                            s3_client.delete_objects(
+                                Bucket=bucket_name,
+                                Delete={'Objects': objects_to_delete}
+                            )
+                            delete_count += len(objects_to_delete)
+
+                    print(f"Deleted {delete_count} additional objects")
+                    print(f"Bucket {bucket_name} is now empty")
             except Exception as e:
                 print(f"Warning: Failed to empty S3 bucket: {e}")
                 # Continue with deletion attempt anyway
 
+            # Try normal stack deletion
             teardown_args = ["sam", "delete", "--stack-name", stack_name, "--no-prompts"]
             if profile_name:
                 teardown_args.extend(["--profile", profile_name])
-            subprocess.run(teardown_args, check=True)
+
+            result = subprocess.run(teardown_args, capture_output=True, text=True)
+
+            if result.returncode != 0:
+                # Check if it's a bucket deletion error
+                if "bucket you tried to delete is not empty" in result.stderr or "BucketNotEmpty" in result.stderr:
+                    print(f"Warning: Bucket not empty, retrying stack deletion with bucket retention...")
+
+                    # Retry with CloudFormation directly, retaining the bucket
+                    cf_delete_args = [
+                        "aws", "cloudformation", "delete-stack",
+                        "--stack-name", stack_name,
+                        "--retain-resources", "PheBeeBucket"
+                    ]
+                    if profile_name:
+                        cf_delete_args.extend(["--profile", profile_name])
+
+                    subprocess.run(cf_delete_args, check=True)
+
+                    # Try to delete the bucket manually
+                    if bucket_name:
+                        print(f"Attempting to manually delete retained bucket {bucket_name}...")
+                        try:
+                            s3_client.delete_bucket(Bucket=bucket_name)
+                            print(f"Successfully deleted bucket {bucket_name}")
+                        except Exception as e:
+                            print(f"Warning: Could not delete bucket {bucket_name}: {e}")
+                            print(f"Please manually delete bucket: aws s3 rb s3://{bucket_name} --force")
+                else:
+                    # Different error, fail the test
+                    print(f"Stack deletion failed: {result.stderr}")
+                    pytest.fail(f"Failed to delete stack: {result.stderr}")
         except subprocess.CalledProcessError as e:
             pytest.fail(f"Failed to delete stack: {e}")
 

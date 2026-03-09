@@ -974,7 +974,7 @@ def test_link_subject_rematerializes_evidence(
         # Query project A
         query_a = f"""
             SELECT project_id, project_subject_id, subject_id, term_iri
-            FROM phebee.subject_terms_by_project_term
+            FROM subject_terms_by_project_term
             WHERE project_id = '{project_a_id}'
             AND subject_id = '{subject_uuid}'
         """
@@ -987,7 +987,7 @@ def test_link_subject_rematerializes_evidence(
         # Query project B
         query_b = f"""
             SELECT project_id, project_subject_id, subject_id, term_iri
-            FROM phebee.subject_terms_by_project_term
+            FROM subject_terms_by_project_term
             WHERE project_id = '{project_b_id}'
             AND subject_id = '{subject_uuid}'
         """

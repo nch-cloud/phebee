@@ -42,7 +42,7 @@ def verify_evidence_deleted(query_athena, evidence_id):
     """Verify evidence is deleted from Iceberg."""
     results = query_athena(f"""
         SELECT evidence_id
-        FROM phebee.evidence
+        FROM evidence
         WHERE evidence_id = '{evidence_id}'
     """)
 
@@ -59,7 +59,7 @@ def get_subject_terms_by_termlink(query_athena, subject_id, termlink_id):
             subject_id,
             termlink_id,
             evidence_count
-        FROM phebee.subject_terms_by_subject
+        FROM subject_terms_by_subject
         WHERE subject_id = '{subject_id}'
         AND termlink_id = '{termlink_id}'
     """)
@@ -71,7 +71,7 @@ def count_evidence_for_termlink(query_athena, termlink_id):
     """Count remaining evidence records for a termlink."""
     results = query_athena(f"""
         SELECT COUNT(*) as count
-        FROM phebee.evidence
+        FROM evidence
         WHERE termlink_id = '{termlink_id}'
     """)
 
@@ -131,10 +131,10 @@ def test_remove_evidence_with_remaining_evidence(
 
     # Verify specific evidence still exist
     evidence_2_exists = query_athena(f"""
-        SELECT evidence_id FROM phebee.evidence WHERE evidence_id = '{evidence_id_2}'
+        SELECT evidence_id FROM evidence WHERE evidence_id = '{evidence_id_2}'
     """)
     evidence_3_exists = query_athena(f"""
-        SELECT evidence_id FROM phebee.evidence WHERE evidence_id = '{evidence_id_3}'
+        SELECT evidence_id FROM evidence WHERE evidence_id = '{evidence_id_3}'
     """)
     assert len(evidence_2_exists) == 1, "Evidence 2 should still exist"
     assert len(evidence_3_exists) == 1, "Evidence 3 should still exist"
@@ -217,7 +217,7 @@ def test_remove_evidence_not_found(invoke_remove_evidence, query_athena):
 
     # Verify no data modifications occurred (no evidence with this ID exists)
     evidence_check = query_athena(f"""
-        SELECT evidence_id FROM phebee.evidence WHERE evidence_id = '{fake_evidence_id}'
+        SELECT evidence_id FROM evidence WHERE evidence_id = '{fake_evidence_id}'
     """)
     assert len(evidence_check) == 0
 
@@ -390,7 +390,7 @@ def test_remove_evidence_idempotent(
 
     # Verify evidence still doesn't exist (no resurrection)
     final_check = query_athena(f"""
-        SELECT evidence_id FROM phebee.evidence WHERE evidence_id = '{evidence_id}'
+        SELECT evidence_id FROM evidence WHERE evidence_id = '{evidence_id}'
     """)
     assert len(final_check) == 0, "Evidence should remain deleted"
 
@@ -478,7 +478,7 @@ def test_remove_evidence_termlink_id_extraction(
     # Verify evidence exists with correct termlink_id
     evidence_check = query_athena(f"""
         SELECT termlink_id
-        FROM phebee.evidence
+        FROM evidence
         WHERE evidence_id = '{evidence_id}'
     """)
     assert len(evidence_check) == 1

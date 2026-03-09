@@ -285,7 +285,7 @@ def test_validate_nonexistent_prefix(app_name,s3_bucket):
     result = invoke_validate_bulk_import(
         "test-run",
         f"s3://{s3_bucket}/nonexistent/prefix/path/",
-        cloudformation_stack
+        app_name
     )
 
     # Lambda returns error in response
