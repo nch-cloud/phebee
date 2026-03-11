@@ -5,6 +5,8 @@ Generate two-panel performance figure from PheBee API performance test results.
 Panel A: Concurrency scaling (how endpoints scale with concurrent requests)
 Panel B: Dataset size scaling (how endpoints scale with data volume)
 
+Outputs manuscript-compatible formats: PNG (300 DPI), PDF, EPS, and SVG (text-to-paths).
+
 Usage:
     python plot_performance_results.py results*.json -o figure.png
 
@@ -173,7 +175,7 @@ def print_data_tables(results_list: List[Dict[str, Any]],
 
 def plot_concurrency_scaling(ax, results_list: List[Dict[str, Any]],
                              dataset_size: int = None, metric: str = 'p95',
-                             show_p95_bars: bool = True):
+                             show_p95_bars: bool = True, max_y: float = None):
     """
     Panel A: Clustered stacked bar chart showing how endpoints scale with concurrency.
 
@@ -185,6 +187,7 @@ def plot_concurrency_scaling(ax, results_list: List[Dict[str, Any]],
         dataset_size: Target dataset size (if None, uses largest available)
         metric: Which metric to plot (ignored when show_p95_bars=True)
         show_p95_bars: If True, show stacked bars with P50+P95 (default: True)
+        max_y: Optional maximum y-axis value for consistent scaling across plots
     """
     # Filter to specific dataset size
     if dataset_size is None:
@@ -207,8 +210,10 @@ def plot_concurrency_scaling(ax, results_list: List[Dict[str, Any]],
     endpoints = [e['endpoint'] for e in size_results[0]['latency']
                  if e['endpoint'] != 'version_specific_query']
 
-    # Color palette
-    colors = ['#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6', '#1abc9c', '#34495e']
+    # Okabe-Ito colorblind-safe palette (scientifically designed for accessibility)
+    colors = ['#E69F00', '#56B4E9', '#009E73', '#F0E442', '#0072B2', '#D55E00', '#CC79A7', '#000000']
+    # Hatching patterns for bar charts (helps with grayscale printing and colorblindness)
+    hatches = ['', '///', '\\\\\\', 'xxx', '+++', '...', '|||', '---']
 
     # If showing stacked P50+P95 bars (default behavior)
     if show_p95_bars:
@@ -249,27 +254,44 @@ def plot_concurrency_scaling(ax, results_list: List[Dict[str, Any]],
 
             # Use a color that represents concurrency level
             color = colors[conc_idx % len(colors)]
+            hatch = hatches[conc_idx % len(hatches)]
             label = f'c={conc}'
 
             # Stack: bottom = P50 (solid), top = P95-P50 (lighter)
             p95_minus_p50 = [p95 - p50 for p50, p95 in zip(p50_values, p95_values)]
 
-            # Bottom portion (P50) - solid color
-            ax.bar(x_positions, p50_values, bar_width, label=label, color=color, alpha=0.85)
+            # Bottom portion (P50) - solid color with hatch pattern
+            ax.bar(x_positions, p50_values, bar_width, label=label, color=color,
+                   hatch=hatch, edgecolor='black', linewidth=0.5, alpha=0.85)
 
-            # Top portion (P95-P50) - lighter color
+            # Top portion (P95-P50) - lighter color with same hatch
             ax.bar(x_positions, p95_minus_p50, bar_width, bottom=p50_values,
-                   color=color, alpha=0.3)
+                   color=color, hatch=hatch, edgecolor='black', linewidth=0.5, alpha=0.3)
 
-        ax.set_xlabel('Endpoint', fontsize=11, fontweight='bold')
+        ax.set_xlabel('Workflow', fontsize=11, fontweight='bold')
         ax.set_ylabel('Latency (seconds)', fontsize=11, fontweight='bold')
-        ax.set_title(f'Concurrency Scaling (N={dataset_size//1000}K subjects)\nDarker = P50, Lighter = P95',
+        ax.set_title(f'Concurrency Scaling (N={dataset_size//1000}K subjects)',
                      fontsize=12, fontweight='bold')
         ax.set_xticks(cluster_positions)
         ax.set_xticklabels([e.replace('_', ' ').title() for e in endpoints], rotation=45, ha='right')
-        ax.legend(fontsize=8, loc='upper left', bbox_to_anchor=(1.02, 1), ncol=1)
+
+        # Add proxy artists to legend to explain P50/P95 stacking
+        from matplotlib.patches import Patch
+        handles, labels = ax.get_legend_handles_labels()
+        # Add separator and P50/P95 explanation
+        handles.extend([
+            Patch(facecolor='gray', alpha=0.85, edgecolor='black', linewidth=0.5),
+            Patch(facecolor='gray', alpha=0.3, edgecolor='black', linewidth=0.5)
+        ])
+        labels.extend(['P50 (darker)', 'P95 (lighter)'])
+
+        ax.legend(handles, labels, fontsize=10, loc='upper left', bbox_to_anchor=(1.02, 1), ncol=1)
         ax.grid(axis='y', alpha=0.3, linestyle='--')
         ax.set_axisbelow(True)
+
+        # Set consistent y-axis limit if provided
+        if max_y is not None:
+            ax.set_ylim(0, max_y * 1.1)
 
     else:
         # Original line plot for single metric
@@ -296,7 +318,7 @@ def plot_concurrency_scaling(ax, results_list: List[Dict[str, Any]],
         ax.set_ylabel(f'Latency (seconds, {metric.upper()})', fontsize=11, fontweight='bold')
         ax.set_title(f'Concurrency Scaling (N={dataset_size//1000}K subjects)',
                      fontsize=12, fontweight='bold')
-        ax.legend(fontsize=8, loc='upper left', bbox_to_anchor=(1.02, 1), ncol=1)
+        ax.legend(fontsize=10, loc='upper left', bbox_to_anchor=(1.02, 1), ncol=1)
         ax.grid(alpha=0.3, linestyle='--')
         ax.set_axisbelow(True)
         ax.set_xticks(concurrency_levels)
@@ -304,7 +326,7 @@ def plot_concurrency_scaling(ax, results_list: List[Dict[str, Any]],
 
 
 def plot_dataset_scaling(ax, results_list: List[Dict[str, Any]],
-                        concurrency: int = 1, metric: str = 'p95'):
+                        concurrency: int = 1, metric: str = 'p95', max_y: float = None):
     """
     Panel B: Line plot showing how all endpoints scale with dataset size.
 
@@ -313,6 +335,7 @@ def plot_dataset_scaling(ax, results_list: List[Dict[str, Any]],
         results_list: List of result dictionaries
         concurrency: Target concurrency level (default: 1)
         metric: Which metric to plot ('p50', 'p95', or 'p99')
+        max_y: Optional maximum y-axis value for consistent scaling across plots
     """
     # Filter to specific concurrency level
     conc_results = [r for r in results_list
@@ -333,8 +356,8 @@ def plot_dataset_scaling(ax, results_list: List[Dict[str, Any]],
     endpoints = [e['endpoint'] for e in conc_results[0]['latency']
                  if e['endpoint'] != 'version_specific_query']
 
-    # Color palette
-    colors = ['#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6', '#1abc9c', '#34495e']
+    # Okabe-Ito colorblind-safe palette
+    colors = ['#E69F00', '#56B4E9', '#009E73', '#F0E442', '#0072B2', '#D55E00', '#CC79A7', '#000000']
     markers = ['o', 's', '^', 'D', 'v', '<', '>']
 
     # Plot each endpoint
@@ -354,10 +377,10 @@ def plot_dataset_scaling(ax, results_list: List[Dict[str, Any]],
                 label=label, color=colors[idx % len(colors)],
                 linewidth=2, markersize=7, alpha=0.85)
 
-    ax.set_xlabel('Dataset Size (thousands of subjects)', fontsize=11, fontweight='bold')
+    ax.set_xlabel('Dataset Size (subjects)', fontsize=11, fontweight='bold')
     ax.set_ylabel(f'Latency (seconds, {metric.upper()})', fontsize=11, fontweight='bold')
     ax.set_title(f'Dataset Scaling (c={concurrency}, {metric.upper()})', fontsize=12, fontweight='bold')
-    ax.legend(fontsize=8, loc='upper left', bbox_to_anchor=(1.02, 1), ncol=1)
+    ax.legend(fontsize=10, loc='upper left', bbox_to_anchor=(1.02, 1), ncol=1)
     ax.grid(alpha=0.3, linestyle='--')
     ax.set_axisbelow(True)
 
@@ -366,6 +389,10 @@ def plot_dataset_scaling(ax, results_list: List[Dict[str, Any]],
         ax.set_xscale('log')
         ax.set_xticks(sizes)
         ax.set_xticklabels([f'{int(s)}K' for s in sizes])
+
+    # Set consistent y-axis limit if provided
+    if max_y is not None:
+        ax.set_ylim(0, max_y * 1.1)
 
 
 def create_performance_figure(results_list: List[Dict[str, Any]],
@@ -379,9 +406,15 @@ def create_performance_figure(results_list: List[Dict[str, Any]],
     - Panel A: Concurrency scaling with stacked P50+P95 bars (c=1, c=10, c=25) for a specific dataset size
     - Panel B: Dataset size scaling (1K, 5K, 10K, ...) at a specific concurrency
 
+    Saves figure in multiple formats for manuscript submission:
+    - PNG (300 DPI) for preview
+    - PDF with embedded fonts
+    - EPS with embedded fonts
+    - SVG with text converted to paths (for consistent browser display)
+
     Args:
         results_list: List of result dictionaries
-        output_file: Output file path
+        output_file: Output file path (determines base name; extensions added automatically)
         metric: Metric to plot for Panel B ('p50', 'p95', or 'p99')
         panel_a_size: Dataset size for Panel A (if None, uses largest)
         panel_b_conc: Concurrency level for Panel B (default: 1)
@@ -402,14 +435,36 @@ def create_performance_figure(results_list: List[Dict[str, Any]],
     # Print data tables
     print_data_tables(results_list, panel_a_size, panel_b_conc, metric)
 
+    # Calculate global maximum y-value for consistent scaling across both panels
+    # Only consider data that's actually plotted in the two panels
+    max_y = 0.0
+
+    # Panel A: Check data at panel_a_size (all concurrency levels, P95 values)
+    for result in results_list:
+        if result['dataset']['n_subjects'] == panel_a_size:
+            for endpoint_data in result.get('latency', []):
+                if endpoint_data['endpoint'] == 'version_specific_query':
+                    continue
+                p95_val = endpoint_data.get('p95_ms', 0) / 1000
+                max_y = max(max_y, p95_val)
+
+    # Panel B: Check data at panel_b_conc (all dataset sizes, selected metric)
+    for result in results_list:
+        if result['load_testing']['concurrency'] == panel_b_conc:
+            for endpoint_data in result.get('latency', []):
+                if endpoint_data['endpoint'] == 'version_specific_query':
+                    continue
+                metric_val = endpoint_data.get(f'{metric}_ms', 0) / 1000
+                max_y = max(max_y, metric_val)
+
     # Create figure with two panels
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
 
     # Panel A: Concurrency scaling
-    plot_concurrency_scaling(ax1, results_list, panel_a_size, metric, show_p95_bars)
+    plot_concurrency_scaling(ax1, results_list, panel_a_size, metric, show_p95_bars, max_y)
 
     # Panel B: Dataset size scaling
-    plot_dataset_scaling(ax2, results_list, panel_b_conc, metric)
+    plot_dataset_scaling(ax2, results_list, panel_b_conc, metric, max_y)
 
     # Add panel labels
     ax1.text(-0.15, 1.05, 'A', transform=ax1.transAxes, fontsize=16, fontweight='bold')
@@ -417,15 +472,28 @@ def create_performance_figure(results_list: List[Dict[str, Any]],
 
     plt.tight_layout()
 
-    # Save figure
+    # Save figure in multiple formats for manuscript submission
     output_path = Path(output_file)
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
-    print(f"Figure saved to: {output_path}")
 
-    # Also save as PDF for publication
+    # PNG for preview (high resolution)
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    print(f"PNG saved to: {output_path}")
+
+    # PDF with embedded fonts
     pdf_path = output_path.with_suffix('.pdf')
-    plt.savefig(pdf_path, bbox_inches='tight')
-    print(f"PDF version saved to: {pdf_path}")
+    plt.savefig(pdf_path, format='pdf', bbox_inches='tight')
+    print(f"PDF saved to: {pdf_path}")
+
+    # EPS with embedded fonts
+    eps_path = output_path.with_suffix('.eps')
+    plt.savefig(eps_path, format='eps', bbox_inches='tight')
+    print(f"EPS saved to: {eps_path}")
+
+    # SVG with text converted to paths (for consistent browser display)
+    svg_path = output_path.with_suffix('.svg')
+    plt.rcParams['svg.fonttype'] = 'path'  # Convert all text to paths
+    plt.savefig(svg_path, format='svg', bbox_inches='tight')
+    print(f"SVG saved to: {svg_path}")
 
     plt.close()
 
