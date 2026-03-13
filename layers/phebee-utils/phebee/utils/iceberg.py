@@ -1397,7 +1397,7 @@ def query_subject_by_id(subject_id: str) -> List[Dict[str, Any]]:
 
 def query_subjects_by_project(
     project_id: str,
-    term_id: str = None,
+    term_ids: List[str] = None,
     term_source: str = None,
     term_source_version: str = None,
     include_child_terms: bool = True,
@@ -1411,13 +1411,14 @@ def query_subjects_by_project(
     Uses the subject_terms_by_project_term table for efficient queries.
 
     Supports hierarchy expansion via ontology_hierarchy table when include_child_terms=True.
+    Supports querying with multiple terms - subjects matching ANY of the terms will be returned.
 
     Args:
         project_id: The project ID
-        term_id: Optional term ID to filter by (e.g., "HP:0001234")
-        term_source: Ontology source ("hpo" or "mondo") - inferred from term_id if not provided
+        term_ids: Optional list of term IDs to filter by (e.g., ["HP:0001234", "MONDO:0005148"])
+        term_source: Ontology source ("hpo" or "mondo") - inferred from term_ids if not provided
         term_source_version: Optional ontology version - if not provided, uses latest version
-        include_child_terms: If True, expand term_id to include all descendants (default True)
+        include_child_terms: If True, expand each term_id to include all descendants (default True)
         include_qualified: If False, exclude terms with negated/hypothetical/family qualifiers (default True)
         project_subject_ids: Optional list of specific project_subject_ids to filter by
         limit: Number of subjects to return (default 50)
@@ -1436,44 +1437,71 @@ def query_subjects_by_project(
     if not database_name or not table_name:
         raise ValueError("ICEBERG_DATABASE and ICEBERG_SUBJECT_TERMS_BY_PROJECT_TERM_TABLE environment variables are required")
 
-    # Infer ontology source from term_id if not provided
-    if term_id and not term_source:
-        if term_id.startswith('HP:'):
-            term_source = 'hpo'
-        elif term_id.startswith('MONDO:'):
-            term_source = 'mondo'
+    # Infer ontology sources from term_ids (supports mixed HPO + MONDO)
+    ontology_sources = set()
+    if term_ids:
+        for tid in term_ids:
+            if tid.startswith('HP:'):
+                ontology_sources.add('hpo')
+            elif tid.startswith('MONDO:'):
+                ontology_sources.add('mondo')
 
     # Build WHERE clauses
     where_clauses = [f"project_id = '{project_id}'"]
 
-    # Build term filter with hierarchy expansion
-    if term_id:
+    # Build term filter with hierarchy expansion for multiple terms
+    if term_ids:
+        all_expanded_term_ids = set()
+
+        # Group term_ids by ontology source
+        terms_by_source = {}
+        for tid in term_ids:
+            if tid.startswith('HP:'):
+                source = 'hpo'
+            elif tid.startswith('MONDO:'):
+                source = 'mondo'
+            else:
+                logger.warning(f"Unknown ontology source for term {tid}, skipping")
+                continue
+
+            if source not in terms_by_source:
+                terms_by_source[source] = []
+            terms_by_source[source].append(tid)
+
         if include_child_terms:
-            # Expand to include all descendant terms using hierarchy table
-            try:
-                logger.info(f"Querying descendants for {term_id}, ontology_source={term_source}, version={term_source_version}")
-                descendant_ids = query_term_descendants(term_id, ontology_source=term_source, version=term_source_version)
-                if descendant_ids:
-                    # Extract just the term_id from results
-                    term_ids = [d['term_id'] for d in descendant_ids]
-                    # Add the query term itself if not already included
-                    if term_id not in term_ids:
-                        term_ids.append(term_id)
-                    # Build IN clause
-                    term_list = "', '".join(term_ids)
-                    where_clauses.append(f"term_id IN ('{term_list}')")
-                    logger.info(f"Expanded {term_id} to {len(term_ids)} descendant terms: {term_ids[:5]}..." if len(term_ids) > 5 else f"Expanded {term_id} to {len(term_ids)} descendant terms: {term_ids}")
-                else:
-                    # No descendants found, just use exact match
-                    logger.warning(f"No descendants found for {term_id} (ontology_source={term_source}, version={term_source_version}), falling back to exact match")
-                    where_clauses.append(f"term_id = '{term_id}'")
-            except Exception as e:
-                logger.warning(f"Error querying term descendants for {term_id} (ontology_source={term_source}, version={term_source_version}): {e}")
-                # Fall back to exact match
-                where_clauses.append(f"term_id = '{term_id}'")
+            # Expand each term to include descendants
+            for source, source_term_ids in terms_by_source.items():
+                source_version = term_source_version
+                if not source_version:
+                    source_version = get_current_term_source_version(source)
+
+                logger.info(f"Expanding {len(source_term_ids)} {source.upper()} terms with descendants (version={source_version})")
+
+                for tid in source_term_ids:
+                    try:
+                        descendant_ids = query_term_descendants(tid, ontology_source=source, version=source_version)
+                        if descendant_ids:
+                            for d in descendant_ids:
+                                all_expanded_term_ids.add(d['term_id'])
+                        all_expanded_term_ids.add(tid)  # Always include query term
+
+                    except Exception as e:
+                        logger.warning(f"Error querying descendants for {tid}: {e}, using exact match")
+                        all_expanded_term_ids.add(tid)
+
+                logger.info(f"Expanded to {len(all_expanded_term_ids)} total terms (including descendants)")
         else:
-            # Exact match only
-            where_clauses.append(f"term_id = '{term_id}'")
+            # No expansion - exact matches only
+            all_expanded_term_ids = set(term_ids)
+
+        # Build IN clause
+        if all_expanded_term_ids:
+            term_list = "', '".join(sorted(all_expanded_term_ids))
+            where_clauses.append(f"term_id IN ('{term_list}')")
+            logger.info(f"Final query will match {len(all_expanded_term_ids)} terms")
+        else:
+            logger.warning("No valid term IDs found after expansion")
+            where_clauses.append("1=0")  # Return no results
 
     # Build qualifier filter
     if not include_qualified:

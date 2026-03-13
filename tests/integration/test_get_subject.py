@@ -15,6 +15,7 @@ Key verification:
 import pytest
 import json
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from phebee.utils.aws import get_client
 
 
@@ -309,6 +310,8 @@ def test_get_subject_evidence_count_aggregation(physical_resources, test_subject
     term_iri = standard_hpo_terms["seizure"]
 
     # Setup: Create 5 evidence records for same term (no qualifiers)
+    # Note: Keep sequential to avoid race conditions in termlink creation
+    # when multiple evidence records are created concurrently for the same subject+term
     evidence_ids = []
     for _ in range(5):
         evidence = create_evidence_helper(subject_id=subject_uuid, term_iri=term_iri)
