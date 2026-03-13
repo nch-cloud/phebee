@@ -220,8 +220,11 @@ paths:
     post:
       summary: List subjects and their phenotypes for a project
       description: |
-        Returns a list of subjects associated with a project. Optionally filters subjects by a given term
-        and includes their linked phenotypic terms. Supports cursor-based pagination for large datasets.
+        Returns a list of subjects associated with a project. Optionally filters subjects by:
+        - A specific term IRI (with optional descendant expansion)
+        - A Monarch Knowledge Graph entity (e.g., disease) to find subjects with associated phenotypes
+
+        Supports cursor-based pagination for large datasets.
       operationId: getSubjectsWithPhenotypes
       requestBody:
         required: true
@@ -240,6 +243,15 @@ paths:
                   type: string
                 term_iri:
                   type: string
+                  description: Query subjects by a specific term IRI. Mutually exclusive with term_association_source_entity.
+                term_association_source_entity:
+                  type: string
+                  description: |
+                    Query subjects using Monarch Knowledge Graph associations. Provide an entity ID in CURIE format
+                    (e.g., "MONDO:0007947" for Marfan syndrome). Returns subjects that have any phenotypes or diseases
+                    associated with this entity according to Monarch KG. Mutually exclusive with term_iri.
+                    Note: include_child_terms must be false when using this parameter, as Monarch associations are
+                    already provided at appropriate hierarchical levels.
                 include_qualified:
                   type: boolean
                   default: true
@@ -247,7 +259,9 @@ paths:
                 include_child_terms:
                   type: boolean
                   default: true
-                  description: If true, expand term_iri to include descendant terms (e.g., HPO subclasses) when filtering subjects.
+                  description: |
+                    If true, expand term_iri to include descendant terms (e.g., HPO subclasses) when filtering subjects.
+                    Must be false when using term_association_source_entity.
                 limit:
                   type: integer
                   minimum: 1
