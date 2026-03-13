@@ -124,7 +124,9 @@ def shared_run_evidence(physical_resources, module_test_subject, standard_hpo_te
 
     print(f"\n[FIXTURE] Creating 20 evidence records for shared run_id: {run_id}")
 
-    # Create 20 evidence records with timestamps spread out
+    # Create 20 evidence records sequentially
+    # Note: Keep sequential to avoid race conditions in termlink creation
+    # when multiple evidence records are created for the same subject+term
     for i in range(20):
         payload = {
             "subject_id": subject_uuid,
@@ -146,9 +148,6 @@ def shared_run_evidence(physical_resources, module_test_subject, standard_hpo_te
         if result.get("statusCode") not in [200, 201]:
             print(f"[FIXTURE] Error creating evidence {i}: {result}")
             raise Exception(f"Failed to create evidence: {result}")
-
-        if i < 19:
-            time.sleep(0.05)  # Small delay for timestamp ordering
 
     print(f"[FIXTURE] Created 20 evidence records")
 
@@ -375,6 +374,7 @@ def test_query_evidence_concurrent_queries(
     subject_uuid, _ = test_subject
 
     # Create evidence for 3 different runs (2 records each)
+    # Note: Keep sequential to avoid race conditions in termlink creation
     run_ids = [f"test-run-concurrent-{int(time.time())}-{i}" for i in range(3)]
 
     for run_id in run_ids:

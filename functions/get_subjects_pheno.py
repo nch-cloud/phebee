@@ -6,6 +6,7 @@ from phebee.utils.iceberg import query_subjects_by_project
 from phebee.utils.aws import parse_s3_path, get_client, extract_body
 from phebee.utils.dynamodb import get_current_term_source_version
 from phebee.utils.phenopackets import subjects_to_phenopackets, zip_phenopackets
+from phebee.utils.monarch import get_associated_terms
 from phebee.constants import PHEBEE
 
 logger = Logger()
@@ -64,6 +65,9 @@ def lambda_handler(event, context):
     # Term hierarchy parameter
     include_child_terms = body.get("include_child_terms", True)
 
+    # Monarch association parameter
+    term_association_source_entity = body.get("term_association_source_entity")
+
     # Validate against root/universal terms that would match all subjects
     # These queries are inefficient and should use unfiltered project query instead
     ROOT_TERMS = {
@@ -77,17 +81,92 @@ def lambda_handler(event, context):
             f"Use an unfiltered query (omit term_iri) or set include_child_terms=false instead."
         )
 
+    # Validate mutual exclusivity of term_iri and term_association_source_entity
+    if term_iri and term_association_source_entity:
+        raise ValueError(
+            "Parameters 'term_iri' and 'term_association_source_entity' are mutually exclusive. "
+            "Provide only one of these parameters."
+        )
+
+    # Validate that term_association_source_entity cannot be used with include_child_terms
+    # Monarch associations are already semantically meaningful at their given specificity level.
+    # Expanding to descendants would include unrelated "cousin" terms that don't apply to the entity.
+    if term_association_source_entity and include_child_terms:
+        raise ValueError(
+            "Parameter 'include_child_terms' must be false when using 'term_association_source_entity'. "
+            "Monarch associations are already provided at appropriate hierarchical levels. "
+            "Expanding terms to include descendants would incorrectly match subjects with unrelated phenotypes."
+        )
+
     # Pagination parameters
     limit = body.get("limit", 1000)
     cursor = body.get("cursor")
 
-    # Convert term IRI to term ID if provided
-    term_id = None
+    # Convert term IRI to term ID if provided, OR fetch associated terms from Monarch
+    term_ids = None
+
     if term_iri:
+        # Single term query (existing behavior)
         if '/obo/' in term_iri:
             term_id = term_iri.split('/obo/')[-1].replace('_', ':')
         else:
             term_id = term_iri.split('/')[-1]
+        term_ids = [term_id]
+
+    elif term_association_source_entity:
+        # Monarch association query (new behavior)
+        logger.info(f"Fetching associated terms from Monarch for entity: {term_association_source_entity}")
+        try:
+            term_ids = get_associated_terms(term_association_source_entity)
+            logger.info(f"Found {len(term_ids)} associated terms from Monarch")
+
+            if not term_ids:
+                logger.warning(f"No associated terms found for entity {term_association_source_entity}")
+                # Return empty result early
+                return {
+                    "statusCode": 200,
+                    "body": json.dumps({
+                        "subjects": [],
+                        "n_subjects": 0,
+                        "pagination": {
+                            "limit": limit,
+                            "cursor": None,
+                            "next_cursor": None,
+                            "has_more": False,
+                            "total_count": 0
+                        }
+                    })
+                }
+
+            # Filter out root/universal terms that would cause excessive expansion
+            # These terms have massive subtrees and match most subjects
+            ROOT_TERM_IDS = {'HP:0000001', 'HP:0000118'}  # CURIE format
+            original_count = len(term_ids)
+            term_ids = [tid for tid in term_ids if tid not in ROOT_TERM_IDS]
+
+            if len(term_ids) < original_count:
+                logger.warning(f"Filtered out {original_count - len(term_ids)} root terms from Monarch results to prevent excessive expansion")
+
+            if not term_ids:
+                logger.warning(f"All Monarch terms were root terms that would match all subjects, returning empty results")
+                return {
+                    "statusCode": 200,
+                    "body": json.dumps({
+                        "subjects": [],
+                        "n_subjects": 0,
+                        "pagination": {
+                            "limit": limit,
+                            "cursor": None,
+                            "next_cursor": None,
+                            "has_more": False,
+                            "total_count": 0
+                        }
+                    })
+                }
+
+        except Exception as e:
+            logger.error(f"Error fetching associated terms from Monarch: {e}")
+            raise ValueError(f"Failed to fetch associated terms from Monarch for entity {term_association_source_entity}: {str(e)}")
 
     # Query Iceberg analytical tables directly
     # Note: This queries subject_terms_by_project_term, which only includes subjects
@@ -95,7 +174,7 @@ def lambda_handler(event, context):
     offset = int(cursor) if cursor else 0
     result = query_subjects_by_project(
         project_id=project_id,
-        term_id=term_id,
+        term_ids=term_ids,  # Changed from term_id (single) to term_ids (list)
         term_source=term_source,
         term_source_version=term_source_version,
         include_child_terms=include_child_terms,

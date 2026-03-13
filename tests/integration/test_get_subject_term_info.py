@@ -46,12 +46,10 @@ def test_get_subject_term_info_no_qualifiers_success(
     term_iri = standard_hpo_terms["seizure"]
 
     # Create 3 evidence records with same term and no qualifiers
+    # Note: Keep sequential to avoid race conditions in termlink creation
     evidence_ids = []
     for _ in range(3):
-        evidence = create_evidence_helper(
-            subject_id=subject_uuid,
-            term_iri=term_iri
-        )
+        evidence = create_evidence_helper(subject_id=subject_uuid, term_iri=term_iri)
         evidence_ids.append(evidence["evidence_id"])
 
     # Get subject term info
@@ -85,13 +83,10 @@ def test_get_subject_term_info_with_qualifiers_success(
     }
 
     # Create 2 evidence records with qualifiers
+    # Note: Keep sequential to avoid race conditions in termlink creation
     evidence_ids = []
     for _ in range(2):
-        evidence = create_evidence_helper(
-            subject_id=subject_uuid,
-            term_iri=term_iri,
-            qualifiers=qualifiers_dict
-        )
+        evidence = create_evidence_helper(subject_id=subject_uuid, term_iri=term_iri, qualifiers=qualifiers_dict)
         evidence_ids.append(evidence["evidence_id"])
 
     # Get subject term info (Lambda expects qualifier IRIs as a list)
@@ -284,12 +279,10 @@ def test_get_subject_term_info_evidence_count_accuracy(
     term_iri = standard_hpo_terms["seizure"]
 
     # Create 7 evidence records
+    # Note: Keep sequential to avoid race conditions in termlink creation
     evidence_ids = []
     for _ in range(7):
-        evidence = create_evidence_helper(
-            subject_id=subject_uuid,
-            term_iri=term_iri
-        )
+        evidence = create_evidence_helper(subject_id=subject_uuid, term_iri=term_iri)
         evidence_ids.append(evidence["evidence_id"])
 
     # Get term info
@@ -314,12 +307,11 @@ def test_get_subject_term_info_after_evidence_deletion(
     remove_evidence_function = physical_resources["RemoveEvidenceFunction"]
 
     # Create 5 evidence records
+    # Create 5 evidence records
+    # Note: Keep sequential to avoid race conditions in termlink creation
     evidence_ids = []
     for _ in range(5):
-        evidence = create_evidence_helper(
-            subject_id=subject_uuid,
-            term_iri=term_iri
-        )
+        evidence = create_evidence_helper(subject_id=subject_uuid, term_iri=term_iri)
         evidence_ids.append(evidence["evidence_id"])
 
     # Verify initial count
@@ -329,6 +321,7 @@ def test_get_subject_term_info_after_evidence_deletion(
     assert body["evidence_count"] == 5
 
     # Delete 3 evidence records
+    # Note: Keep sequential - deletion may have race conditions or propagation delays
     for evidence_id in evidence_ids[:3]:
         lambda_client.invoke(
             FunctionName=remove_evidence_function,

@@ -87,3 +87,69 @@ def test_get_subject_not_found(api_base_url, sigv4_auth):
 
     body = response.json()
     assert "error" in body or "message" in body
+
+
+def test_subjects_query_with_monarch_entity(api_base_url, sigv4_auth, test_project_id):
+    """
+    Smoke test: POST /subjects/query with term_association_source_entity.
+
+    Validates:
+    - Monarch Knowledge Graph integration works through API
+    - Returns 200 with valid structure
+    - include_child_terms=false is enforced
+    """
+    # Query with Monarch entity (Marfan syndrome)
+    response = requests.post(
+        f"{api_base_url}/subjects/query",
+        json={
+            "project_id": test_project_id,
+            "term_association_source_entity": "MONDO:0007947",
+            "include_child_terms": False,
+            "limit": 10
+        },
+        auth=sigv4_auth
+    )
+
+    assert response.status_code == 200, \
+        f"Expected 200 but got {response.status_code}: {response.text}"
+
+    # Check content type
+    assert response.headers["Content-Type"] == "application/json"
+
+    # Basic structure check
+    body = response.json()
+    assert "subjects" in body or "body" in body, \
+        "Response should contain 'subjects' or 'body' field"
+    assert "pagination" in body or ("body" in body and "pagination" in body), \
+        "Response should contain pagination metadata"
+
+
+def test_subjects_query_monarch_requires_no_expansion(api_base_url, sigv4_auth, test_project_id):
+    """
+    Smoke test: POST /subjects/query with term_association_source_entity + include_child_terms=true fails.
+
+    Validates:
+    - Parameter validation works (returns 500 error)
+
+    Note: API Gateway masks the detailed error message for security, so we only verify
+    the status code, not the error message content. The detailed validation is tested
+    in test_get_subjects_pheno.py integration tests.
+    """
+    response = requests.post(
+        f"{api_base_url}/subjects/query",
+        json={
+            "project_id": test_project_id,
+            "term_association_source_entity": "MONDO:0007947",
+            "include_child_terms": True,  # Should fail validation
+            "limit": 10
+        },
+        auth=sigv4_auth
+    )
+
+    assert response.status_code == 500, \
+        f"Expected 500 for invalid parameter combination, got {response.status_code}"
+
+    # API Gateway returns generic error, detailed validation tested in integration tests
+    body = response.json()
+    assert "message" in body or "error" in body, \
+        "Response should contain an error message"

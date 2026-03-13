@@ -509,19 +509,7 @@ def test_subject(physical_resources, test_project_id):
     project_subject_iri = f"http://ods.nationwidechildrens.org/phebee/projects/{test_project_id}/{project_subject_id}"
 
     yield (subject_uuid, project_subject_iri)
-
-    # Cleanup: Remove subject after test
-    try:
-        lambda_client.invoke(
-            FunctionName=physical_resources["RemoveSubjectFunction"],
-            Payload=json.dumps({
-                "body": json.dumps({
-                    "project_subject_iri": project_subject_iri
-                })
-            }).encode("utf-8")
-        )
-    except Exception as e:
-        print(f"Warning: Failed to cleanup subject {project_subject_iri}: {e}")
+    # No teardown - cleanup deferred to end of session (consistent with test_project_id)
 
 
 @pytest.fixture
@@ -638,18 +626,7 @@ def create_evidence_helper(physical_resources):
             raise Exception(f"Failed to create evidence: {result}")
 
     yield _create_evidence
-
-    # Cleanup: Remove all created evidence
-    for evidence_id in created_evidence:
-        try:
-            lambda_client.invoke(
-                FunctionName=physical_resources["RemoveEvidenceFunction"],
-                Payload=json.dumps({
-                    "body": json.dumps({"evidence_id": evidence_id})
-                }).encode("utf-8")
-            )
-        except Exception as e:
-            print(f"Warning: Failed to cleanup evidence {evidence_id}: {e}")
+    # No teardown - cleanup deferred to end of session (consistent with test_project_id)
 
 
 @pytest.fixture(scope="session")
@@ -801,5 +778,3 @@ def sigv4_auth():
         "execute-api",
         session_token=credentials.token,
     )
-
-

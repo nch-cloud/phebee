@@ -12,6 +12,7 @@ before running these tests.
 import json
 import pytest
 import time
+from concurrent.futures import ThreadPoolExecutor
 from phebee.utils.aws import get_client
 
 
@@ -299,13 +300,13 @@ def test_materialize_evidence_dates_aggregated(
     subject_uuid, _ = test_subject
 
     # Create multiple evidence records for same term
+    # Note: Keep sequential to avoid race conditions in termlink creation
     for i in range(3):
         create_evidence_helper(
             subject_id=subject_uuid,
             term_iri=standard_hpo_terms["seizure"],
             run_id=f"test-run-{i}"
         )
-        time.sleep(0.1)  # Small delay between creates
 
     # Materialize
     result = invoke_materialize(test_project_id, physical_resources)
@@ -394,11 +395,9 @@ def test_materialize_multiple_subjects(
 
     lambda_client = boto3.client("lambda")
 
-    # Create 3 subjects in the project
-    subject_uuids = []
-    for i in range(3):
+    # Create 3 subjects in the project (in parallel)
+    def create_subject_with_evidence(i):
         project_subject_id = f"test-subj-{uuid.uuid4().hex[:8]}"
-
         payload = {
             "project_id": test_project_id,
             "project_subject_id": project_subject_id
@@ -413,13 +412,18 @@ def test_materialize_multiple_subjects(
         body = json.loads(result["body"])
         subject_iri = body["subject"]["iri"]
         subject_uuid = subject_iri.split("/")[-1]
-        subject_uuids.append(subject_uuid)
 
-        # Create evidence for each subject
+        # Create evidence for this subject
         create_evidence_helper(
             subject_id=subject_uuid,
             term_iri=standard_hpo_terms["seizure"]
         )
+
+        return subject_uuid
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = [executor.submit(create_subject_with_evidence, i) for i in range(3)]
+        subject_uuids = [future.result() for future in futures]
 
     # Materialize the project
     result = invoke_materialize(test_project_id, physical_resources)
