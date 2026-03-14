@@ -307,6 +307,18 @@ def create_evidence_record(
     database_name = os.environ['ICEBERG_DATABASE']
     table_name = os.environ['ICEBERG_EVIDENCE_TABLE']
     
+    # Normalize qualifiers to match bulk import format (name:value pairs)
+    normalized_qualifiers = []
+    for qualifier in (qualifiers or []):
+        if ":" in qualifier:
+            # Already in name:value format - filter out false values
+            name, value = qualifier.split(":", 1)
+            if value.lower() not in ["false", "0"]:
+                normalized_qualifiers.append(qualifier)
+        else:
+            # Short name without value - convert to name:true format
+            normalized_qualifiers.append(f"{qualifier}:true")
+
     # Generate evidence ID
     evidence_id = generate_evidence_hash(
         clinical_note_id=clinical_note_id,
@@ -314,14 +326,14 @@ def create_evidence_record(
         term_iri=term_iri,
         span_start=span_start,
         span_end=span_end,
-        qualifiers=qualifiers or [],
+        qualifiers=normalized_qualifiers,
         subject_id=subject_id,
         creator_id=creator_id
     )
-    
+
     # Generate termlink ID using shared function
     subject_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"
-    termlink_id = generate_termlink_hash(subject_iri, term_iri, qualifiers or [])
+    termlink_id = generate_termlink_hash(subject_iri, term_iri, normalized_qualifiers)
     
     # Set assertion type and source level
     assertion_type = "manual_assertion"
@@ -1113,17 +1125,22 @@ def get_evidence_for_termlink(
     """
     logger.info(f"Getting evidence for subject_id={subject_id}, term_iri={term_iri}, qualifiers={qualifiers}")
 
-    # Normalize qualifiers for hash generation
-    # Qualifiers provided as list of short names - convert to name:true format for hash
-    qualifier_list = []
-    if qualifiers:
-        # Convert short names like ['negated'] to ['negated:true'] format expected by hash function
-        qualifier_list = [f"{q}:true" if ':' not in q else q for q in qualifiers]
+    # Normalize qualifiers to match bulk import format (name:value pairs)
+    normalized_qualifiers = []
+    for qualifier in (qualifiers or []):
+        if ":" in qualifier:
+            # Already in name:value format - filter out false values
+            name, value = qualifier.split(":", 1)
+            if value.lower() not in ["false", "0"]:
+                normalized_qualifiers.append(qualifier)
+        else:
+            # Short name without value - convert to name:true format
+            normalized_qualifiers.append(f"{qualifier}:true")
 
     # Compute the termlink_id to filter by specific termlink
     subject_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"
     from phebee.utils.hash import generate_termlink_hash
-    termlink_hash = generate_termlink_hash(subject_iri, term_iri, qualifier_list)
+    termlink_hash = generate_termlink_hash(subject_iri, term_iri, normalized_qualifiers)
     # Note: termlink_id is stored as just the hash in the evidence table, not the full IRI
     termlink_id = termlink_hash
 

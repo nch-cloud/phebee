@@ -12,24 +12,24 @@ from typing import List, Optional
 def generate_termlink_hash(source_node_iri: str, term_iri: str, qualifiers: Optional[List[str]] = None) -> str:
     """
     Generate a deterministic hash for a term link based on its components.
-    
+
     Args:
         source_node_iri (str): The IRI of the source node (subject, encounter, or clinical note)
         term_iri (str): The IRI of the term being linked
         qualifiers (list): List of qualifier name:value pairs (e.g., ["negated:true", "severity:mild"])
-        
+
     Returns:
         str: A deterministic hash that can be used as part of the term link IRI
     """
     # Sort qualifiers to ensure consistent ordering
     sorted_qualifiers = sorted(qualifiers) if qualifiers else []
-    
+
     # Join positive qualifiers with commas (matches existing format)
     qualifier_contexts = ",".join(sorted_qualifiers)
-    
+
     # Create hash input: source_node_iri|term_iri|qualifier_contexts
     hash_input = f"{source_node_iri}|{term_iri}|{qualifier_contexts}"
-    
+
     # Generate a deterministic hash
     return hashlib.sha256(hash_input.encode()).hexdigest()
 
