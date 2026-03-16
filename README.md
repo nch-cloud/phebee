@@ -5,17 +5,15 @@
 - "Which subjects have a specific phenotype or any of its descendants?"
 - "How frequently does a phenotype occur within a cohort?"
 
-PheBee leverages ontologies like HPO, MONDO, OMIM, and Orphanet to provide deep, hierarchical querying. It integrates with in-house tools such as Mr. Phene and supports knowledge graph-enhanced retrieval for LLM-powered chat agents.
+PheBee leverages ontologies like HPO (Human Phenotype Ontology), MONDO (Monarch Disease Ontology), and ECO (Evidence and Conclusion Ontology) to provide deep, hierarchical querying and evidence classification.
 
 ## Features
 
 - Query patient cohorts based on ontological relationships
-- Discover disease-phenotype associations
 - Graph-based data storage in AWS Neptune
-- RESTful API with OpenAPI spec
+- RESTful API with OpenAPI spec and AWS Signature V4 authentication
 - Serverless architecture powered by AWS SAM and Lambda
-- Integration with SPARQL, DynamoDB, and S3
-- Ability to expose data through Lake Formation managed data stores
+- Iceberg tables registered in AWS Glue Data Catalog, enabling integration with Lake Formation and other analytics tools
 - Automated deployment and testing workflows
 
 ---
@@ -27,14 +25,11 @@ PheBee uses a hybrid architecture combining knowledge graphs with data lake tech
 ### Core Components
 
 **AWS Neptune (Knowledge Graph)**
-- Stores ontology hierarchies (HPO, MONDO, OMIM, Orphanet) as RDF triples
+- Stores ontology hierarchies (HPO, MONDO, ECO) as RDF triples
 - Enables SPARQL queries for ontological reasoning and relationship traversal
 
 **Apache Iceberg (Data Lake)**
 - Stores subject-term associations and clinical evidence as columnar data
-- Term-level tables partitioned by:
-    - `project_id` and `term_id` for retrieval of matching subjects
-    - `subject_id` for subject-level characterization
 - Queryable via AWS Athena for analytical workloads
 
 **DynamoDB (Caching Layer)**
@@ -50,11 +45,11 @@ PheBee uses a hybrid architecture combining knowledge graphs with data lake tech
 ### Data Flow
 
 1. **Ontology Loading**: OWL/OBO files → Neptune graph + DynamoDB cache
-2. **Bulk Import**: S3 NDJSON batches → Step Functions orchestration → Iceberg tables
-3. **Query Path**:
+2. **Bulk Import**: S3 NDJSON batches → Step Functions orchestration → Iceberg tables → Neptune graph
+3. **Materialization**: Evidence data is aggregated into dual-partitioned analytical tables for optimized query patterns
+4. **Query Path**:
    - API Gateway → Lambda → Neptune (ontology traversal) + Athena (data queries)
    - Results combined and returned via RESTful API
-4. **Lake Formation Export**: Iceberg tables exposed as managed data stores for external analytics
 
 ### Why This Architecture?
 
