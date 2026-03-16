@@ -3,7 +3,7 @@ import os
 from aws_lambda_powertools import Metrics, Logger, Tracer
 from phebee.utils.aws import extract_body
 from phebee.utils.iceberg import create_evidence_record, count_evidence_by_termlink
-from phebee.utils.hash import generate_termlink_hash
+from phebee.utils.hash import generate_termlink_hash, normalize_qualifiers
 from phebee.utils.sparql import create_term_link
 
 logger = Logger()
@@ -81,9 +81,13 @@ def lambda_handler(event, context):
                 logger.warning(f"Unexpected qualifiers type: {type(qualifiers)}")
                 qualifier_list = []
 
-        # Compute termlink_id using the same logic as create_evidence_record
+        # Normalize qualifiers using centralized function
+        # This ensures termlink_id matches what create_evidence_record will compute
+        normalized_qualifiers = normalize_qualifiers(qualifier_list)
+
+        # Compute termlink_id using normalized qualifiers
         subject_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"
-        termlink_id = generate_termlink_hash(subject_iri, term_iri, qualifier_list)
+        termlink_id = generate_termlink_hash(subject_iri, term_iri, normalized_qualifiers)
 
         # Create evidence record in Iceberg
         evidence_id = create_evidence_record(
@@ -112,21 +116,14 @@ def lambda_handler(event, context):
             logger.info(f"Ensuring term link exists in Neptune for termlink {termlink_id}")
             creator_iri = f"http://ods.nationwidechildrens.org/phebee/creators/{creator_id}"
 
-            # Convert qualifier strings to IRIs if needed
-            # qualifier_list is already in plain IRI format (no :true suffix)
-            qualifier_iris = []
-            for q in qualifier_list:
-                if q.startswith('http://') or q.startswith('https://'):
-                    qualifier_iris.append(q)
-                else:
-                    # Assume qualifier is a short name, convert to IRI
-                    qualifier_iris.append(f"http://ods.nationwidechildrens.org/phebee/qualifier/{q}")
-
+            # IMPORTANT: Pass normalized_qualifiers to Neptune for hash consistency
+            # Neptune's create_term_link will compute the hash from these qualifiers
+            # to match the termlink_id computed above
             result = create_term_link(
                 subject_iri=subject_iri,
                 term_iri=term_iri,
                 creator_iri=creator_iri,
-                qualifiers=qualifier_iris
+                qualifiers=normalized_qualifiers  # Use normalized name:value format
             )
             if result.get("created"):
                 logger.info(f"Created new term link in Neptune: {result.get('termlink_iri')}")
@@ -140,11 +137,14 @@ def lambda_handler(event, context):
         try:
             from phebee.utils.iceberg import update_subject_terms_for_evidence
 
+            # Extract qualifier names from normalized format for subject_terms tables
+            qualifier_names = [q.split(":")[0] for q in normalized_qualifiers]
+
             update_subject_terms_for_evidence(
                 subject_id=subject_id,
                 term_iri=term_iri,
                 termlink_id=termlink_id,
-                qualifiers=qualifier_list,
+                qualifiers=qualifier_names,
                 created_date=created_date
             )
             logger.info(f"Updated subject-terms analytical tables for termlink {termlink_id}")

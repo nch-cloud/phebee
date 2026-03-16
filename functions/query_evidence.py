@@ -4,7 +4,7 @@ import time
 import boto3
 from aws_lambda_powertools import Logger, Tracer
 from phebee.utils.aws import extract_body
-from phebee.utils.hash import generate_termlink_hash
+from phebee.utils.hash import generate_termlink_hash, normalize_qualifiers
 from phebee.utils.iceberg import parse_athena_struct_array
 
 logger = Logger()
@@ -34,18 +34,9 @@ def lambda_handler(event, context):
             }
 
         # Compute termlink_id hash
-        # Normalize qualifiers to match bulk import format (name:value pairs)
+        # Normalize qualifiers using centralized function
         # This ensures queries work for both API-created and bulk-imported evidence
-        normalized_qualifiers = []
-        for qualifier in qualifiers:
-            if ":" in qualifier:
-                # Already in name:value format - filter out false values
-                name, value = qualifier.split(":", 1)
-                if value.lower() not in ["false", "0"]:
-                    normalized_qualifiers.append(qualifier)
-            else:
-                # Short name without value - convert to name:true format
-                normalized_qualifiers.append(f"{qualifier}:true")
+        normalized_qualifiers = normalize_qualifiers(qualifiers)
 
         # Generate hash
         subject_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"
