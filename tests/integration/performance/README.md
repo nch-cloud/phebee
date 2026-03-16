@@ -2,6 +2,8 @@
 
 This directory contains tools and tests for evaluating PheBee's performance at scale, including bulk data ingestion throughput and API query latency under realistic clinical data patterns.
 
+> **IMPORTANT**: All performance tests MUST be run from the project root directory (`/path/to/phebee`), not from `tests/integration/performance/`. The test infrastructure requires the `.phebee-test-stack` configuration file located in the project root.
+
 ## Overview
 
 Performance testing infrastructure consists of:
@@ -25,7 +27,7 @@ Performance testing infrastructure consists of:
 
 ### Realistic Clinical Data Patterns
 
-Our synthetic data generation incorporates clinically realistic patterns based on published literature:
+Our synthetic data generation incorporates clinically plausible patterns:
 
 #### 1. Disease Clustering (60% of subjects)
 
@@ -40,11 +42,11 @@ Subjects are assigned phenotypes that co-occur in real clinical practice, rather
 
 #### 2. Term Frequency Weighting
 
-When a prevalence CSV is provided (`PHEBEE_EVAL_PREVALENCE_CSV_PATH`), terms are sampled according to real-world clinical frequencies:
+When a prevalence CSV is provided (`PHEBEE_EVAL_PREVALENCE_CSV_PATH`), terms are sampled approximating real-world clinical frequencies:
 - **Common phenotypes** (70% of assignments): Frequently documented findings
 - **Rare phenotypes** (30% of assignments): Less common but clinically important findings
 
-This ensures synthetic data matches real clinical data distributions.
+This ensures synthetic data is similar to real clinical data distributions.
 
 #### 3. Qualifier Distributions
 
@@ -174,7 +176,7 @@ Each dataset is isolated in its own subdirectory based on parameters (subjects, 
 
 **Using Pre-Generated Datasets:** To use a previously generated benchmark dataset instead of generating fresh data, set `PHEBEE_EVAL_BENCHMARK_DIR`:
 ```bash
-export PHEBEE_EVAL_BENCHMARK_DIR="tests/integration/performance/data/benchmark/10000-subjects-seed42"
+export PHEBEE_EVAL_BENCHMARK_DIR="tests/data/benchmark/10000-subjects-seed42"
 
 # Run from project root (use -s to see output)
 cd /path/to/phebee
@@ -260,15 +262,6 @@ data/benchmark/
     ├── batch-00001.json
     └── ...
 ```
-
-### Sharing via Zenodo
-
-1. Generate dataset with fixed seed (as above)
-2. Create a new Zenodo deposit at https://zenodo.org/
-3. Upload all files from `data/benchmark/`
-4. Add keywords: `PheBee`, `phenotype`, `performance`, `benchmark`, `HPO`
-5. Publish and obtain DOI
-6. Cite DOI in manuscript methods section
 
 ### Using Pre-Generated Benchmarks
 

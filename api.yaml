@@ -483,6 +483,100 @@ paths:
           Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-GetEvidenceFunction/invocations
         connectionType: "INTERNET"
         timeoutInMillis: 30000
+        
+  /evidence/query:
+    post:
+      summary: Query evidence records by termlink
+      description: |
+        Retrieves evidence records for a specific termlink (subject + term + qualifiers combination)
+        with pagination support. Optionally filter by run_id.
+
+        This endpoint is useful for viewing all evidence supporting a specific phenotype assertion,
+        especially when there are hundreds or thousands of evidence records from bulk imports.
+      operationId: queryEvidence
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - subject_id
+                - term_iri
+                - qualifiers
+              properties:
+                subject_id:
+                  type: string
+                  description: Subject UUID
+                term_iri:
+                  type: string
+                  description: Term IRI (e.g., "http://purl.obolibrary.org/obo/HP_0001250")
+                qualifiers:
+                  type: array
+                  items:
+                    type: string
+                  description: List of qualifier names (e.g., ["negated"]). Empty array for no qualifiers.
+                run_id:
+                  type: string
+                  description: Optional filter by run_id
+                limit:
+                  type: integer
+                  default: 100
+                  maximum: 1000
+                  description: Maximum records per page (default 100, max 1000)
+                next_token:
+                  type: string
+                  description: Pagination token from previous response
+      responses:
+        "200":
+          description: Evidence records retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subject_id:
+                    type: string
+                  term_iri:
+                    type: string
+                  qualifiers:
+                    type: array
+                    items:
+                      type: string
+                  termlink_id:
+                    type: string
+                    description: SHA256 hash of the termlink
+                  evidence_count:
+                    type: integer
+                    description: Number of records in this page
+                  limit:
+                    type: integer
+                  has_more:
+                    type: boolean
+                  evidence:
+                    type: array
+                    description: Array of evidence records
+                  next_token:
+                    type: string
+                    description: Token for fetching next page (only if has_more=true)
+                  total_count:
+                    type: integer
+                    description: Total count across all pages (only on first page)
+        "400":
+          description: Missing required parameters
+        "500":
+          description: Internal server error
+      security:
+        - sigv4: []
+      x-amazon-apigateway-integration:
+        credentials:
+          Fn::GetAtt: [PheBeeAPIRole, Arn]
+        payloadFormatVersion: "2.0"
+        type: "aws_proxy"
+        uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-QueryEvidenceFunction/invocations
+        connectionType: "INTERNET"
+        timeoutInMillis: 30000
 
   /evidence/remove:
     post:

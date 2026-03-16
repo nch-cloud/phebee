@@ -229,6 +229,7 @@ Resources:
               - !GetAtt RemoveProjectFunction.Arn
               - !GetAtt CreateEvidenceFunction.Arn
               - !GetAtt GetEvidenceFunction.Arn
+              - !GetAtt QueryEvidenceFunction.Arn
               - !GetAtt RemoveEvidenceFunction.Arn
           - Effect: Allow
             Action:
@@ -1062,6 +1063,25 @@ Resources:
           ICEBERG_DATABASE: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
           ICEBERG_EVIDENCE_TABLE: !Ref IcebergEvidenceTable
           PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
+      Policies:
+        - !Ref PheBeeIcebergPolicy
+
+  QueryEvidenceFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AppName}-QueryEvidenceFunction
+      CodeUri: functions
+      Handler: query_evidence.lambda_handler
+      MemorySize: 512
+      Timeout: 120
+      Layers:
+        - !Ref PheBeeUtilsLayer
+      Environment:
+        Variables:
+          ICEBERG_DATABASE: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
+          ICEBERG_EVIDENCE_TABLE: !Ref IcebergEvidenceTable
+          PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
+          ATHENA_WORKGROUP: primary
       Policies:
         - !Ref PheBeeIcebergPolicy
 
@@ -2241,6 +2261,11 @@ Outputs:
     Value: !GetAtt QueryEvidenceByRunFunction.Arn
     Export:
       Name: !Sub "${AppName}-QueryEvidenceByRunFunctionArn"
+
+  QueryEvidenceFunctionArn:
+    Value: !GetAtt QueryEvidenceFunction.Arn
+    Export:
+      Name: !Sub "${AppName}-QueryEvidenceFunctionArn"
 
   DynamoDBTableName:
     Description: Table name of the PheBee DynamoDB table

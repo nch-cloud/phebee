@@ -535,3 +535,507 @@ class TestHashConsistency:
             hash_with_true = impl_func(source_node_iri, term_iri, ["family:true"])
             hash_without_qualifiers = impl_func(source_node_iri, term_iri, [])
             assert hash_with_true != hash_without_qualifiers, f"{impl_name}: True qualifiers should change the termlink hash"
+
+    def test_current_hash_algorithm(self):
+        """
+        Test current hash algorithm with known values to prevent regressions.
+
+        This verifies the CURRENT (correct) algorithm behavior:
+        - Evidence hash: 8-part hash including subject_id and creator_id, excludes false qualifiers
+        - Termlink hash: Excludes false qualifiers for future compatibility
+
+        Test data is based on production evidence, but with CURRENT algorithm expectations.
+        Note: Old production data (pre-Jan 31 2026) uses 6-part evidence hash and will differ.
+        """
+        # Test data from production
+        subject_id = "8d8d7fba-9430-446a-9dbd-33958de1ce73"
+        term_iri = "http://purl.obolibrary.org/obo/HP_0002104"
+        clinical_note_id = "2157816666"
+        encounter_id = "703207722"
+        span_start = 276
+        span_end = 281
+        creator_id = "ods/phebee-clinphen:batch-v1.0.0_clinphen-1.28_hpo-v2025-10-22_a3a3f1c"
+
+        # All qualifiers false - current algorithm filters them out
+        qualifiers = []
+
+        # Expected hashes with CURRENT algorithm (as of Jan 31, 2026)
+        # Evidence: 8-part hash with subject_id and creator_id
+        expected_evidence_id = "96da4b72420e6e27794ae869090e7ed8febe0e2655adc941e782da68145a73e4"
+        # Termlink: unchanged from production (filters false qualifiers correctly)
+        expected_termlink_id = "ed89e630b12145b30eb2b45147648e074c5c2702c84b3cd0e21f38074cc7c678"
+
+        # Test evidence hash
+        evidence_hash = hash_py_implementation(
+            clinical_note_id=clinical_note_id,
+            encounter_id=encounter_id,
+            term_iri=term_iri,
+            span_start=span_start,
+            span_end=span_end,
+            qualifiers=qualifiers,
+            subject_id=subject_id,
+            creator_id=creator_id
+        )
+
+        assert evidence_hash == expected_evidence_id, (
+            f"Evidence hash mismatch!\n"
+            f"Expected: {expected_evidence_id}\n"
+            f"Got:      {evidence_hash}\n"
+            f"This suggests our evidence hash implementation has diverged from production."
+        )
+
+        # Test termlink hash
+        subject_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"
+        termlink_hash = termlink_hash_py_implementation(
+            source_node_iri=subject_iri,
+            term_iri=term_iri,
+            qualifiers=qualifiers
+        )
+
+        assert termlink_hash == expected_termlink_id, (
+            f"Termlink hash mismatch!\n"
+            f"Expected: {expected_termlink_id}\n"
+            f"Got:      {termlink_hash}\n"
+            f"This suggests our termlink hash implementation has diverged from production."
+        )
+
+        # Also verify bulk processor produces same hashes
+        evidence_hash_bulk = bulk_processor_implementation(
+            clinical_note_id=clinical_note_id,
+            encounter_id=encounter_id,
+            term_iri=term_iri,
+            span_start=span_start,
+            span_end=span_end,
+            qualifiers=qualifiers,
+            subject_id=subject_id,
+            creator_id=creator_id
+        )
+
+        assert evidence_hash_bulk == expected_evidence_id, (
+            f"Bulk processor evidence hash mismatch!\n"
+            f"Expected: {expected_evidence_id}\n"
+            f"Got:      {evidence_hash_bulk}"
+        )
+
+        termlink_hash_bulk = termlink_bulk_processor_implementation(
+            source_node_iri=subject_iri,
+            term_iri=term_iri,
+            qualifiers=qualifiers
+        )
+
+        assert termlink_hash_bulk == expected_termlink_id, (
+            f"Bulk processor termlink hash mismatch!\n"
+            f"Expected: {expected_termlink_id}\n"
+            f"Got:      {termlink_hash_bulk}"
+        )
+
+
+def test_internal_qualifiers_no_breaking_changes():
+    """Verify internal qualifiers still produce same hashes after hybrid refactor."""
+    from phebee.utils.hash import generate_termlink_hash
+
+    subject_iri = "http://ods.nationwidechildrens.org/phebee/subjects/subj-001"
+    term_iri = "http://purl.obolibrary.org/obo/HP_0001250"
+
+    # All these should produce identical hashes
+    hash1 = generate_termlink_hash(subject_iri, term_iri, ["negated"])
+    hash2 = generate_termlink_hash(subject_iri, term_iri, ["negated:true"])
+    hash3 = generate_termlink_hash(subject_iri, term_iri, ["negated", "family:false"])
+
+    assert hash1 == hash2, "negated and negated:true should produce same hash"
+    assert hash1 == hash3, "False qualifiers should be filtered out"
+
+
+def test_external_qualifiers_full_iri():
+    """Verify external qualifiers work with full IRIs."""
+    from phebee.utils.hash import generate_termlink_hash
+
+    subject_iri = "http://ods.nationwidechildrens.org/phebee/subjects/subj-001"
+    term_iri = "http://purl.obolibrary.org/obo/HP_0001250"
+
+    # Test with external IRI with value
+    ext_qual = "http://purl.obolibrary.org/obo/HP_0040283:present"
+    hash1 = generate_termlink_hash(subject_iri, term_iri, [ext_qual])
+
+    # Without value should add :true
+    hash2 = generate_termlink_hash(subject_iri, term_iri,
+                                   ["http://purl.obolibrary.org/obo/HP_0040283"])
+    hash3 = generate_termlink_hash(subject_iri, term_iri,
+                                   ["http://purl.obolibrary.org/obo/HP_0040283:true"])
+
+    assert hash2 == hash3, "External IRI without value should add :true"
+    assert hash1 != hash2, "Different qualifier values should produce different hashes"
+
+
+def test_hybrid_mixed_qualifiers():
+    """Verify mixed internal and external qualifiers work correctly."""
+    from phebee.utils.hash import generate_termlink_hash
+
+    subject_iri = "http://ods.nationwidechildrens.org/phebee/subjects/subj-001"
+    term_iri = "http://purl.obolibrary.org/obo/HP_0001250"
+
+    qualifiers = [
+        "negated:true",  # Internal
+        "http://purl.obolibrary.org/obo/HP_0040283:present",  # External
+        "family:false"  # Filtered
+    ]
+
+    hash1 = generate_termlink_hash(subject_iri, term_iri, qualifiers)
+
+    # Order independence
+    qualifiers_reordered = [
+        "http://purl.obolibrary.org/obo/HP_0040283:present",
+        "family:false",
+        "negated:true"
+    ]
+    hash2 = generate_termlink_hash(subject_iri, term_iri, qualifiers_reordered)
+
+    assert hash1 == hash2, "Qualifier order should not affect hash"
+
+
+def test_normalize_qualifiers_function():
+    """Test the normalize_qualifiers function directly."""
+    from phebee.utils.hash import normalize_qualifiers
+
+    # Internal qualifiers
+    assert normalize_qualifiers(["negated"]) == ["negated:true"]
+    assert normalize_qualifiers(["negated:false"]) == []
+
+    # External qualifiers
+    assert normalize_qualifiers(["http://purl.obolibrary.org/obo/HP_0040283"]) == \
+           ["http://purl.obolibrary.org/obo/HP_0040283:true"]
+
+    # Mixed
+    result = normalize_qualifiers([
+        "negated",
+        "http://purl.obolibrary.org/obo/HP_0040283:present",
+        "family:false"
+    ])
+    assert result == [
+        "http://purl.obolibrary.org/obo/HP_0040283:present",
+        "negated:true"
+    ], f"Expected sorted normalized qualifiers, got {result}"
+
+    # Sorting
+    result = normalize_qualifiers(["hypothetical", "negated", "family"])
+    assert result == ["family:true", "hypothetical:true", "negated:true"]
+
+    # Empty/None
+    assert normalize_qualifiers(None) == []
+    assert normalize_qualifiers([]) == []
+    assert normalize_qualifiers([""]) == []
+
+
+def test_no_regression_production_hashes():
+    """Verify refactoring didn't break existing hashes using known production data."""
+    from phebee.utils.hash import generate_termlink_hash
+
+    # Use known production hash from test_current_hash_algorithm
+    subject_id = "8d8d7fba-9430-446a-9dbd-33958de1ce73"
+    term_iri = "http://purl.obolibrary.org/obo/HP_0002104"
+
+    subject_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"
+
+    # Empty qualifiers (all were false in production)
+    termlink_hash = generate_termlink_hash(subject_iri, term_iri, [])
+
+    expected = "ed89e630b12145b30eb2b45147648e074c5c2702c84b3cd0e21f38074cc7c678"
+    assert termlink_hash == expected, f"Hash regression detected! Expected {expected}, got {termlink_hash}"
+
+
+def test_known_hash_values_internal_qualifiers():
+    """
+    Test with known hash values for internal qualifiers to prevent drift.
+
+    These are computed values from current implementation that should remain stable.
+    If these fail, the hash algorithm has changed and will break existing data.
+    """
+    from phebee.utils.hash import generate_termlink_hash, generate_evidence_hash
+
+    subject_iri = "http://ods.nationwidechildrens.org/phebee/subjects/test-subj-001"
+    term_iri = "http://purl.obolibrary.org/obo/HP_0001250"
+
+    # Test 1: Single internal qualifier
+    hash1 = generate_termlink_hash(subject_iri, term_iri, ["negated:true"])
+    expected1 = "d044038bbf12c73b0e5d37bfb90c3d61769d5928e5cb8eb722777a2234981f10"
+    assert hash1 == expected1, f"Internal qualifier hash drift! Expected {expected1}, got {hash1}"
+
+    # Test 2: Multiple internal qualifiers (sorted)
+    hash2 = generate_termlink_hash(subject_iri, term_iri, ["family:true", "negated:true"])
+    expected2 = "ccb3138d37adc852c27ad20e6adbc91ed93ed13836ba5b969ba698a0cff0a342"
+    assert hash2 == expected2, f"Multiple qualifier hash drift! Expected {expected2}, got {hash2}"
+
+    # Test 3: Evidence hash with internal qualifiers
+    evidence_hash = generate_evidence_hash(
+        clinical_note_id="note-123",
+        encounter_id="enc-456",
+        term_iri=term_iri,
+        span_start=10,
+        span_end=20,
+        qualifiers=["negated:true"],
+        subject_id="test-subj-001",
+        creator_id="test-creator"
+    )
+    expected3 = "4ca5d4043b23c149bf43107d70b89130522be7116af826eed63042d8daba6fa2"
+    assert evidence_hash == expected3, f"Evidence hash drift! Expected {expected3}, got {evidence_hash}"
+
+
+def test_known_hash_values_external_qualifiers():
+    """
+    Test with known hash values for external qualifiers to prevent drift.
+
+    These verify that external IRI qualifiers produce stable hashes.
+    """
+    from phebee.utils.hash import generate_termlink_hash, generate_evidence_hash
+
+    subject_iri = "http://ods.nationwidechildrens.org/phebee/subjects/test-subj-001"
+    term_iri = "http://purl.obolibrary.org/obo/HP_0001250"
+    external_qual = "http://purl.obolibrary.org/obo/HP_0040283:present"
+
+    # Test 1: Single external qualifier
+    hash1 = generate_termlink_hash(subject_iri, term_iri, [external_qual])
+    expected1 = "d6a9ac27876c85f6a3ae81941be1799a524e79f94384a5518d354393dc79aa54"
+    assert hash1 == expected1, f"External qualifier hash drift! Expected {expected1}, got {hash1}"
+
+    # Test 2: External qualifier with :true
+    hash2 = generate_termlink_hash(subject_iri, term_iri, ["http://purl.obolibrary.org/obo/HP_0040283:true"])
+    expected2 = "dee61373a8f86c7a01850abef13f4f31f58cd39c42b8a0b7e40d90f8d8485755"
+    assert hash2 == expected2, f"External qualifier :true hash drift! Expected {expected2}, got {hash2}"
+
+    # Verify they're different (present vs true)
+    assert hash1 != hash2, "Different qualifier values should produce different hashes"
+
+    # Test 3: Evidence hash with external qualifier
+    evidence_hash = generate_evidence_hash(
+        clinical_note_id="note-123",
+        encounter_id="enc-456",
+        term_iri=term_iri,
+        span_start=10,
+        span_end=20,
+        qualifiers=[external_qual],
+        subject_id="test-subj-001",
+        creator_id="test-creator"
+    )
+    expected3 = "f42999b8053735df28637016336c74307d7e5ccd3d5524b85e0660b0a8e84b43"
+    assert evidence_hash == expected3, f"External evidence hash drift! Expected {expected3}, got {evidence_hash}"
+
+
+def test_known_hash_values_mixed_qualifiers():
+    """
+    Test with known hash values for mixed internal/external qualifiers.
+
+    These verify that hybrid qualifier combinations produce stable hashes.
+    """
+    from phebee.utils.hash import generate_termlink_hash, generate_evidence_hash
+
+    subject_iri = "http://ods.nationwidechildrens.org/phebee/subjects/test-subj-001"
+    term_iri = "http://purl.obolibrary.org/obo/HP_0001250"
+    mixed_quals = [
+        "negated:true",  # Internal
+        "http://purl.obolibrary.org/obo/HP_0040283:present"  # External
+    ]
+
+    # Test 1: Mixed qualifiers in termlink hash
+    hash1 = generate_termlink_hash(subject_iri, term_iri, mixed_quals)
+    expected1 = "4b5a7c57709cc8c3cdb6a142eb6882a951d702c7fd12eee18c595d7df5fb2212"
+    assert hash1 == expected1, f"Mixed qualifier hash drift! Expected {expected1}, got {hash1}"
+
+    # Test 2: Verify order independence (should produce same hash)
+    mixed_quals_reversed = [
+        "http://purl.obolibrary.org/obo/HP_0040283:present",
+        "negated:true"
+    ]
+    hash2 = generate_termlink_hash(subject_iri, term_iri, mixed_quals_reversed)
+    assert hash2 == expected1, f"Order independence broken! Expected {expected1}, got {hash2}"
+
+    # Test 3: Evidence hash with mixed qualifiers
+    evidence_hash = generate_evidence_hash(
+        clinical_note_id="note-123",
+        encounter_id="enc-456",
+        term_iri=term_iri,
+        span_start=10,
+        span_end=20,
+        qualifiers=mixed_quals,
+        subject_id="test-subj-001",
+        creator_id="test-creator"
+    )
+    expected3 = "0ccc158f8e158d31bc1e218d45699eecb8d9791ae0ce072341fdc928a8678c9e"
+    assert evidence_hash == expected3, f"Mixed evidence hash drift! Expected {expected3}, got {evidence_hash}"
+
+
+def test_known_hash_values_edge_cases():
+    """
+    Test with known hash values for edge cases to prevent drift.
+
+    Covers special scenarios like empty qualifiers, special characters, etc.
+    """
+    from phebee.utils.hash import generate_termlink_hash, generate_evidence_hash
+
+    subject_iri = "http://ods.nationwidechildrens.org/phebee/subjects/test-subj-001"
+    term_iri = "http://purl.obolibrary.org/obo/HP_0001250"
+
+    # Test 1: No qualifiers
+    hash1 = generate_termlink_hash(subject_iri, term_iri, [])
+    expected1 = "ef8bcbaaf2a458959e38e725af704ba34bba109aed26cfc073883129e9d89406"
+    assert hash1 == expected1, f"Empty qualifiers hash drift! Expected {expected1}, got {hash1}"
+
+    # Test 2: Qualifier with colon in value (special character handling)
+    hash2 = generate_termlink_hash(subject_iri, term_iri, ["severity:mild:moderate"])
+    expected2 = "3804648c2710e0ea9d6e70c66d5d1e4928203271a04e6f5e6c3d7a79a775c351"
+    assert hash2 == expected2, f"Colon in value hash drift! Expected {expected2}, got {hash2}"
+
+    # Test 3: Evidence hash with None values
+    evidence_hash = generate_evidence_hash(
+        clinical_note_id=None,
+        encounter_id=None,
+        term_iri=term_iri,
+        span_start=None,
+        span_end=None,
+        qualifiers=[],
+        subject_id=None,
+        creator_id=None
+    )
+    expected3 = "2e74cb28084f4a53eb464cfad495186e6cd579ac44ac52e232278a767082f74c"
+    assert evidence_hash == expected3, f"None values hash drift! Expected {expected3}, got {evidence_hash}"
+
+
+def test_split_qualifier_for_storage_internal():
+    """Test splitting internal qualifiers for storage."""
+    from phebee.utils.iceberg import _split_qualifier_for_storage
+
+    # Internal qualifier with value
+    result = _split_qualifier_for_storage("negated:true")
+    assert result == {"qualifier_type": "negated", "qualifier_value": "true"}
+
+    # Internal qualifier with false value
+    result = _split_qualifier_for_storage("family:false")
+    assert result == {"qualifier_type": "family", "qualifier_value": "false"}
+
+    # Internal qualifier without value (should have been normalized)
+    result = _split_qualifier_for_storage("hypothetical:true")
+    assert result == {"qualifier_type": "hypothetical", "qualifier_value": "true"}
+
+
+def test_split_qualifier_for_storage_external():
+    """Test splitting external IRI qualifiers for storage."""
+    from phebee.utils.iceberg import _split_qualifier_for_storage
+
+    # External IRI with semantic value
+    result = _split_qualifier_for_storage("http://purl.obolibrary.org/obo/HP_0012823:present")
+    assert result == {
+        "qualifier_type": "http://purl.obolibrary.org/obo/HP_0012823",
+        "qualifier_value": "present"
+    }
+
+    # External IRI with boolean value
+    result = _split_qualifier_for_storage("http://purl.obolibrary.org/obo/HP_0040283:true")
+    assert result == {
+        "qualifier_type": "http://purl.obolibrary.org/obo/HP_0040283",
+        "qualifier_value": "true"
+    }
+
+    # HTTPS IRI
+    result = _split_qualifier_for_storage("https://example.org/qualifier/Q123:mild")
+    assert result == {
+        "qualifier_type": "https://example.org/qualifier/Q123",
+        "qualifier_value": "mild"
+    }
+
+    # External IRI without value (edge case)
+    result = _split_qualifier_for_storage("http://purl.obolibrary.org/obo/HP_0040283:true")
+    assert result == {
+        "qualifier_type": "http://purl.obolibrary.org/obo/HP_0040283",
+        "qualifier_value": "true"
+    }
+
+
+def test_parse_qualifiers_field_internal():
+    """Test parsing internal qualifiers from storage."""
+    from phebee.utils.iceberg import parse_qualifiers_field
+
+    # Active internal qualifier
+    athena_output = "[{qualifier_type=negated, qualifier_value=true}]"
+    result = parse_qualifiers_field(athena_output)
+    assert result == ["negated"]
+
+    # Multiple internal qualifiers
+    athena_output = "[{qualifier_type=negated, qualifier_value=true}, {qualifier_type=hypothetical, qualifier_value=true}]"
+    result = parse_qualifiers_field(athena_output)
+    assert set(result) == {"negated", "hypothetical"}
+
+    # False qualifier should be filtered out
+    athena_output = "[{qualifier_type=negated, qualifier_value=true}, {qualifier_type=family, qualifier_value=false}]"
+    result = parse_qualifiers_field(athena_output)
+    assert result == ["negated"]
+
+    # Empty/null cases
+    assert parse_qualifiers_field("") == []
+    assert parse_qualifiers_field("null") == []
+    assert parse_qualifiers_field(None) == []
+
+
+def test_parse_qualifiers_field_external():
+    """Test parsing external IRI qualifiers from storage."""
+    from phebee.utils.iceberg import parse_qualifiers_field
+
+    # External IRI with semantic value
+    athena_output = "[{qualifier_type=http://purl.obolibrary.org/obo/HP_0012823, qualifier_value=present}]"
+    result = parse_qualifiers_field(athena_output)
+    assert result == ["http://purl.obolibrary.org/obo/HP_0012823"]
+
+    # External IRI with boolean value
+    athena_output = "[{qualifier_type=http://purl.obolibrary.org/obo/HP_0040283, qualifier_value=true}]"
+    result = parse_qualifiers_field(athena_output)
+    assert result == ["http://purl.obolibrary.org/obo/HP_0040283"]
+
+    # External IRI with false should be filtered
+    athena_output = "[{qualifier_type=http://purl.obolibrary.org/obo/HP_0040283, qualifier_value=false}]"
+    result = parse_qualifiers_field(athena_output)
+    assert result == []
+
+
+def test_parse_qualifiers_field_mixed():
+    """Test parsing mixed internal and external qualifiers."""
+    from phebee.utils.iceberg import parse_qualifiers_field
+
+    # Mixed qualifiers with various values
+    athena_output = (
+        "[{qualifier_type=negated, qualifier_value=true}, "
+        "{qualifier_type=http://purl.obolibrary.org/obo/HP_0012823, qualifier_value=present}, "
+        "{qualifier_type=family, qualifier_value=false}]"
+    )
+    result = parse_qualifiers_field(athena_output)
+    assert set(result) == {"negated", "http://purl.obolibrary.org/obo/HP_0012823"}
+
+
+def test_storage_retrieval_roundtrip():
+    """Test that qualifiers survive a round-trip through storage format."""
+    from phebee.utils.iceberg import _split_qualifier_for_storage, parse_qualifiers_field
+
+    test_cases = [
+        ["negated:true"],
+        ["http://purl.obolibrary.org/obo/HP_0012823:present"],
+        ["negated:true", "http://purl.obolibrary.org/obo/HP_0040283:mild"],
+        ["hypothetical:true", "family:false"],  # false should be filtered
+    ]
+
+    for qualifiers in test_cases:
+        # Simulate storage
+        stored = [_split_qualifier_for_storage(q) for q in qualifiers]
+
+        # Simulate Athena output format
+        athena_str = "["
+        athena_str += ", ".join([
+            f"{{qualifier_type={s['qualifier_type']}, qualifier_value={s['qualifier_value']}}}"
+            for s in stored
+        ])
+        athena_str += "]"
+
+        # Parse back
+        retrieved = parse_qualifiers_field(athena_str)
+
+        # Expected: only active qualifiers (not false/0)
+        expected = [q.split(":")[0] if not q.startswith("http") else q.rsplit(":", 1)[0]
+                   for q in qualifiers if not q.endswith(":false") and not q.endswith(":0")]
+
+        assert set(retrieved) == set(expected), f"Round-trip failed for {qualifiers}"

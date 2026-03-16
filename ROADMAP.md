@@ -36,40 +36,76 @@ This document outlines our planned milestones and the focus areas for each versi
 
 ---
 
-## Version 0.9 — Data Model Refinement and Provenance Support - Pilot Release
+## Version 0.9.1 — Data Model Refinement and Provenance Support
 
-**Goal:** Introduce richer provenance tracking and expand the data model to better support real-world usage scenarios. Continue migration of internal provenance code to open source release.
+**Released:** July 18, 2025
 
 ### Features
 
-- Revise RDF model to include additional context and provenance information
-- Enhanced subject-term links:
-  - Track how each term was added (e.g., manual entry, automated pipeline)
-  - Record who added the term and when
-  - Capture contextual metadata (e.g., clinical note reference, span bounds)
-- Additional clinical information capture
-  - Allow terms at project/encounter/note level context
-  - Capture information on patient encounters (dates, id)
-  - Capture information on clinical notes (author, provider type, etc.)
-- API improvements
-  - Add phenopacket support to API layer
-  - Improved querying on provenance and other metadata
-- Additional test suite coverage
-- Bulk import support for large-scale addition of subjects/clinical info/term links
+- Enhanced subject-term links with hash-based IRIs:
+  - Deterministic termlink identification to avoid duplicates
+  - Evidence-driven termlink creation and management
+  - Creator tracking (human vs automated, with creator IDs)
+  - Timestamp recording (when terms were added)
+- Bulk import support:
+  - Step Functions orchestration for large-scale data ingestion
+  - Phenopacket format processing
+  - Validation and error handling workflows
+- ECO ontology integration:
+  - Evidence and Conclusion Ontology support
+  - Evidence assertion type classification
+  - Automated ECO ontology updates
+- Subject query improvements:
+  - Optimized SPARQL query performance
+  - Better handling of creator fields
 
 ---
 
-## Version 1.0 — Production Release
+## Version 1.0.0-rc1 — Iceberg Data Lake Integration (Release Candidate)
 
-**Goal:** Run PheBee 0.9 release at full production scale in Nationwide Children's Hospital pilot projects, bump release to 1.0 when fully confident in feature set and performance against hospital-scale data.
+**Released:** March 2, 2026
+
+**Goal:** Production-ready system with analytical query capabilities and proven performance at scale
+
+### Features
+
+- Iceberg data lake architecture:
+  - Dual-partitioned analytical tables (`subject_terms_by_subject`, `subject_terms_by_project_term`)
+  - AWS Glue Data Catalog registration
+  - Athena-queryable evidence and ontology hierarchy tables
+  - Incremental subject-level materialization during bulk import
+- DynamoDB caching layer:
+  - Term descendant caching for faster hierarchy traversal
+  - Ontology version caching
+  - Dramatically reduced Neptune load for common patterns
+- Performance testing infrastructure:
+  - Comprehensive performance evaluation suite
+  - Realistic synthetic data generation with disease clustering
+  - Reproducible benchmark datasets (1K-100K subjects)
+  - API latency and bulk import throughput testing
+- Evidence query enhancements:
+  - Evidence-driven termlink management (removed direct termlink API endpoints)
+  - Query evidence by various filters and provenance metadata
+- Monarch Knowledge Graph integration:
+  - Query subjects using Monarch disease-phenotype associations
+  - Expanded term discovery capabilities
+- System improvements:
+  - Cascading deletes for projects and subjects
+  - Integration test suite refactoring
+  - EMR Serverless 7.10.0 for Spark-based processing
+
+---
+
+## Version 1.0.0 — Production Release (Planned)
+
+**Goal:** Validated production deployment at hospital scale
 
 ### Planned Features
 
-- Run PheBee term link import using automated feed of clinical data
-- Deep testing of phenotype links for both content and provenance
-- Revise any services that underperform at scale or for which additional metadata is deemed necessary
-- Performance testing of API endpoints at scale
-- Expose term and evidence-level data in Iceberg tables
+- Automated clinical data feed integration
+- Security and compliance hardening for production clinical data
+- Advanced Lake Formation permissions and external catalog federation
+- Comprehensive validation at hospital scale
 
 ---
 

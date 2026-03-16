@@ -831,27 +831,28 @@ def create_term_link(
 ) -> dict:
     """
     Create a term link between a subject and a term.
-    
+
     Args:
         subject_iri (str): The IRI of the subject
         term_iri (str): The IRI of the term
         creator_iri (str): The IRI of the creator
-        qualifiers (list): List of qualifier IRIs
-        
+        qualifiers (list): List of qualifiers in name:value format (e.g., ["negated:true"])
+
     Returns:
         dict: Dictionary with the term link IRI and whether it was created
     """
     # Generate deterministic hash based on subject, term, and qualifiers
+    # Qualifiers are in name:value format for consistency with Iceberg
     termlink_hash = generate_termlink_hash(subject_iri, term_iri, qualifiers)
     termlink_iri = f"{subject_iri}/term-link/{termlink_hash}"
-    
+
     # Check if the term link already exists
     link_exists = node_exists(termlink_iri)
-    
+
     if link_exists:
         logger.info("Term link already exists: %s", termlink_iri)
         return {"termlink_iri": termlink_iri, "created": False}
-    
+
     # Create the term link if it doesn't exist
     created = get_current_timestamp()
 
@@ -862,11 +863,24 @@ def create_term_link(
         f'<{termlink_iri}> dcterms:created "{created}"^^xsd:dateTime',
         f"<{subject_iri}> phebee:hasTermLink <{termlink_iri}>",
     ]
-            
+
     # Add qualifier triples if any
+    # Convert name:value format to IRIs for RDF storage
     if qualifiers:
         for qualifier in qualifiers:
-            triples.append(f"<{termlink_iri}> phebee:hasQualifyingTerm <{qualifier}>")
+            # Extract qualifier name from name:value format
+            if ":" in qualifier:
+                qualifier_name = qualifier.split(":", 1)[0]
+            else:
+                qualifier_name = qualifier
+
+            # Convert to full IRI (or use as-is if already an IRI)
+            if qualifier_name.startswith('http://') or qualifier_name.startswith('https://'):
+                qualifier_iri = qualifier_name
+            else:
+                qualifier_iri = f"http://ods.nationwidechildrens.org/phebee/qualifier/{qualifier_name}"
+
+            triples.append(f"<{termlink_iri}> phebee:hasQualifyingTerm <{qualifier_iri}>")
 
     triples_block = " .\n    ".join(triples) + " ."
 

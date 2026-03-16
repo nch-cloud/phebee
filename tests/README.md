@@ -25,6 +25,7 @@ Unit tests validate individual functions and modules without requiring AWS infra
 - Athena query result parsing (`test_athena_struct_parsing.py`)
 - AWS utility functions (`test_aws_utilities.py`)
 - Hash consistency for data integrity (`test_hash_consistency.py`)
+- Monarch API utilities (`test_monarch_utilities.py`)
 - OBO ontology file parsing (`test_obo_parsing.py`)
 - Phenopacket data processing (`test_phenopacket_processing.py`, `test_phenopacket_utilities.py`)
 - Evidence payload preparation (`test_prepare_evidence_payload.py`)
@@ -57,10 +58,10 @@ Core integration tests for individual Lambda functions and orchestration workflo
 
 - **Project Management**: `test_create_project.py`, `test_remove_project.py`
 - **Subject Operations**: `test_create_subject.py`, `test_get_subject.py`, `test_remove_subject.py`
-- **Evidence Operations**: `test_create_evidence.py`, `test_get_evidence.py`, `test_remove_evidence.py`
+- **Evidence Operations**: `test_create_evidence.py`, `test_get_evidence.py`, `test_remove_evidence.py`, `test_query_evidence.py`
 - **Query Operations**: `test_get_subjects_pheno.py`, `test_get_subject_term_info.py`, `test_query_evidence_by_run.py`
 - **Ontology Updates**: `test_update_hpo_sfn.py`, `test_update_mondo_sfn.py`, `test_update_eco_sfn.py`
-- **Bulk Operations**: `test_bulk_import_statemachine.py`, `test_import_phenopackets_statemachine.py`
+- **Bulk Operations**: `test_bulk_import_statemachine.py`, `test_import_phenopackets_statemachine.py`, `test_validate_bulk_import.py`
 - **Materialization**: `test_materialize_project_subject_terms.py`
 - **Utilities**: `test_get_source_info.py`, `test_reset_database.py`
 
@@ -133,6 +134,8 @@ Tests are marked for selective execution:
 | `integration` | Requires deployed stack | `pytest -m integration` |
 | `api` | API Gateway tests | `pytest -m api` |
 | `perf` | Performance evaluation tests (slow) | `pytest -m perf` |
+
+**Note**: API tests have both the `api` and `integration` markers, so running `pytest -m integration` will include API tests.
 
 **Common patterns**:
 ```bash

@@ -3,7 +3,7 @@ Iceberg evidence table utilities for PheBee.
 """
 import boto3
 import hashlib
-from .hash import generate_evidence_hash, generate_termlink_hash
+from .hash import generate_evidence_hash, generate_termlink_hash, normalize_qualifiers
 import json
 import logging
 import os
@@ -125,6 +125,50 @@ def parse_athena_row_array(row_str, field_names):
     return rows
 
 
+def _split_qualifier_for_storage(qualifier: str) -> dict:
+    """
+    Split a normalized qualifier into type and value for storage.
+
+    Handles both internal qualifiers (name:value) and external IRIs (http://...:value).
+    For external IRIs, finds the colon after the last slash to avoid splitting on protocol colon.
+
+    Args:
+        qualifier: Normalized qualifier string (e.g., "negated:true" or "http://.../HP_0012823:true")
+
+    Returns:
+        dict with 'qualifier_type' and 'qualifier_value' keys
+    """
+    # Check if it's an external IRI
+    is_external = qualifier.startswith('http://') or qualifier.startswith('https://')
+
+    if is_external:
+        # For external IRIs, find the colon after the last slash
+        last_slash_idx = qualifier.rfind('/')
+        colon_idx = qualifier.find(':', last_slash_idx + 1)
+
+        if colon_idx != -1:
+            # Has value after last slash
+            qualifier_type = qualifier[:colon_idx]
+            qualifier_value = qualifier[colon_idx + 1:]
+        else:
+            # No value (shouldn't happen after normalization, but handle it)
+            qualifier_type = qualifier
+            qualifier_value = "true"
+    else:
+        # Internal qualifier - split on first colon
+        if ":" in qualifier:
+            qualifier_type, qualifier_value = qualifier.split(":", 1)
+        else:
+            # No value (shouldn't happen after normalization, but handle it)
+            qualifier_type = qualifier
+            qualifier_value = "true"
+
+    return {
+        "qualifier_type": qualifier_type,
+        "qualifier_value": qualifier_value
+    }
+
+
 def parse_athena_struct_array(struct_str):
     """
     Parse Athena struct array format like [{qualifier_type=negated, qualifier_value=true}]
@@ -189,16 +233,20 @@ def parse_qualifiers_field(qualifiers_str):
     """
     Parse qualifiers field from Athena struct format.
     Returns list of active qualifier types.
+
+    Active qualifiers are those with values that are NOT 'false' or '0'.
+    This supports both boolean qualifiers (true/false) and qualifiers with
+    semantic values (e.g., 'present', 'absent', 'mild', 'severe').
     """
     if not qualifiers_str or qualifiers_str == 'null':
         return []
-    
+
     qualifiers_list = parse_athena_struct_array(qualifiers_str)
-    
-    # Extract active qualifiers
+
+    # Extract active qualifiers (exclude false/0 values)
     return [
-        q['qualifier_type'] for q in qualifiers_list 
-        if q.get('qualifier_value') in ['true', '1', 1, 1.0, True]
+        q['qualifier_type'] for q in qualifiers_list
+        if str(q.get('qualifier_value', '')).lower() not in ['false', '0', '']
     ]
 
 PHEBEE_NS = Namespace(PHEBEE)
@@ -307,6 +355,9 @@ def create_evidence_record(
     database_name = os.environ['ICEBERG_DATABASE']
     table_name = os.environ['ICEBERG_EVIDENCE_TABLE']
     
+    # Normalize qualifiers using centralized function
+    normalized_qualifiers = normalize_qualifiers(qualifiers)
+
     # Generate evidence ID
     evidence_id = generate_evidence_hash(
         clinical_note_id=clinical_note_id,
@@ -314,14 +365,14 @@ def create_evidence_record(
         term_iri=term_iri,
         span_start=span_start,
         span_end=span_end,
-        qualifiers=qualifiers or [],
+        qualifiers=normalized_qualifiers,
         subject_id=subject_id,
         creator_id=creator_id
     )
-    
+
     # Generate termlink ID using shared function
     subject_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"
-    termlink_id = generate_termlink_hash(subject_iri, term_iri, qualifiers or [])
+    termlink_id = generate_termlink_hash(subject_iri, term_iri, normalized_qualifiers)
     
     # Set assertion type and source level
     assertion_type = "manual_assertion"
@@ -359,12 +410,9 @@ def create_evidence_record(
             "annotation_metadata": "{}"
         },
         "qualifiers": [
-            {
-                "qualifier_type": q,
-                "qualifier_value": "true"
-            }
-            for q in (qualifiers or [])
-        ] if qualifiers else None
+            _split_qualifier_for_storage(q)
+            for q in normalized_qualifiers
+        ] if normalized_qualifiers else None
     }
     
     # Insert into Iceberg table using Athena
@@ -1113,17 +1161,13 @@ def get_evidence_for_termlink(
     """
     logger.info(f"Getting evidence for subject_id={subject_id}, term_iri={term_iri}, qualifiers={qualifiers}")
 
-    # Normalize qualifiers for hash generation
-    # Qualifiers provided as list of short names - convert to name:true format for hash
-    qualifier_list = []
-    if qualifiers:
-        # Convert short names like ['negated'] to ['negated:true'] format expected by hash function
-        qualifier_list = [f"{q}:true" if ':' not in q else q for q in qualifiers]
+    # Normalize qualifiers to match bulk import format (name:value pairs)
+    # Normalize qualifiers using centralized function
+    normalized_qualifiers = normalize_qualifiers(qualifiers)
 
     # Compute the termlink_id to filter by specific termlink
     subject_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"
-    from phebee.utils.hash import generate_termlink_hash
-    termlink_hash = generate_termlink_hash(subject_iri, term_iri, qualifier_list)
+    termlink_hash = generate_termlink_hash(subject_iri, term_iri, normalized_qualifiers)
     # Note: termlink_id is stored as just the hash in the evidence table, not the full IRI
     termlink_id = termlink_hash
 
@@ -1951,7 +1995,7 @@ def materialize_project(project_id: str, batch_size: int = 100) -> Dict[str, int
                     COUNT(*) as evidence_count,
                     MIN(CAST(note_context.note_date AS DATE)) as first_evidence_date,
                     MAX(CAST(note_context.note_date AS DATE)) as last_evidence_date,
-                    ARBITRARY(termlink_id) as termlink_id,
+                    termlink_id,
                     ARRAY_AGG(DISTINCT
                         CASE
                             WHEN q.qualifier_value IN ('true', '1') THEN q.qualifier_type
@@ -1961,7 +2005,7 @@ def materialize_project(project_id: str, batch_size: int = 100) -> Dict[str, int
                 FROM {database_name}.{evidence_table}
                 LEFT JOIN UNNEST(COALESCE(qualifiers, ARRAY[])) AS t(q) ON TRUE
                 {batch_subject_filter}
-                GROUP BY subject_id, term_iri
+                GROUP BY subject_id, term_iri, termlink_id
             )
             SELECT
                 subject_id,
@@ -2007,7 +2051,7 @@ def materialize_project(project_id: str, batch_size: int = 100) -> Dict[str, int
                     COUNT(*) as evidence_count,
                     MIN(CAST(e.note_context.note_date AS DATE)) as first_evidence_date,
                     MAX(CAST(e.note_context.note_date AS DATE)) as last_evidence_date,
-                    ARBITRARY(e.termlink_id) as termlink_id,
+                    e.termlink_id as termlink_id,
                     ARRAY_AGG(DISTINCT
                         CASE
                             WHEN q.qualifier_value IN ('true', '1') THEN q.qualifier_type
@@ -2017,7 +2061,7 @@ def materialize_project(project_id: str, batch_size: int = 100) -> Dict[str, int
                 FROM {database_name}.{evidence_table} e
                 JOIN subject_mapping m ON e.subject_id = m.subject_id
                 LEFT JOIN UNNEST(COALESCE(e.qualifiers, ARRAY[])) AS t(q) ON TRUE
-                GROUP BY e.subject_id, m.project_subject_id, e.term_iri
+                GROUP BY e.subject_id, m.project_subject_id, e.term_iri, e.termlink_id
             )
             SELECT
                 project_id,
@@ -2201,7 +2245,7 @@ def materialize_subject_terms(subject_id: str) -> Dict[str, int]:
             COUNT(*) as evidence_count,
             MIN(CAST(note_context.note_date AS DATE)) as first_evidence_date,
             MAX(CAST(note_context.note_date AS DATE)) as last_evidence_date,
-            ARBITRARY(termlink_id) as termlink_id,
+            termlink_id,
             ARRAY_AGG(DISTINCT
                 CASE
                     WHEN q.qualifier_value IN ('true', '1') THEN q.qualifier_type
@@ -2211,7 +2255,7 @@ def materialize_subject_terms(subject_id: str) -> Dict[str, int]:
         FROM {database_name}.{evidence_table}
         LEFT JOIN UNNEST(COALESCE(qualifiers, ARRAY[])) AS t(q) ON TRUE
         WHERE subject_id = '{subject_id}'
-        GROUP BY subject_id, term_iri
+        GROUP BY subject_id, term_iri, termlink_id
     )
     SELECT
         subject_id,
@@ -2256,7 +2300,7 @@ def materialize_subject_terms(subject_id: str) -> Dict[str, int]:
             COUNT(*) as evidence_count,
             MIN(CAST(e.note_context.note_date AS DATE)) as first_evidence_date,
             MAX(CAST(e.note_context.note_date AS DATE)) as last_evidence_date,
-            ARBITRARY(e.termlink_id) as termlink_id,
+            e.termlink_id as termlink_id,
             ARRAY_AGG(DISTINCT
                 CASE
                     WHEN q.qualifier_value IN ('true', '1') THEN q.qualifier_type
@@ -2266,7 +2310,7 @@ def materialize_subject_terms(subject_id: str) -> Dict[str, int]:
         FROM {database_name}.{evidence_table} e
         JOIN subject_mapping m ON e.subject_id = m.subject_id
         LEFT JOIN UNNEST(COALESCE(e.qualifiers, ARRAY[])) AS t(q) ON TRUE
-        GROUP BY m.project_id, e.subject_id, m.project_subject_id, e.term_iri
+        GROUP BY m.project_id, e.subject_id, m.project_subject_id, e.term_iri, e.termlink_id
     )
     SELECT
         project_id,
