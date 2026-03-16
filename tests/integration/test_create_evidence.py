@@ -878,3 +878,220 @@ def test_create_evidence_partial_term_source(physical_resources, test_subject, q
     # version and iri should be absent or null/empty
     assert term_source.get("version") is None or term_source.get("version") == ""
     assert term_source.get("iri") is None or term_source.get("iri") == ""
+
+
+# ============================================================================
+# Hybrid Qualifier Tests (External IRI Support)
+# ============================================================================
+
+def test_create_and_query_evidence_with_external_qualifier(physical_resources, test_subject,
+                                                           query_athena, app_name):
+    """
+    Test 1: External Qualifier End-to-End Flow
+
+    Verify external HPO qualifiers work through full API lifecycle:
+    - Create evidence with external qualifier
+    - Query it back using same external qualifier
+    - Verify termlink_id matches
+    - Verify evidence can be retrieved
+    """
+    subject_uuid, _ = test_subject
+    term_iri = "http://purl.obolibrary.org/obo/HP_0001250"  # Seizure
+    external_qualifier = "http://purl.obolibrary.org/obo/HP_0040283:present"  # Clinical modifier
+    creator_id = f"test-external-qualifier-{uuid.uuid4()}"
+
+    # Create evidence with external qualifier
+    result = create_evidence(
+        subject_id=subject_uuid,
+        term_iri=term_iri,
+        creator_id=creator_id,
+        qualifiers=[external_qualifier],
+        physical_resources=physical_resources
+    )
+
+    assert result["statusCode"] == 201, f"Failed to create evidence: {result}"
+    body = json.loads(result["body"])
+    evidence_id = body["evidence_id"]
+    termlink_id = body["termlink_id"]
+
+    # Verify in Iceberg
+    evidence = get_evidence_from_iceberg(query_athena, evidence_id)
+    assert evidence["evidence_id"] == evidence_id
+    assert evidence["termlink_id"] == termlink_id
+    assert evidence["subject_id"] == subject_uuid
+    assert evidence["term_iri"] == term_iri
+
+    # Query evidence using external qualifier
+    from phebee.utils.aws import get_client
+    lambda_client = get_client("lambda")
+
+    query_payload = {
+        "subject_id": subject_uuid,
+        "term_iri": term_iri,
+        "qualifiers": [external_qualifier]
+    }
+
+    query_response = lambda_client.invoke(
+        FunctionName=f"{app_name}-QueryEvidenceFunction",
+        Payload=json.dumps(query_payload).encode("utf-8")
+    )
+
+    query_result = json.loads(query_response["Payload"].read())
+    assert query_result["statusCode"] == 200, f"Query failed: {query_result}"
+
+    query_body = json.loads(query_result["body"])
+    assert query_body["evidence_count"] >= 1, "Should find at least one evidence record"
+    assert query_body["termlink_id"] == termlink_id, "Termlink ID should match"
+
+    # Verify we can retrieve the evidence
+    found_evidence = [e for e in query_body["evidence"] if e["evidence_id"] == evidence_id]
+    assert len(found_evidence) == 1, "Should find exactly one matching evidence"
+
+
+def test_mixed_internal_external_qualifiers(physical_resources, test_subject,
+                                            query_athena, app_name):
+    """
+    Test 2: Mixed Qualifiers Integration
+
+    Test real-world scenario with both internal and external qualifiers:
+    - Create evidence with mixed qualifiers (negated + external HPO)
+    - Query evidence by termlink
+    - Verify proper retrieval and grouping
+    """
+    subject_uuid, _ = test_subject
+    term_iri = "http://purl.obolibrary.org/obo/HP_0001250"  # Seizure
+    mixed_qualifiers = [
+        "negated:true",  # Internal qualifier
+        "http://purl.obolibrary.org/obo/HP_0040283:present"  # External qualifier
+    ]
+    creator_id = f"test-mixed-qualifiers-{uuid.uuid4()}"
+
+    # Create evidence with mixed qualifiers
+    result = create_evidence(
+        subject_id=subject_uuid,
+        term_iri=term_iri,
+        creator_id=creator_id,
+        qualifiers=mixed_qualifiers,
+        physical_resources=physical_resources
+    )
+
+    assert result["statusCode"] == 201, f"Failed to create evidence: {result}"
+    body = json.loads(result["body"])
+    evidence_id = body["evidence_id"]
+    termlink_id = body["termlink_id"]
+
+    # Verify in Iceberg
+    evidence = get_evidence_from_iceberg(query_athena, evidence_id)
+    assert evidence["evidence_id"] == evidence_id
+    assert evidence["termlink_id"] == termlink_id
+
+    # Query evidence using mixed qualifiers
+    from phebee.utils.aws import get_client
+    lambda_client = get_client("lambda")
+
+    query_payload = {
+        "subject_id": subject_uuid,
+        "term_iri": term_iri,
+        "qualifiers": mixed_qualifiers
+    }
+
+    query_response = lambda_client.invoke(
+        FunctionName=f"{app_name}-QueryEvidenceFunction",
+        Payload=json.dumps(query_payload).encode("utf-8")
+    )
+
+    query_result = json.loads(query_response["Payload"].read())
+    assert query_result["statusCode"] == 200, f"Query failed: {query_result}"
+
+    query_body = json.loads(query_result["body"])
+    assert query_body["evidence_count"] >= 1, "Should find at least one evidence record"
+    assert query_body["termlink_id"] == termlink_id, "Termlink ID should match"
+
+    # Verify the evidence we created is in the results
+    found_evidence = [e for e in query_body["evidence"] if e["evidence_id"] == evidence_id]
+    assert len(found_evidence) == 1, "Should find exactly one matching evidence"
+
+    # Verify qualifiers are stored correctly (should only have true values)
+    retrieved = get_evidence(evidence_id, physical_resources)
+    assert "qualifiers" in retrieved
+    # Qualifiers may be in different formats depending on storage, just verify they exist
+    assert len(retrieved["qualifiers"]) > 0, "Should have qualifiers stored"
+
+
+def test_internal_qualifiers_backward_compatible(physical_resources, test_subject,
+                                                 query_athena, app_name):
+    """
+    Test 3: Backward Compatibility Smoke Test
+
+    Ensure internal qualifiers work exactly as before refactoring:
+    - Create evidence with internal qualifiers (negated, family:false)
+    - Query with just the active qualifier
+    - Verify retrieval works correctly
+    - Verify hash consistency
+    """
+    subject_uuid, _ = test_subject
+    term_iri = "http://purl.obolibrary.org/obo/HP_0001250"  # Seizure
+    internal_qualifiers = ["negated", "family:false"]  # Traditional internal format
+    creator_id = f"test-backward-compat-{uuid.uuid4()}"
+
+    # Create evidence with traditional internal qualifiers
+    result = create_evidence(
+        subject_id=subject_uuid,
+        term_iri=term_iri,
+        creator_id=creator_id,
+        qualifiers=internal_qualifiers,
+        physical_resources=physical_resources
+    )
+
+    assert result["statusCode"] == 201, f"Failed to create evidence: {result}"
+    body = json.loads(result["body"])
+    evidence_id = body["evidence_id"]
+    termlink_id_original = body["termlink_id"]
+
+    # Verify in Iceberg
+    evidence = get_evidence_from_iceberg(query_athena, evidence_id)
+    assert evidence["evidence_id"] == evidence_id
+    assert evidence["termlink_id"] == termlink_id_original
+
+    # Query with just the active qualifier (should find the evidence)
+    from phebee.utils.aws import get_client
+    lambda_client = get_client("lambda")
+
+    # Query formats that should all work and find the same evidence:
+    query_formats = [
+        ["negated"],           # Short form
+        ["negated:true"],      # Explicit true
+    ]
+
+    for query_qualifiers in query_formats:
+        query_payload = {
+            "subject_id": subject_uuid,
+            "term_iri": term_iri,
+            "qualifiers": query_qualifiers
+        }
+
+        query_response = lambda_client.invoke(
+            FunctionName=f"{app_name}-QueryEvidenceFunction",
+            Payload=json.dumps(query_payload).encode("utf-8")
+        )
+
+        query_result = json.loads(query_response["Payload"].read())
+        assert query_result["statusCode"] == 200, f"Query failed with {query_qualifiers}: {query_result}"
+
+        query_body = json.loads(query_result["body"])
+
+        # Should find the evidence with any of these query formats
+        assert query_body["evidence_count"] >= 1, f"Should find evidence with qualifiers {query_qualifiers}"
+        assert query_body["termlink_id"] == termlink_id_original, \
+            f"Termlink ID should match for qualifiers {query_qualifiers}"
+
+        # Verify our evidence is in the results
+        found_evidence = [e for e in query_body["evidence"] if e["evidence_id"] == evidence_id]
+        assert len(found_evidence) == 1, \
+            f"Should find exactly one matching evidence with qualifiers {query_qualifiers}"
+
+    # Verify we can retrieve by evidence_id
+    retrieved = get_evidence(evidence_id, physical_resources)
+    assert retrieved["evidence_id"] == evidence_id
+    assert retrieved["subject_id"] == subject_uuid
+    assert retrieved["term_iri"] == term_iri
