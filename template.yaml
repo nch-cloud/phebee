@@ -2187,6 +2187,465 @@ Resources:
           RoleArn: !GetAtt UpdateOntologyInvokeRole.Arn
           Input: '{"test": false}'
 
+  # ============================================================================
+  # Rebuild Materialized Data Pipeline Resources
+  # ============================================================================
+
+  # Lambda Functions for Rebuild Pipeline
+
+  ValidateRebuildInputFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AppName}-ValidateRebuildInput
+      CodeUri: functions
+      Handler: validate_rebuild_input.lambda_handler
+      MemorySize: 256
+      Timeout: 60
+
+  TruncateIcebergTableFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AppName}-TruncateIcebergTable
+      CodeUri: functions
+      Handler: truncate_iceberg_table.lambda_handler
+      MemorySize: 512
+      Timeout: 300
+      Environment:
+        Variables:
+          PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
+      Policies:
+        - Statement:
+          - Effect: Allow
+            Action:
+              - athena:StartQueryExecution
+              - athena:GetQueryExecution
+              - athena:GetQueryResults
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:ListBucket
+              - s3:GetBucketLocation
+            Resource:
+              - !GetAtt PheBeeBucket.Arn
+              - !Sub "${PheBeeBucket.Arn}/*"
+          - Effect: Allow
+            Action:
+              - glue:GetDatabase
+              - glue:GetTable
+              - glue:UpdateTable
+            Resource: "*"
+
+  ClearNeptuneGraphFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AppName}-ClearNeptuneGraph
+      CodeUri: functions
+      Handler: clear_neptune_graph.lambda_handler
+      MemorySize: 512
+      Timeout: 900
+      Layers:
+        - !Ref PheBeeUtilsLayer
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Ref AWS::Region
+          NeptuneClusterIdentifier: !Ref PheBeeNeptuneCluster
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+        - !Ref PheBeeNeptuneDeletePolicy
+
+  NotifyRebuildCompleteFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AppName}-NotifyRebuildComplete
+      CodeUri: functions
+      Handler: notify_rebuild_complete.lambda_handler
+      MemorySize: 256
+      Timeout: 60
+      Environment:
+        Variables:
+          EventBusName: !Ref PheBeeBus
+      Policies:
+        - Statement:
+          - Effect: Allow
+            Action: events:PutEvents
+            Resource: !GetAtt PheBeeBus.Arn
+
+  NotifyRebuildFailureFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AppName}-NotifyRebuildFailure
+      CodeUri: functions
+      Handler: notify_rebuild_failure.lambda_handler
+      MemorySize: 256
+      Timeout: 60
+      Environment:
+        Variables:
+          EventBusName: !Ref PheBeeBus
+      Policies:
+        - Statement:
+          - Effect: Allow
+            Action: events:PutEvents
+            Resource: !GetAtt PheBeeBus.Arn
+
+  GatherEvidenceBaselineStatsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AppName}-GatherEvidenceBaselineStats
+      CodeUri: functions
+      Handler: gather_evidence_baseline_stats.lambda_handler
+      MemorySize: 512
+      Timeout: 300
+      Environment:
+        Variables:
+          PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
+      Policies:
+        - Statement:
+          - Effect: Allow
+            Action:
+              - athena:StartQueryExecution
+              - athena:GetQueryExecution
+              - athena:GetQueryResults
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:ListBucket
+              - s3:GetBucketLocation
+            Resource:
+              - !GetAtt PheBeeBucket.Arn
+              - !Sub "${PheBeeBucket.Arn}/*"
+          - Effect: Allow
+            Action:
+              - glue:GetDatabase
+              - glue:GetTable
+            Resource: "*"
+
+  ValidateRehashFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AppName}-ValidateRehash
+      CodeUri: functions
+      Handler: validate_rehash.lambda_handler
+      MemorySize: 512
+      Timeout: 300
+      Layers:
+        - !Ref PheBeeUtilsLayer
+      Environment:
+        Variables:
+          PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
+      Policies:
+        - Statement:
+          - Effect: Allow
+            Action:
+              - athena:StartQueryExecution
+              - athena:GetQueryExecution
+              - athena:GetQueryResults
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:ListBucket
+              - s3:GetBucketLocation
+            Resource:
+              - !GetAtt PheBeeBucket.Arn
+              - !Sub "${PheBeeBucket.Arn}/*"
+          - Effect: Allow
+            Action:
+              - glue:GetDatabase
+              - glue:GetTable
+            Resource: "*"
+
+  GatherIcebergBaselineStatsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AppName}-GatherIcebergBaselineStats
+      CodeUri: functions
+      Handler: gather_iceberg_baseline_stats.lambda_handler
+      MemorySize: 512
+      Timeout: 300
+      Environment:
+        Variables:
+          PheBeeDynamoTable: !Ref DynamoDBTable
+          PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
+      Policies:
+        - !Ref PheBeeDynamoDBReadPolicy
+        - Statement:
+          - Effect: Allow
+            Action:
+              - athena:StartQueryExecution
+              - athena:GetQueryExecution
+              - athena:GetQueryResults
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:ListBucket
+              - s3:GetBucketLocation
+            Resource:
+              - !GetAtt PheBeeBucket.Arn
+              - !Sub "${PheBeeBucket.Arn}/*"
+          - Effect: Allow
+            Action:
+              - glue:GetDatabase
+              - glue:GetTable
+            Resource: "*"
+
+  ValidateMaterializationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AppName}-ValidateMaterialization
+      CodeUri: functions
+      Handler: validate_materialization.lambda_handler
+      MemorySize: 512
+      Timeout: 300
+      Environment:
+        Variables:
+          PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
+      Policies:
+        - Statement:
+          - Effect: Allow
+            Action:
+              - athena:StartQueryExecution
+              - athena:GetQueryExecution
+              - athena:GetQueryResults
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:ListBucket
+              - s3:GetBucketLocation
+            Resource:
+              - !GetAtt PheBeeBucket.Arn
+              - !Sub "${PheBeeBucket.Arn}/*"
+          - Effect: Allow
+            Action:
+              - glue:GetDatabase
+              - glue:GetTable
+            Resource: "*"
+
+  GatherNeptuneBaselineStatsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AppName}-GatherNeptuneBaselineStats
+      CodeUri: functions
+      Handler: gather_neptune_baseline_stats.lambda_handler
+      MemorySize: 512
+      Timeout: 300
+      Layers:
+        - !Ref PheBeeUtilsLayer
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Ref AWS::Region
+          PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+        - Statement:
+          - Effect: Allow
+            Action:
+              - athena:StartQueryExecution
+              - athena:GetQueryExecution
+              - athena:GetQueryResults
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:ListBucket
+              - s3:GetBucketLocation
+            Resource:
+              - !GetAtt PheBeeBucket.Arn
+              - !Sub "${PheBeeBucket.Arn}/*"
+          - Effect: Allow
+            Action:
+              - glue:GetDatabase
+              - glue:GetTable
+            Resource: "*"
+
+  ValidateNeptuneFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AppName}-ValidateNeptune
+      CodeUri: functions
+      Handler: validate_neptune.lambda_handler
+      MemorySize: 512
+      Timeout: 300
+      Layers:
+        - !Ref PheBeeUtilsLayer
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Ref AWS::Region
+          PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+        - Statement:
+          - Effect: Allow
+            Action:
+              - athena:StartQueryExecution
+              - athena:GetQueryExecution
+              - athena:GetQueryResults
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:ListBucket
+              - s3:GetBucketLocation
+            Resource:
+              - !GetAtt PheBeeBucket.Arn
+              - !Sub "${PheBeeBucket.Arn}/*"
+          - Effect: Allow
+            Action:
+              - glue:GetDatabase
+              - glue:GetTable
+            Resource: "*"
+
+  ExecuteSparqlReadonlyFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AppName}-ExecuteSparqlReadonly
+      CodeUri: functions
+      Handler: execute_sparql_readonly.lambda_handler
+      MemorySize: 256
+      Timeout: 120
+      Layers:
+        - !Ref PheBeeUtilsLayer
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Ref AWS::Region
+      Policies:
+        - !Ref PheBeeNeptuneReadPolicy
+
+  # State Machine and IAM Role
+
+  RebuildMaterializedDataStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: !Sub ${AppName}-RebuildMaterializedDataStateMachine
+      Role: !GetAtt RebuildStateMachineRole.Arn
+      DefinitionUri: statemachine/rebuild_materialized_data.asl.json
+      DefinitionSubstitutions:
+        ValidateRebuildInputFunction: !GetAtt ValidateRebuildInputFunction.Arn
+        GatherEvidenceBaselineStatsFunction: !GetAtt GatherEvidenceBaselineStatsFunction.Arn
+        ValidateRehashFunction: !GetAtt ValidateRehashFunction.Arn
+        GatherIcebergBaselineStatsFunction: !GetAtt GatherIcebergBaselineStatsFunction.Arn
+        ValidateMaterializationFunction: !GetAtt ValidateMaterializationFunction.Arn
+        GatherNeptuneBaselineStatsFunction: !GetAtt GatherNeptuneBaselineStatsFunction.Arn
+        ValidateNeptuneFunction: !GetAtt ValidateNeptuneFunction.Arn
+        TruncateIcebergTableFunction: !GetAtt TruncateIcebergTableFunction.Arn
+        ClearNeptuneGraphFunction: !GetAtt ClearNeptuneGraphFunction.Arn
+        NotifyRebuildCompleteFunction: !GetAtt NotifyRebuildCompleteFunction.Arn
+        NotifyRebuildFailureFunction: !GetAtt NotifyRebuildFailureFunction.Arn
+        EMRServerlessApplicationId: !Ref EMRServerlessApplication
+        EMRExecutionRoleArn: !GetAtt EMRExecutionRole.Arn
+        PheBeeBucketName: !Ref PheBeeBucket
+        DynamoDBTableName: !Ref DynamoDBTable
+        AWSRegion: !Ref AWS::Region
+        IcebergDatabase: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
+        IcebergEvidenceTable: !Ref IcebergEvidenceTable
+        IcebergSubjectTermsBySubjectTable: !Ref IcebergSubjectTermsBySubjectTable
+        IcebergSubjectTermsByProjectTermTable: !Ref IcebergSubjectTermsByProjectTermTable
+        StartNeptuneBulkLoadFunction: !GetAtt StartNeptuneBulkLoadFunction.Arn
+        CheckNeptuneBulkLoadStatusFunction: !GetAtt CheckNeptuneBulkLoadStatusFunction.Arn
+
+  RebuildStateMachineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AppName}-RebuildStateMachineRole"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: LambdaInvoke
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource:
+                  - !GetAtt ValidateRebuildInputFunction.Arn
+                  - !GetAtt GatherEvidenceBaselineStatsFunction.Arn
+                  - !GetAtt ValidateRehashFunction.Arn
+                  - !GetAtt GatherIcebergBaselineStatsFunction.Arn
+                  - !GetAtt ValidateMaterializationFunction.Arn
+                  - !GetAtt GatherNeptuneBaselineStatsFunction.Arn
+                  - !GetAtt ValidateNeptuneFunction.Arn
+                  - !GetAtt TruncateIcebergTableFunction.Arn
+                  - !GetAtt ClearNeptuneGraphFunction.Arn
+                  - !GetAtt NotifyRebuildCompleteFunction.Arn
+                  - !GetAtt NotifyRebuildFailureFunction.Arn
+                  - !GetAtt StartNeptuneBulkLoadFunction.Arn
+                  - !GetAtt CheckNeptuneBulkLoadStatusFunction.Arn
+        - PolicyName: EMRServerlessAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - emr-serverless:StartJobRun
+                  - emr-serverless:GetJobRun
+                  - emr-serverless:CancelJobRun
+                Resource:
+                  - !Sub "arn:aws:emr-serverless:${AWS::Region}:${AWS::AccountId}:/applications/${EMRServerlessApplication}"
+                  - !Sub "arn:aws:emr-serverless:${AWS::Region}:${AWS::AccountId}:/applications/${EMRServerlessApplication}/jobruns/*"
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt EMRExecutionRole.Arn
+        - PolicyName: EventBridgeAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - events:PutRule
+                  - events:DeleteRule
+                  - events:DescribeRule
+                  - events:EnableRule
+                  - events:DisableRule
+                  - events:ListTargetsByRule
+                  - events:PutTargets
+                  - events:RemoveTargets
+                Resource:
+                  - !Sub "arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/${AppName}-*"
+                  - !Sub "arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/StepFunctionsGetEventsForEMRServerlessJobRule"
+
 Outputs:
   UpdateHPOSFNArn:
     Value: !Ref UpdateHPOSFN
@@ -2216,6 +2675,11 @@ Outputs:
     Value: !Ref BulkImportStateMachine
     Export:
       Name: !Sub "${AppName}-BulkImportStateMachineArn"
+
+  RebuildMaterializedDataStateMachineArn:
+    Value: !Ref RebuildMaterializedDataStateMachine
+    Export:
+      Name: !Sub "${AppName}-RebuildMaterializedDataStateMachineArn"
 
   EMRServerlessApplicationId:
     Value: !Ref EMRServerlessApplication

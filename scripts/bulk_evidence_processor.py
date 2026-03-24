@@ -93,6 +93,29 @@ def generate_evidence_hash(
     return hashlib.sha256(content.encode()).hexdigest()
 
 
+def normalize_qualifier_type(qualifier_type):
+    """
+    Normalize qualifier type to canonical form.
+    KEEP IN SYNC WITH qualifier.py implementation!
+
+    Rules:
+    - Internal PheBee qualifiers: Extract short name from IRI if prefixed
+      "http://ods.nationwidechildrens.org/phebee/qualifier/negated" → "negated"
+    - External qualifiers: Keep full IRI
+      "http://purl.obolibrary.org/obo/HP_0012823" → stays as-is
+    - Already short form: Keep as-is
+      "negated" → "negated"
+    """
+    PHEBEE_QUALIFIER_PREFIX = "http://ods.nationwidechildrens.org/phebee/qualifier/"
+
+    if qualifier_type.startswith(PHEBEE_QUALIFIER_PREFIX):
+        # Extract short name from PheBee internal qualifier IRI
+        return qualifier_type[len(PHEBEE_QUALIFIER_PREFIX):]
+    else:
+        # External IRI or already short form - keep as-is
+        return qualifier_type
+
+
 def normalize_qualifiers(qualifiers):
     """
     Normalize qualifiers for hash computation.
@@ -104,9 +127,6 @@ def normalize_qualifiers(qualifiers):
     """
     if not qualifiers:
         return []
-
-    # Define internal qualifier names
-    INTERNAL_QUALIFIERS = {'negated', 'hypothetical', 'family'}
 
     normalized = []
     for qualifier in qualifiers:
@@ -123,15 +143,22 @@ def normalize_qualifiers(qualifiers):
             colon_after_slash = qualifier.find(':', last_slash_idx + 1)
 
             if colon_after_slash != -1:
-                # Has a value component - filter false values
+                # Has a value component - extract type and value, then normalize type
+                qualifier_type = qualifier[:colon_after_slash]
                 value = qualifier[colon_after_slash + 1:]
+
+                # Normalize the type (converts internal IRIs to short form)
+                normalized_type = normalize_qualifier_type(qualifier_type)
+
+                # Filter false values
                 if value.lower() not in ["false", "0"]:
-                    normalized.append(qualifier)
+                    normalized.append(f"{normalized_type}:{value}")
             else:
-                # No value - add ":true"
-                normalized.append(f"{qualifier}:true")
+                # No value - normalize type and add ":true"
+                normalized_type = normalize_qualifier_type(qualifier)
+                normalized.append(f"{normalized_type}:true")
         else:
-            # Internal qualifier
+            # Internal qualifier (already short form)
             if ":" in qualifier:
                 # Already has a value component - filter false values
                 name, value = qualifier.split(":", 1)
@@ -361,7 +388,7 @@ def extract_evidence_records(data: List[dict], subject_map: Dict[Tuple[str, str]
                     'annotation_metadata': '{}'
                 },
                 'qualifiers': [
-                    {'qualifier_type': k, 'qualifier_value': str(v)}
+                    {'qualifier_type': normalize_qualifier_type(k), 'qualifier_value': str(v)}
                     for k, v in (evidence.get('contexts') or {}).items()
                 ]
             }

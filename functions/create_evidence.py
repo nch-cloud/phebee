@@ -3,7 +3,8 @@ import os
 from aws_lambda_powertools import Metrics, Logger, Tracer
 from phebee.utils.aws import extract_body
 from phebee.utils.iceberg import create_evidence_record, count_evidence_by_termlink
-from phebee.utils.hash import generate_termlink_hash, normalize_qualifiers
+from phebee.utils.hash import generate_termlink_hash
+from phebee.utils.qualifier import Qualifier, normalize_qualifiers
 from phebee.utils.sparql import create_term_link
 
 logger = Logger()
@@ -64,24 +65,45 @@ def lambda_handler(event, context):
         created_timestamp = now.isoformat()
         created_date = now.date().isoformat()
 
-        # Convert qualifiers dict to list format for hash generation
-        # Qualifiers can be provided as either a dict {"iri": true/false} or a list ["iri"]
+        # Convert qualifiers input to list of Qualifier objects
+        # Qualifiers can be provided as:
+        # - dict: {"type": "value", ...} - preserves both type and value
+        # - list: ["type:value", ...] - legacy string format
+        # - list: [Qualifier(...), ...] - already Qualifier objects
+        from phebee.utils.qualifier import normalize_qualifier_type
         qualifier_list = []
         if qualifiers:
             if isinstance(qualifiers, dict):
-                # Convert dict to list of IRIs, filtering out false values
-                # Just use the IRI itself (presence implies active)
-                for qualifier_iri, qualifier_value in qualifiers.items():
+                # Dict format: {"onset": "HP:0003593", "negated": "true", ...}
+                # IMPORTANT: Preserve BOTH type and value (was a bug - previously threw away values)
+                for qualifier_type, qualifier_value in qualifiers.items():
                     if qualifier_value not in [False, "false", "0", 0, 0.0]:
-                        qualifier_list.append(qualifier_iri)
+                        # Normalize qualifier type to canonical form
+                        # (internal qualifiers stored as short names, external as full IRIs)
+                        normalized_type = normalize_qualifier_type(qualifier_type)
+                        qualifier_list.append(
+                            Qualifier(type=normalized_type, value=str(qualifier_value))
+                        )
             elif isinstance(qualifiers, list):
-                # List format - use as-is (presence implies active)
-                qualifier_list = qualifiers
+                # List format - could be strings (legacy) or Qualifier objects
+                for q in qualifiers:
+                    if isinstance(q, Qualifier):
+                        # Already a Qualifier - normalize its type
+                        normalized_type = normalize_qualifier_type(q.type)
+                        qualifier_list.append(Qualifier(type=normalized_type, value=q.value))
+                    elif isinstance(q, str):
+                        # Legacy string format - parse to Qualifier, then normalize
+                        if q:  # Skip empty strings
+                            parsed = Qualifier.from_string(q)
+                            normalized_type = normalize_qualifier_type(parsed.type)
+                            qualifier_list.append(Qualifier(type=normalized_type, value=parsed.value))
+                    else:
+                        logger.warning(f"Unexpected qualifier item type: {type(q)}")
             else:
                 logger.warning(f"Unexpected qualifiers type: {type(qualifiers)}")
                 qualifier_list = []
 
-        # Normalize qualifiers using centralized function
+        # Normalize qualifiers (filter inactive, sort) using centralized function
         # This ensures termlink_id matches what create_evidence_record will compute
         normalized_qualifiers = normalize_qualifiers(qualifier_list)
 
@@ -103,7 +125,7 @@ def lambda_handler(event, context):
             clinical_note_id=clinical_note_id,
             span_start=span_start,
             span_end=span_end,
-            qualifiers=qualifier_list,
+            qualifiers=normalized_qualifiers,  # Pass normalized Qualifier objects
             note_timestamp=note_timestamp,
             provider_type=provider_type,
             author_specialty=author_specialty,
@@ -137,14 +159,12 @@ def lambda_handler(event, context):
         try:
             from phebee.utils.iceberg import update_subject_terms_for_evidence
 
-            # Extract qualifier names from normalized format for subject_terms tables
-            qualifier_names = [q.split(":")[0] for q in normalized_qualifiers]
-
+            # Pass normalized qualifiers in "type:value" format
             update_subject_terms_for_evidence(
                 subject_id=subject_id,
                 term_iri=term_iri,
                 termlink_id=termlink_id,
-                qualifiers=qualifier_names,
+                qualifiers=normalized_qualifiers,
                 created_date=created_date
             )
             logger.info(f"Updated subject-terms analytical tables for termlink {termlink_id}")

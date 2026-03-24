@@ -952,21 +952,22 @@ def test_split_qualifier_for_storage_external():
 def test_parse_qualifiers_field_internal():
     """Test parsing internal qualifiers from storage."""
     from phebee.utils.iceberg import parse_qualifiers_field
+    from phebee.utils.qualifier import Qualifier
 
     # Active internal qualifier
     athena_output = "[{qualifier_type=negated, qualifier_value=true}]"
     result = parse_qualifiers_field(athena_output)
-    assert result == ["negated"]
+    assert result == [Qualifier(type="negated", value="true")]
 
     # Multiple internal qualifiers
     athena_output = "[{qualifier_type=negated, qualifier_value=true}, {qualifier_type=hypothetical, qualifier_value=true}]"
     result = parse_qualifiers_field(athena_output)
-    assert set(result) == {"negated", "hypothetical"}
+    assert set(result) == {Qualifier(type="negated", value="true"), Qualifier(type="hypothetical", value="true")}
 
     # False qualifier should be filtered out
     athena_output = "[{qualifier_type=negated, qualifier_value=true}, {qualifier_type=family, qualifier_value=false}]"
     result = parse_qualifiers_field(athena_output)
-    assert result == ["negated"]
+    assert result == [Qualifier(type="negated", value="true")]
 
     # Empty/null cases
     assert parse_qualifiers_field("") == []
@@ -977,16 +978,17 @@ def test_parse_qualifiers_field_internal():
 def test_parse_qualifiers_field_external():
     """Test parsing external IRI qualifiers from storage."""
     from phebee.utils.iceberg import parse_qualifiers_field
+    from phebee.utils.qualifier import Qualifier
 
     # External IRI with semantic value
     athena_output = "[{qualifier_type=http://purl.obolibrary.org/obo/HP_0012823, qualifier_value=present}]"
     result = parse_qualifiers_field(athena_output)
-    assert result == ["http://purl.obolibrary.org/obo/HP_0012823"]
+    assert result == [Qualifier(type="http://purl.obolibrary.org/obo/HP_0012823", value="present")]
 
     # External IRI with boolean value
     athena_output = "[{qualifier_type=http://purl.obolibrary.org/obo/HP_0040283, qualifier_value=true}]"
     result = parse_qualifiers_field(athena_output)
-    assert result == ["http://purl.obolibrary.org/obo/HP_0040283"]
+    assert result == [Qualifier(type="http://purl.obolibrary.org/obo/HP_0040283", value="true")]
 
     # External IRI with false should be filtered
     athena_output = "[{qualifier_type=http://purl.obolibrary.org/obo/HP_0040283, qualifier_value=false}]"
@@ -997,6 +999,7 @@ def test_parse_qualifiers_field_external():
 def test_parse_qualifiers_field_mixed():
     """Test parsing mixed internal and external qualifiers."""
     from phebee.utils.iceberg import parse_qualifiers_field
+    from phebee.utils.qualifier import Qualifier
 
     # Mixed qualifiers with various values
     athena_output = (
@@ -1005,23 +1008,34 @@ def test_parse_qualifiers_field_mixed():
         "{qualifier_type=family, qualifier_value=false}]"
     )
     result = parse_qualifiers_field(athena_output)
-    assert set(result) == {"negated", "http://purl.obolibrary.org/obo/HP_0012823"}
+    assert set(result) == {
+        Qualifier(type="negated", value="true"),
+        Qualifier(type="http://purl.obolibrary.org/obo/HP_0012823", value="present")
+    }
 
 
 def test_storage_retrieval_roundtrip():
     """Test that qualifiers survive a round-trip through storage format."""
-    from phebee.utils.iceberg import _split_qualifier_for_storage, parse_qualifiers_field
+    from phebee.utils.iceberg import parse_qualifiers_field
+    from phebee.utils.qualifier import Qualifier
 
     test_cases = [
-        ["negated:true"],
-        ["http://purl.obolibrary.org/obo/HP_0012823:present"],
-        ["negated:true", "http://purl.obolibrary.org/obo/HP_0040283:mild"],
-        ["hypothetical:true", "family:false"],  # false should be filtered
+        (["negated:true"], [Qualifier(type="negated", value="true")]),
+        (["http://purl.obolibrary.org/obo/HP_0012823:present"],
+         [Qualifier(type="http://purl.obolibrary.org/obo/HP_0012823", value="present")]),
+        (["negated:true", "http://purl.obolibrary.org/obo/HP_0040283:mild"],
+         [Qualifier(type="negated", value="true"),
+          Qualifier(type="http://purl.obolibrary.org/obo/HP_0040283", value="mild")]),
+        (["hypothetical:true", "family:false"],  # false should be filtered
+         [Qualifier(type="hypothetical", value="true")]),
     ]
 
-    for qualifiers in test_cases:
-        # Simulate storage
-        stored = [_split_qualifier_for_storage(q) for q in qualifiers]
+    for qualifiers_str, expected_qualifiers in test_cases:
+        # Convert string qualifiers to Qualifier objects for storage
+        qualifiers_obj = [Qualifier.from_string(q) for q in qualifiers_str]
+
+        # Simulate storage format (convert to storage dicts)
+        stored = [q.to_storage_dict() for q in qualifiers_obj]
 
         # Simulate Athena output format
         athena_str = "["
@@ -1034,8 +1048,4 @@ def test_storage_retrieval_roundtrip():
         # Parse back
         retrieved = parse_qualifiers_field(athena_str)
 
-        # Expected: only active qualifiers (not false/0)
-        expected = [q.split(":")[0] if not q.startswith("http") else q.rsplit(":", 1)[0]
-                   for q in qualifiers if not q.endswith(":false") and not q.endswith(":0")]
-
-        assert set(retrieved) == set(expected), f"Round-trip failed for {qualifiers}"
+        assert set(retrieved) == set(expected_qualifiers), f"Round-trip failed for {qualifiers_str}"

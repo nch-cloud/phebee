@@ -57,7 +57,7 @@ def create_table(database: str, table: str, s3_location: str, query_results_s3: 
         term_iri string,
         term_id string,
         term_label string,
-        qualifiers array<string>,
+        qualifiers array<struct<qualifier_type:string, qualifier_value:string>>,
         evidence_count int,
         termlink_id string,
         first_evidence_date date,

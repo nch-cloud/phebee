@@ -3,7 +3,8 @@ Iceberg evidence table utilities for PheBee.
 """
 import boto3
 import hashlib
-from .hash import generate_evidence_hash, generate_termlink_hash, normalize_qualifiers
+from .hash import generate_evidence_hash, generate_termlink_hash
+from .qualifier import Qualifier, normalize_qualifiers
 import json
 import logging
 import os
@@ -13,7 +14,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
-from typing import List, Dict, Any, Tuple, Set
+from typing import List, Dict, Any, Tuple, Set, Optional
 from rdflib import Graph, URIRef, Literal as RdfLiteral, Namespace
 from rdflib.namespace import RDF, DCTERMS, XSD
 
@@ -229,10 +230,10 @@ def parse_athena_struct_array(struct_str):
     return structs
 
 
-def parse_qualifiers_field(qualifiers_str):
+def parse_qualifiers_field(qualifiers_str) -> List[Qualifier]:
     """
     Parse qualifiers field from Athena struct format.
-    Returns list of active qualifier types.
+    Returns list of active Qualifier objects.
 
     Active qualifiers are those with values that are NOT 'false' or '0'.
     This supports both boolean qualifiers (true/false) and qualifiers with
@@ -243,11 +244,9 @@ def parse_qualifiers_field(qualifiers_str):
 
     qualifiers_list = parse_athena_struct_array(qualifiers_str)
 
-    # Extract active qualifiers (exclude false/0 values)
-    return [
-        q['qualifier_type'] for q in qualifiers_list
-        if str(q.get('qualifier_value', '')).lower() not in ['false', '0', '']
-    ]
+    # Convert to Qualifier objects, filtering inactive qualifiers
+    qualifiers = [Qualifier.from_dict(q) for q in qualifiers_list]
+    return [q for q in qualifiers if q.is_active()]
 
 PHEBEE_NS = Namespace(PHEBEE)
 OBO = Namespace("http://purl.obolibrary.org/obo/")
@@ -338,7 +337,7 @@ def create_evidence_record(
     clinical_note_id: str = None,
     span_start: int = None,
     span_end: int = None,
-    qualifiers: List[str] = None,
+    qualifiers: Optional[List[Qualifier]] = None,
     note_timestamp: str = None,
     provider_type: str = None,
     author_specialty: str = None,
@@ -410,7 +409,7 @@ def create_evidence_record(
             "annotation_metadata": "{}"
         },
         "qualifiers": [
-            _split_qualifier_for_storage(q)
+            q.to_storage_dict()
             for q in normalized_qualifiers
         ] if normalized_qualifiers else None
     }
@@ -700,8 +699,8 @@ def update_subject_terms_for_evidence(
     subject_id: str,
     term_iri: str,
     termlink_id: str,
-    qualifiers: List[str] = None,
-    created_date: str = None
+    qualifiers: Optional[List[Qualifier]] = None,
+    created_date: Optional[str] = None
 ):
     """
     Incrementally update subject-terms analytical tables when evidence is added.
@@ -714,7 +713,7 @@ def update_subject_terms_for_evidence(
         subject_id: The subject ID
         term_iri: The term IRI
         termlink_id: The termlink ID
-        qualifiers: List of active qualifiers
+        qualifiers: List of Qualifier objects
         created_date: Date of evidence creation (YYYY-MM-DD format)
     """
     from phebee.utils.dynamodb import get_projects_for_subject
@@ -730,12 +729,18 @@ def update_subject_terms_for_evidence(
     # Extract term_id from IRI
     term_id = _extract_term_id_from_iri(term_iri)
 
-    # Build qualifiers array SQL
+    # Build qualifiers array SQL (array of structs)
     qualifiers_sql = "ARRAY[]"
     if qualifiers:
-        escaped_qualifiers = [q.replace("'", "''") for q in qualifiers]
-        qualifier_strings = [f"'{q}'" for q in escaped_qualifiers]
-        qualifiers_sql = f"ARRAY[{', '.join(qualifier_strings)}]"
+        # Convert Qualifier objects to struct SQL
+        struct_rows = []
+        for q in qualifiers:
+            # Escape single quotes
+            qt = q.type.replace("'", "''")
+            qv = q.value.replace("'", "''")
+            struct_rows.append(f"ROW('{qt}', '{qv}')")
+        if struct_rows:
+            qualifiers_sql = f"CAST(ARRAY[{', '.join(struct_rows)}] AS ARRAY(ROW(qualifier_type VARCHAR, qualifier_value VARCHAR)))"
 
     # Construct IRIs
     subject_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"
@@ -947,17 +952,22 @@ def remove_subject_terms_for_evidence(
                 term_label = row.get('term_label')
                 first_date = row.get('first_evidence_date')
 
-                # Parse qualifiers array
+                # Parse qualifiers array of structs
                 qualifiers_str = row.get('qualifiers')
                 qualifiers_sql = "ARRAY[]"
                 if qualifiers_str and qualifiers_str != '[]' and qualifiers_str != 'null':
-                    # Parse array format like ['negated', 'severity_moderate']
-                    qualifiers_str = qualifiers_str.strip('[]')
-                    if qualifiers_str:
-                        qualifiers_list = [q.strip().strip("'\"") for q in qualifiers_str.split(',')]
-                        escaped_qualifiers = [q.replace("'", "''") for q in qualifiers_list]
-                        qualifier_strings = [f"'{q}'" for q in escaped_qualifiers]
-                        qualifiers_sql = f"ARRAY[{', '.join(qualifier_strings)}]"
+                    # Parse array<struct> format like [{qualifier_type=negated, qualifier_value=true}]
+                    import re
+                    struct_pattern = r'\{qualifier_type=([^,]+), qualifier_value=([^}]+)\}'
+                    matches = re.findall(struct_pattern, qualifiers_str)
+                    if matches:
+                        struct_rows = []
+                        for qualifier_type, qualifier_value in matches:
+                            # Escape single quotes
+                            qt = qualifier_type.replace("'", "''")
+                            qv = qualifier_value.replace("'", "''")
+                            struct_rows.append(f"ROW('{qt}', '{qv}')")
+                        qualifiers_sql = f"CAST(ARRAY[{', '.join(struct_rows)}] AS ARRAY(ROW(qualifier_type VARCHAR, qualifier_value VARCHAR)))"
 
                 # Delete and reinsert for by_subject table
                 delete_by_subject = f"""
@@ -1019,16 +1029,22 @@ def remove_subject_terms_for_evidence(
                     proj_first_date = proj_row.get('first_evidence_date')
                     proj_subject_iri_base = proj_row.get('subject_iri')
 
-                    # Parse qualifiers
+                    # Parse qualifiers array of structs
                     proj_qualifiers_str = proj_row.get('qualifiers')
                     proj_qualifiers_sql = "ARRAY[]"
                     if proj_qualifiers_str and proj_qualifiers_str != '[]' and proj_qualifiers_str != 'null':
-                        proj_qualifiers_str = proj_qualifiers_str.strip('[]')
-                        if proj_qualifiers_str:
-                            proj_qualifiers_list = [q.strip().strip("'\"") for q in proj_qualifiers_str.split(',')]
-                            proj_escaped_qualifiers = [q.replace("'", "''") for q in proj_qualifiers_list]
-                            proj_qualifier_strings = [f"'{q}'" for q in proj_escaped_qualifiers]
-                            proj_qualifiers_sql = f"ARRAY[{', '.join(proj_qualifier_strings)}]"
+                        # Parse array<struct> format like [{qualifier_type=negated, qualifier_value=true}]
+                        import re
+                        struct_pattern = r'\{qualifier_type=([^,]+), qualifier_value=([^}]+)\}'
+                        matches = re.findall(struct_pattern, proj_qualifiers_str)
+                        if matches:
+                            struct_rows = []
+                            for qualifier_type, qualifier_value in matches:
+                                # Escape single quotes
+                                qt = qualifier_type.replace("'", "''")
+                                qv = qualifier_value.replace("'", "''")
+                                struct_rows.append(f"ROW('{qt}', '{qv}')")
+                            proj_qualifiers_sql = f"CAST(ARRAY[{', '.join(struct_rows)}] AS ARRAY(ROW(qualifier_type VARCHAR, qualifier_value VARCHAR)))"
 
                     # Delete and reinsert for by_project_term table
                     delete_by_project = f"""
@@ -1154,16 +1170,32 @@ def get_evidence_for_termlink(
     Args:
         subject_id: The subject UUID
         term_iri: The term IRI
-        qualifiers: List of qualifier names (short names like 'negated', not IRIs)
+        qualifiers: List of qualifier names or IRIs (e.g., 'negated', 'http://purl.obolibrary.org/obo/HP_0012823')
 
     Returns:
         List of evidence records for the specific termlink
     """
     logger.info(f"Getting evidence for subject_id={subject_id}, term_iri={term_iri}, qualifiers={qualifiers}")
 
-    # Normalize qualifiers to match bulk import format (name:value pairs)
-    # Normalize qualifiers using centralized function
-    normalized_qualifiers = normalize_qualifiers(qualifiers)
+    # Convert string qualifiers to Qualifier objects and normalize types
+    from phebee.utils.qualifier import Qualifier, normalize_qualifier_type
+    qualifier_objects = []
+    if qualifiers:
+        for q in qualifiers:
+            if isinstance(q, str):
+                # Handle both short names and full IRIs, then normalize
+                parsed = Qualifier.from_string(q)
+                normalized_type = normalize_qualifier_type(parsed.type)
+                qualifier_objects.append(Qualifier(type=normalized_type, value=parsed.value))
+            elif isinstance(q, Qualifier):
+                # Normalize existing Qualifier's type
+                normalized_type = normalize_qualifier_type(q.type)
+                qualifier_objects.append(Qualifier(type=normalized_type, value=q.value))
+            else:
+                logger.warning(f"Unexpected qualifier type: {type(q)}")
+
+    # Normalize qualifiers using centralized function (filter inactive, sort)
+    normalized_qualifiers = normalize_qualifiers(qualifier_objects)
 
     # Compute the termlink_id to filter by specific termlink
     subject_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"
@@ -1332,30 +1364,27 @@ def get_subject_term_info(
         "source_type": evidence_data[0].get('evidence_type', 'http://purl.obolibrary.org/obo/ECO_0006162') if evidence_data else None
     }]
     
-    # Extract short qualifier names from the evidence data
+    # Extract qualifier types from the evidence data (preserve full IRIs)
     active_qualifiers = []
     if evidence_data and evidence_data[0].get('qualifiers'):
         qualifiers_from_evidence = evidence_data[0]['qualifiers']
         if isinstance(qualifiers_from_evidence, str):
             # Parse if it's a string (might be JSON or struct format)
-            active_qualifiers = parse_qualifiers_field(qualifiers_from_evidence)
+            from phebee.utils.qualifier import Qualifier
+            qualifier_objects = parse_qualifiers_field(qualifiers_from_evidence)
+            # parse_qualifiers_field returns List[Qualifier], extract types
+            active_qualifiers = [q.type for q in qualifier_objects]
         elif isinstance(qualifiers_from_evidence, list):
             # Extract active qualifiers from list format
             for q in qualifiers_from_evidence:
                 if isinstance(q, dict) and q.get('qualifier_value') in ['true', '1', 1, 1.0, True]:
                     qualifier_type = q.get('qualifier_type', '')
-                    # Extract short name from full IRI if needed
-                    # NOTE: This assumes all qualifiers are in the same namespace and can be
-                    # shortened by taking the last path segment. If we need to support
-                    # qualifiers from multiple namespaces in the future, this logic should
-                    # be moved to a dedicated function that handles namespace mapping.
-                    if qualifier_type.startswith('http://') or qualifier_type.startswith('https://'):
-                        qualifier_type = qualifier_type.split('/')[-1]
+                    # Preserve full qualifier type (including IRIs)
                     active_qualifiers.append(qualifier_type)
     
     return {
         "term_iri": term_iri,
-        "qualifiers": sorted(active_qualifiers),  # Return short names of active qualifiers
+        "qualifiers": sorted(active_qualifiers),  # Return qualifier types (preserving full IRIs)
         "evidence_count": len(evidence_data),
         "term_links": term_links
     }
@@ -1417,17 +1446,15 @@ def query_subject_by_id(subject_id: str) -> List[Dict[str, Any]]:
                 "last_evidence_date": row.get('last_evidence_date')
             }
 
-            # Parse qualifiers array
+            # Parse qualifiers array of structs
             qualifiers_str = row.get('qualifiers')
+            qualifiers = []
             if qualifiers_str and qualifiers_str != '[]' and qualifiers_str != 'null':
-                # Parse array format like ['negated', 'severity_moderate']
-                qualifiers_str = qualifiers_str.strip('[]')
-                if qualifiers_str:
-                    term["qualifiers"] = [q.strip().strip("'\"") for q in qualifiers_str.split(',')]
-                else:
-                    term["qualifiers"] = []
-            else:
-                term["qualifiers"] = []
+                # Parse using standard parsing function
+                qualifier_objects = parse_qualifiers_field(qualifiers_str)
+                # Format as "type:value" for API compatibility
+                qualifiers = [q.to_string() for q in qualifier_objects]
+            term["qualifiers"] = qualifiers
 
             terms.append(term)
 
@@ -1551,14 +1578,16 @@ def query_subjects_by_project(
     if not include_qualified:
         # Exclude terms with negated, hypothetical, or family qualifiers
         # Check both short names (legacy) and full IRIs (current) for backward compatibility
+        # qualifiers is array<struct>, so check if any struct has qualifier_type matching
+        # Use ANY_MATCH for array filtering in Presto/Athena
         where_clauses.append("""
             NOT (
-                CONTAINS(qualifiers, 'negated') OR
-                CONTAINS(qualifiers, 'http://ods.nationwidechildrens.org/phebee/qualifier/negated') OR
-                CONTAINS(qualifiers, 'hypothetical') OR
-                CONTAINS(qualifiers, 'http://ods.nationwidechildrens.org/phebee/qualifier/hypothetical') OR
-                CONTAINS(qualifiers, 'family') OR
-                CONTAINS(qualifiers, 'http://ods.nationwidechildrens.org/phebee/qualifier/family')
+                ANY_MATCH(qualifiers, q -> q.qualifier_type = 'negated') OR
+                ANY_MATCH(qualifiers, q -> q.qualifier_type = 'http://ods.nationwidechildrens.org/phebee/qualifier/negated') OR
+                ANY_MATCH(qualifiers, q -> q.qualifier_type = 'hypothetical') OR
+                ANY_MATCH(qualifiers, q -> q.qualifier_type = 'http://ods.nationwidechildrens.org/phebee/qualifier/hypothetical') OR
+                ANY_MATCH(qualifiers, q -> q.qualifier_type = 'family') OR
+                ANY_MATCH(qualifiers, q -> q.qualifier_type = 'http://ods.nationwidechildrens.org/phebee/qualifier/family')
             )
         """)
 
@@ -1627,13 +1656,14 @@ def query_subjects_by_project(
                 field_names = ['term_id', 'term_iri', 'term_label', 'qualifiers', 'evidence_count', 'termlink_id', 'first_evidence_date', 'last_evidence_date']
                 terms_list = parse_athena_row_array(terms_str, field_names)
                 for term_dict in terms_list:
-                    # Parse qualifiers
+                    # Parse qualifiers array of structs
                     qualifiers_str = term_dict.get('qualifiers')
                     qualifiers = []
                     if qualifiers_str and qualifiers_str != '[]' and qualifiers_str != 'null':
-                        qualifiers_str = qualifiers_str.strip('[]')
-                        if qualifiers_str:
-                            qualifiers = [q.strip().strip("'\"") for q in qualifiers_str.split(',')]
+                        # Parse using standard parsing function
+                        qualifier_objects = parse_qualifiers_field(qualifiers_str)
+                        # Format as "type:value" for API compatibility
+                        qualifiers = [q.to_string() for q in qualifier_objects]
 
                     # Build phenotype in API format
                     phenotype = {
@@ -1770,16 +1800,15 @@ def query_subject_with_hierarchy(
                 "last_evidence_date": row.get('last_evidence_date')
             }
 
-            # Parse qualifiers
+            # Parse qualifiers array of structs
             qualifiers_str = row.get('qualifiers')
+            qualifiers = []
             if qualifiers_str and qualifiers_str != '[]' and qualifiers_str != 'null':
-                qualifiers_str = qualifiers_str.strip('[]')
-                if qualifiers_str:
-                    term["qualifiers"] = [q.strip().strip("'\"") for q in qualifiers_str.split(',')]
-                else:
-                    term["qualifiers"] = []
-            else:
-                term["qualifiers"] = []
+                # Parse using standard parsing function
+                qualifier_objects = parse_qualifiers_field(qualifiers_str)
+                # Format as "type:value" for API compatibility
+                qualifiers = [q.to_string() for q in qualifier_objects]
+            term["qualifiers"] = qualifiers
 
             # Parse ancestor_term_ids
             ancestors_str = row.get('ancestor_term_ids')
@@ -1998,7 +2027,7 @@ def materialize_project(project_id: str, batch_size: int = 100) -> Dict[str, int
                     termlink_id,
                     ARRAY_AGG(DISTINCT
                         CASE
-                            WHEN q.qualifier_value IN ('true', '1') THEN q.qualifier_type
+                            WHEN LOWER(q.qualifier_value) NOT IN ('false', '0') THEN q
                             ELSE NULL
                         END
                     ) as active_qualifiers
@@ -2054,7 +2083,7 @@ def materialize_project(project_id: str, batch_size: int = 100) -> Dict[str, int
                     e.termlink_id as termlink_id,
                     ARRAY_AGG(DISTINCT
                         CASE
-                            WHEN q.qualifier_value IN ('true', '1') THEN q.qualifier_type
+                            WHEN LOWER(q.qualifier_value) NOT IN ('false', '0') THEN q
                             ELSE NULL
                         END
                     ) as active_qualifiers
@@ -2248,7 +2277,7 @@ def materialize_subject_terms(subject_id: str) -> Dict[str, int]:
             termlink_id,
             ARRAY_AGG(DISTINCT
                 CASE
-                    WHEN q.qualifier_value IN ('true', '1') THEN q.qualifier_type
+                    WHEN LOWER(q.qualifier_value) NOT IN ('false', '0') THEN q
                     ELSE NULL
                 END
             ) as active_qualifiers
@@ -2303,7 +2332,7 @@ def materialize_subject_terms(subject_id: str) -> Dict[str, int]:
             e.termlink_id as termlink_id,
             ARRAY_AGG(DISTINCT
                 CASE
-                    WHEN q.qualifier_value IN ('true', '1') THEN q.qualifier_type
+                    WHEN LOWER(q.qualifier_value) NOT IN ('false', '0') THEN q
                     ELSE NULL
                 END
             ) as active_qualifiers

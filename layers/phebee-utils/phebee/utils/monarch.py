@@ -76,7 +76,13 @@ def get_associated_terms(entity: str, limit: int = 500) -> List[str]:
             logger.error(error_msg)
             raise Exception(error_msg)
 
-        data = response.json()
+        try:
+            data = response.json()
+        except json.JSONDecodeError as e:
+            error_msg = "Failed to parse Monarch API response"
+            logger.error(f"{error_msg}: {str(e)}")
+            raise json.JSONDecodeError(error_msg, e.doc, e.pos) from e
+
         total = data.get("total", 0)
 
         logger.info(f"Monarch API returned {total} total associations for {entity}")
@@ -110,7 +116,13 @@ def get_associated_terms(entity: str, limit: int = 500) -> List[str]:
                     logger.error(error_msg)
                     raise Exception(error_msg)
 
-                data = response.json()
+                try:
+                    data = response.json()
+                except json.JSONDecodeError as e:
+                    error_msg = f"Failed to parse Monarch API response on page {page + 1}"
+                    logger.error(f"{error_msg}: {str(e)}")
+                    raise json.JSONDecodeError(error_msg, e.doc, e.pos) from e
+
                 if "items" in data:
                     for item in data["items"]:
                         if "object" in item:
@@ -134,10 +146,5 @@ def get_associated_terms(entity: str, limit: int = 500) -> List[str]:
 
     except requests.exceptions.RequestException as e:
         error_msg = f"Network error while querying Monarch API for entity {entity}: {str(e)}"
-        logger.error(error_msg)
-        raise
-
-    except json.JSONDecodeError as e:
-        error_msg = f"Failed to parse Monarch API response as JSON for entity {entity}: {str(e)}"
         logger.error(error_msg)
         raise
