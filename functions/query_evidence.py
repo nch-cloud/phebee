@@ -4,7 +4,8 @@ import time
 import boto3
 from aws_lambda_powertools import Logger, Tracer
 from phebee.utils.aws import extract_body
-from phebee.utils.hash import generate_termlink_hash, normalize_qualifiers
+from phebee.utils.hash import generate_termlink_hash
+from phebee.utils.qualifier import Qualifier, normalize_qualifiers, normalize_qualifier_type
 from phebee.utils.iceberg import parse_athena_struct_array
 
 logger = Logger()
@@ -34,11 +35,30 @@ def lambda_handler(event, context):
             }
 
         # Compute termlink_id hash
-        # Normalize qualifiers using centralized function
-        # This ensures queries work for both API-created and bulk-imported evidence
-        normalized_qualifiers = normalize_qualifiers(qualifiers)
+        # Convert qualifiers input to List[Qualifier]
+        qualifier_list = []
+        if qualifiers:
+            if isinstance(qualifiers, dict):
+                # Dict format: {"onset": "HP:0003593", "negated": "true"}
+                for qualifier_type, qualifier_value in qualifiers.items():
+                    if qualifier_value not in [False, "false", "0", 0, 0.0]:
+                        normalized_type = normalize_qualifier_type(qualifier_type)
+                        qualifier_list.append(Qualifier(type=normalized_type, value=str(qualifier_value)))
+            elif isinstance(qualifiers, list):
+                # List format - could be strings or Qualifier objects
+                for q in qualifiers:
+                    if isinstance(q, Qualifier):
+                        normalized_type = normalize_qualifier_type(q.type)
+                        qualifier_list.append(Qualifier(type=normalized_type, value=q.value))
+                    elif isinstance(q, str) and q:
+                        parsed = Qualifier.from_string(q)
+                        normalized_type = normalize_qualifier_type(parsed.type)
+                        qualifier_list.append(Qualifier(type=normalized_type, value=parsed.value))
 
-        # Generate hash
+        # Normalize qualifiers (filter inactive, sort)
+        normalized_qualifiers = normalize_qualifiers(qualifier_list)
+
+        # Generate hash (already accepts List[Qualifier])
         subject_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"
         termlink_id = generate_termlink_hash(subject_iri, term_iri, normalized_qualifiers)
 

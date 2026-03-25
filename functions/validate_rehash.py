@@ -160,12 +160,20 @@ def lambda_handler(event, context):
                 try:
                     # Build query to fetch this specific evidence record
                     # Match on stable identifiers that don't change during rehash
-                    conditions = [
-                        f"subject_id = '{sample['subject_id']}'",
-                        f"clinical_note_id = '{sample['clinical_note_id']}'",
-                        f"encounter_id = '{sample['encounter_id']}'",
-                        f"term_iri = '{sample['term_iri']}'"
-                    ]
+                    conditions = [f"subject_id = '{sample['subject_id']}'"]
+
+                    # Handle NULL values properly
+                    if sample['clinical_note_id']:
+                        conditions.append(f"clinical_note_id = '{sample['clinical_note_id']}'")
+                    else:
+                        conditions.append("clinical_note_id IS NULL")
+
+                    if sample['encounter_id']:
+                        conditions.append(f"encounter_id = '{sample['encounter_id']}'")
+                    else:
+                        conditions.append("encounter_id IS NULL")
+
+                    conditions.append(f"term_iri = '{sample['term_iri']}'")
 
                     if sample.get('span_start'):
                         conditions.append(f"text_annotation.span_start = {sample['span_start']}")

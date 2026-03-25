@@ -20,7 +20,8 @@ import json
 import uuid
 from datetime import datetime, timedelta
 from typing import List, Dict, Any
-from phebee.utils.hash import generate_evidence_hash, generate_termlink_hash, normalize_qualifiers
+from phebee.utils.hash import generate_evidence_hash, generate_termlink_hash
+from phebee.utils.qualifier import Qualifier, normalize_qualifiers, qualifiers_to_string_list, normalize_qualifier_type
 
 
 class TestRebuildStateMachine:
@@ -193,10 +194,17 @@ class TestRebuildStateMachine:
             # Generate IDs using hash functions
             subject_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{evidence['subject_id']}"
 
-            # Normalize qualifiers
-            qualifiers_normalized = normalize_qualifiers(
-                [f"{q['qualifier_type']}:{q['qualifier_value']}" for q in (evidence['qualifiers'] or [])]
-            )
+            # Convert to Qualifier objects
+            qualifier_list = []
+            for q in (evidence['qualifiers'] or []):
+                if isinstance(q, dict):
+                    qualifier_list.append(Qualifier(
+                        type=normalize_qualifier_type(q['qualifier_type']),
+                        value=q['qualifier_value']
+                    ))
+
+            # Normalize and convert to strings for hash
+            qualifiers_normalized = qualifiers_to_string_list(normalize_qualifiers(qualifier_list))
 
             evidence_id = generate_evidence_hash(
                 clinical_note_id=evidence['clinical_note_id'],
@@ -347,15 +355,18 @@ class TestRebuildStateMachine:
             creator_id = row['Data'][9].get('VarCharValue', 'integration-test')
 
             # Parse qualifiers
-            qualifiers_list = []
+            qualifier_list = []
             if qualifiers_str and qualifiers_str != '[]':
                 import re
                 struct_pattern = r'\{qualifier_type=([^,]+), qualifier_value=([^}]+)\}'
                 matches = re.findall(struct_pattern, qualifiers_str)
-                qualifiers_list = [f"{qt}:{qv}" for qt, qv in matches]
+                qualifier_list = [
+                    Qualifier(type=normalize_qualifier_type(qt), value=qv)
+                    for qt, qv in matches if qv.lower() not in ['false', '0']
+                ]
 
-            # Normalize qualifiers
-            qualifiers_normalized = normalize_qualifiers(qualifiers_list)
+            # Normalize and convert to strings for hash
+            qualifiers_normalized = qualifiers_to_string_list(normalize_qualifiers(qualifier_list))
 
             # Recalculate expected hashes
             expected_evidence_id = generate_evidence_hash(
@@ -497,12 +508,17 @@ class TestRebuildStateMachine:
                 qualifiers_str = row['Data'][2].get('VarCharValue', '[]')
 
                 # Parse qualifiers for matching
-                qualifiers_list = []
+                qualifier_list = []
                 if qualifiers_str and qualifiers_str != '[]':
                     import re
                     struct_pattern = r'\{qualifier_type=([^,]+), qualifier_value=([^}]+)\}'
                     matches = re.findall(struct_pattern, qualifiers_str)
-                    qualifiers_list = [f"{qt}:{qv}" for qt, qv in matches]
+                    qualifier_list = [
+                        Qualifier(type=normalize_qualifier_type(qt), value=qv)
+                        for qt, qv in matches if qv.lower() not in ['false', '0']
+                    ]
+                # Convert to strings for matching key
+                qualifiers_list = [q.to_string() for q in qualifier_list]
                 row_qualifiers_key = tuple(sorted(qualifiers_list))
 
                 if (row_subject_id, row_term_iri, row_qualifiers_key) == key:
@@ -520,7 +536,8 @@ class TestRebuildStateMachine:
 
                     # Verify termlink_id is correct
                     subject_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"
-                    qualifiers_normalized = normalize_qualifiers(qualifiers_list)
+                    # Normalize and convert to strings for hash
+                    qualifiers_normalized = qualifiers_to_string_list(normalize_qualifiers(qualifier_list))
                     expected_termlink_id = generate_termlink_hash(
                         source_node_iri=subject_iri,
                         term_iri=term_iri,

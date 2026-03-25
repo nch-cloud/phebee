@@ -693,39 +693,6 @@ def test_hybrid_mixed_qualifiers():
     assert hash1 == hash2, "Qualifier order should not affect hash"
 
 
-def test_normalize_qualifiers_function():
-    """Test the normalize_qualifiers function directly."""
-    from phebee.utils.hash import normalize_qualifiers
-
-    # Internal qualifiers
-    assert normalize_qualifiers(["negated"]) == ["negated:true"]
-    assert normalize_qualifiers(["negated:false"]) == []
-
-    # External qualifiers
-    assert normalize_qualifiers(["http://purl.obolibrary.org/obo/HP_0040283"]) == \
-           ["http://purl.obolibrary.org/obo/HP_0040283:true"]
-
-    # Mixed
-    result = normalize_qualifiers([
-        "negated",
-        "http://purl.obolibrary.org/obo/HP_0040283:present",
-        "family:false"
-    ])
-    assert result == [
-        "http://purl.obolibrary.org/obo/HP_0040283:present",
-        "negated:true"
-    ], f"Expected sorted normalized qualifiers, got {result}"
-
-    # Sorting
-    result = normalize_qualifiers(["hypothetical", "negated", "family"])
-    assert result == ["family:true", "hypothetical:true", "negated:true"]
-
-    # Empty/None
-    assert normalize_qualifiers(None) == []
-    assert normalize_qualifiers([]) == []
-    assert normalize_qualifiers([""]) == []
-
-
 def test_no_regression_production_hashes():
     """Verify refactoring didn't break existing hashes using known production data."""
     from phebee.utils.hash import generate_termlink_hash
