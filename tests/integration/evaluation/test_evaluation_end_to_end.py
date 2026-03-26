@@ -535,9 +535,19 @@ def test_r7_shared_subject_representation_project_scoped_identifiers(api_base_ur
         assert resp_b["subject"]["iri"] == subject_iri
 
         # Query project A: should only expose project A identifiers (no leakage of subj_b)
-        qa = api_post(api_base_url, "/subjects/query", {"project_id": project_a, "limit": 100}, sigv4_auth)
-        body_a = qa.get("body", [])
-        assert any(s.get("project_subject_id") == subj_a for s in body_a), "Expected subj_a in project A query"
+        # Retry loop to handle Iceberg eventual consistency after multi-project materialization
+        body_a = []
+        for attempt in range(10):
+            qa = api_post(api_base_url, "/subjects/query", {"project_id": project_a, "limit": 100}, sigv4_auth)
+            body_a = qa.get("body", [])
+            if any(s.get("project_subject_id") == subj_a for s in body_a):
+                break
+            if attempt < 9:
+                print(f"[R7] Attempt {attempt + 1}/10: subj_a not yet visible in project A, retrying in 2s...")
+                time.sleep(2)
+
+        assert any(s.get("project_subject_id") == subj_a for s in body_a), \
+            f"Expected subj_a in project A query after 10 attempts. Got {len(body_a)} subjects: {[s.get('project_subject_id') for s in body_a]}"
         assert all(s.get("project_subject_id") != subj_b for s in body_a), "Project B subject_id leaked into project A results"
 
         # Query project B: should only expose project B identifiers (no leakage of subj_a)

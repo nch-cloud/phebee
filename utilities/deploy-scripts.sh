@@ -42,4 +42,14 @@ aws s3 cp scripts/generate_ttl_from_iceberg_emr.py "s3://$BUCKET_NAME/scripts/" 
 aws s3 cp scripts/materialize_project_subject_terms_emr.py "s3://$BUCKET_NAME/scripts/" \
     --content-type "text/x-python"
 
+# Upload rebuild scripts
+aws s3 cp scripts/rebuild/rehash_evidence.py "s3://$BUCKET_NAME/scripts/rebuild/" \
+    --content-type "text/x-python"
+
+aws s3 cp scripts/rebuild/materialize_all_analytical_tables.py "s3://$BUCKET_NAME/scripts/rebuild/" \
+    --content-type "text/x-python"
+
+aws s3 cp scripts/rebuild/generate_neptune_ttl_from_analytical.py "s3://$BUCKET_NAME/scripts/rebuild/" \
+    --content-type "text/x-python"
+
 echo "Scripts deployed successfully to $BUCKET_NAME"

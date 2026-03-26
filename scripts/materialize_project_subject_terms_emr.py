@@ -134,21 +134,19 @@ def main():
             "termlink_id",
             "created_date",
             F.col("note_context.note_date").alias("note_date"),  # Extract note timestamp for date ranges
-            # Explode active qualifiers to individual rows (one row per qualifier type)
+            # Explode active qualifiers to individual rows, keeping full struct (type + value)
             F.explode_outer(
-                F.transform(
-                    F.filter(
-                        F.coalesce(F.col("qualifiers"), F.array()),  # Handle null qualifiers
-                        lambda q: (q.qualifier_value == "true") | (q.qualifier_value == "1")
-                    ),
-                    lambda q: q.qualifier_type
+                F.filter(
+                    F.coalesce(F.col("qualifiers"), F.array()),  # Handle null qualifiers
+                    lambda q: F.lower(q.qualifier_value).isin(["false", "0"]) == False
                 )
-            ).alias("qualifier_type")
+            ).alias("qualifier_struct")
         )
 
-        # Aggregate to (subject, term) level with scalar string collection
+        # Aggregate to (subject, term, termlink) level with scalar string collection
+        # Note: termlink_id hash includes qualifiers, so different qualifiers = different termlinks
         print("Aggregating for subject_terms_by_subject...")
-        by_subject_df = evidence_with_single_qualifiers.groupBy("subject_id", "term_iri").agg(
+        by_subject_df = evidence_with_single_qualifiers.groupBy("subject_id", "term_iri", "termlink_id").agg(
             F.concat(
                 F.lit("http://ods.nationwidechildrens.org/phebee/subjects/"),
                 F.col("subject_id")
@@ -156,9 +154,8 @@ def main():
             F.countDistinct("evidence_id").alias("evidence_count"),  # Count distinct evidence records by evidence_id
             F.min("note_date").alias("first_evidence_date"),  # Use note_date for clinical observation date
             F.max("note_date").alias("last_evidence_date"),  # Use note_date for clinical observation date
-            F.first("termlink_id").alias("termlink_id"),
-            # collect_set on scalar strings - much more memory efficient than arrays of arrays
-            F.collect_set("qualifier_type").alias("qualifiers")
+            # Collect qualifier structs directly (matches evidence table schema)
+            F.collect_set("qualifier_struct").alias("qualifiers")
         ).select(
             "subject_id",
             "subject_iri",
@@ -218,7 +215,7 @@ def main():
         )
 
         by_project_term_df = evidence_with_mapping.groupBy(
-            "project_id", "subject_id", "project_subject_id", "term_iri"
+            "project_id", "subject_id", "project_subject_id", "term_iri", "termlink_id"
         ).agg(
             F.concat(
                 F.lit("http://ods.nationwidechildrens.org/phebee/subjects/"),
@@ -233,9 +230,8 @@ def main():
             F.countDistinct("evidence_id").alias("evidence_count"),  # Count distinct evidence records by evidence_id
             F.min("note_date").alias("first_evidence_date"),  # Use note_date for clinical observation date
             F.max("note_date").alias("last_evidence_date"),  # Use note_date for clinical observation date
-            F.first("termlink_id").alias("termlink_id"),
-            # collect_set on scalar strings - much more memory efficient
-            F.collect_set("qualifier_type").alias("qualifiers")
+            # Collect qualifier structs directly (matches evidence table schema)
+            F.collect_set("qualifier_struct").alias("qualifiers")
         ).select(
             "project_id",
             "subject_id",

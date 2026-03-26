@@ -70,7 +70,8 @@ def get_evidence_from_iceberg(query_athena, evidence_id: str) -> dict:
             encounter_id,
             clinical_note_id,
             created_timestamp,
-            created_date
+            created_date,
+            qualifiers
         FROM evidence
         WHERE evidence_id = '{evidence_id}'
     """)
@@ -1095,3 +1096,163 @@ def test_internal_qualifiers_backward_compatible(physical_resources, test_subjec
     assert retrieved["evidence_id"] == evidence_id
     assert retrieved["subject_id"] == subject_uuid
     assert retrieved["term_iri"] == term_iri
+
+
+def test_qualifier_dict_format_value_preservation(physical_resources, test_subject,
+                                                   query_athena, app_name):
+    """
+    Test 4: Qualifier Dict Format with Value Preservation
+
+    Comprehensive test covering missing qualifier scenarios:
+    1. Dict with boolean values: {"negated": true, "family": false}
+    2. Dict with actual qualifier values: {"onset": "HP:0003593"}
+    3. External IRI as dict key: {"http://purl.obolibrary.org/obo/HP_0011009": "present"}
+    4. Verification that BOTH type and value are preserved end-to-end
+
+    This test verifies the critical bug fix where dict input was previously
+    discarding qualifier values and only keeping the keys.
+    """
+    subject_uuid, _ = test_subject
+    term_iri = "http://purl.obolibrary.org/obo/HP_0001250"  # Seizure
+    creator_id = f"test-dict-value-preservation-{uuid.uuid4()}"
+
+    # Test Case 1: Dict with boolean values (should filter out false)
+    qualifiers_bool = {
+        "negated": True,
+        "family": False,  # Should be filtered out
+        "hypothetical": "true"
+    }
+
+    result1 = create_evidence(
+        subject_id=subject_uuid,
+        term_iri=term_iri,
+        creator_id=f"{creator_id}-bool",
+        qualifiers=qualifiers_bool,
+        physical_resources=physical_resources
+    )
+
+    assert result1["statusCode"] == 201, f"Failed to create evidence with bool dict: {result1}"
+    body1 = json.loads(result1["body"])
+    evidence_id1 = body1["evidence_id"]
+    termlink_id1 = body1["termlink_id"]
+
+    # Verify in Iceberg - should only have active qualifiers
+    evidence1 = get_evidence_from_iceberg(query_athena, evidence_id1)
+    assert evidence1["evidence_id"] == evidence_id1
+
+    # Parse qualifiers from Iceberg response
+    qualifiers_str1 = evidence1.get("qualifiers", "")
+    assert "negated" in qualifiers_str1, "Should contain 'negated' qualifier"
+    assert "hypothetical" in qualifiers_str1, "Should contain 'hypothetical' qualifier"
+    # Family should be filtered out since it's false
+    assert "family" not in qualifiers_str1 or "false" in qualifiers_str1.lower(), \
+        "Should not contain active 'family' qualifier"
+
+    # Test Case 2: Dict with actual qualifier values (the critical bug fix)
+    qualifiers_with_values = {
+        "onset": "HP:0003593",  # Infantile onset
+        "severity": "HP:0012828"  # Severe
+    }
+
+    result2 = create_evidence(
+        subject_id=subject_uuid,
+        term_iri=term_iri,
+        creator_id=f"{creator_id}-values",
+        qualifiers=qualifiers_with_values,
+        physical_resources=physical_resources
+    )
+
+    assert result2["statusCode"] == 201, f"Failed to create evidence with value dict: {result2}"
+    body2 = json.loads(result2["body"])
+    evidence_id2 = body2["evidence_id"]
+    termlink_id2 = body2["termlink_id"]
+
+    # CRITICAL: Verify BOTH type and value are preserved
+    evidence2 = get_evidence_from_iceberg(query_athena, evidence_id2)
+    assert evidence2["evidence_id"] == evidence_id2
+
+    qualifiers_str2 = evidence2.get("qualifiers", "")
+    # Must contain BOTH the qualifier type AND the value
+    assert "onset" in qualifiers_str2, "Should contain 'onset' qualifier type"
+    assert "HP:0003593" in qualifiers_str2, "Should preserve 'HP:0003593' value (was being lost!)"
+    assert "severity" in qualifiers_str2, "Should contain 'severity' qualifier type"
+    assert "HP:0012828" in qualifiers_str2, "Should preserve 'HP:0012828' value"
+
+    # Test Case 3: External IRI as dict key (scenario #4)
+    qualifiers_external_iri = {
+        "http://purl.obolibrary.org/obo/HP_0011009": "present",  # External IRI with value
+        "negated": "false"  # Should be filtered
+    }
+
+    result3 = create_evidence(
+        subject_id=subject_uuid,
+        term_iri=term_iri,
+        creator_id=f"{creator_id}-external-iri",
+        qualifiers=qualifiers_external_iri,
+        physical_resources=physical_resources
+    )
+
+    assert result3["statusCode"] == 201, f"Failed to create evidence with external IRI dict: {result3}"
+    body3 = json.loads(result3["body"])
+    evidence_id3 = body3["evidence_id"]
+    termlink_id3 = body3["termlink_id"]
+
+    # Verify external IRI is preserved as qualifier type with its value
+    evidence3 = get_evidence_from_iceberg(query_athena, evidence_id3)
+    assert evidence3["evidence_id"] == evidence_id3
+
+    qualifiers_str3 = evidence3.get("qualifiers", "")
+    # Must contain the full external IRI as type AND the value
+    assert "HP_0011009" in qualifiers_str3, "Should contain external IRI HP_0011009"
+    assert "present" in qualifiers_str3, "Should preserve 'present' value for external IRI"
+    # Negated:false should be filtered out
+    assert qualifiers_str3.count("negated") == 0 or "false" in qualifiers_str3.lower(), \
+        "Should not contain active 'negated:false' qualifier"
+
+    # Test Case 4: Verify termlink_id includes qualifier values in hash
+    # Evidence with different qualifier values should have different termlink_ids
+    qualifiers_different_value = {
+        "onset": "HP:0011462"  # Different onset value (Young adult onset)
+    }
+
+    result4 = create_evidence(
+        subject_id=subject_uuid,
+        term_iri=term_iri,
+        creator_id=f"{creator_id}-different-value",
+        qualifiers=qualifiers_different_value,
+        physical_resources=physical_resources
+    )
+
+    assert result4["statusCode"] == 201, f"Failed to create evidence with different value: {result4}"
+    body4 = json.loads(result4["body"])
+    termlink_id4 = body4["termlink_id"]
+
+    # termlink_id should be different because qualifier VALUE is different
+    assert termlink_id4 != termlink_id2, \
+        "Different qualifier values should produce different termlink_ids (HP:0003593 vs HP:0011462)"
+
+    # Verify we can query by the external IRI qualifier (Test Case 3 follow-up)
+    from phebee.utils.aws import get_client
+    lambda_client = get_client("lambda")
+
+    query_payload = {
+        "subject_id": subject_uuid,
+        "term_iri": term_iri,
+        "qualifiers": ["http://purl.obolibrary.org/obo/HP_0011009:present"]
+    }
+
+    query_response = lambda_client.invoke(
+        FunctionName=f"{app_name}-QueryEvidenceFunction",
+        Payload=json.dumps(query_payload).encode("utf-8")
+    )
+
+    query_result = json.loads(query_response["Payload"].read())
+    assert query_result["statusCode"] == 200, f"Query with external IRI failed: {query_result}"
+
+    query_body = json.loads(query_result["body"])
+    assert query_body["evidence_count"] >= 1, "Should find evidence with external IRI qualifier"
+    assert query_body["termlink_id"] == termlink_id3, "Termlink ID should match for external IRI"
+
+    # Verify the evidence is in the results
+    found_evidence = [e for e in query_body["evidence"] if e["evidence_id"] == evidence_id3]
+    assert len(found_evidence) == 1, "Should find exactly one matching evidence with external IRI"

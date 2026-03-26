@@ -3,6 +3,7 @@ Unit tests for Athena struct parsing utilities.
 """
 import pytest
 from phebee.utils.iceberg import parse_athena_struct_array, parse_qualifiers_field
+from phebee.utils.qualifier import Qualifier
 
 
 class TestParseAthenaStructArray:
@@ -62,17 +63,20 @@ class TestParseQualifiersField:
     def test_struct_format(self):
         """Test parsing Athena struct format qualifiers."""
         struct_str = "[{qualifier_type=negated, qualifier_value=true}, {qualifier_type=family, qualifier_value=false}]"
-        expected = ["negated"]  # Only active qualifiers
+        expected = [Qualifier(type="negated", value="true")]  # Only active qualifiers
         assert parse_qualifiers_field(struct_str) == expected
     
     def test_multiple_active_qualifiers(self):
         """Test multiple active qualifiers."""
         struct_str = "[{qualifier_type=negated, qualifier_value=true}, {qualifier_type=hypothetical, qualifier_value=true}]"
-        expected = ["negated", "hypothetical"]
-        assert set(parse_qualifiers_field(struct_str)) == set(expected)
+        expected = {
+            Qualifier(type="negated", value="true"),
+            Qualifier(type="hypothetical", value="true")
+        }
+        assert set(parse_qualifiers_field(struct_str)) == expected
     
     def test_numeric_values(self):
         """Test numeric qualifier values."""
         struct_str = "[{qualifier_type=negated, qualifier_value=1}, {qualifier_type=family, qualifier_value=0}]"
-        expected = ["negated"]  # Only value=1 should be active
+        expected = [Qualifier(type="negated", value="1")]  # Only value=1 should be active
         assert parse_qualifiers_field(struct_str) == expected

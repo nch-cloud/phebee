@@ -31,6 +31,7 @@ import os
 from collections import defaultdict
 from .hash import generate_termlink_hash
 from .iceberg import parse_athena_struct_array
+from .qualifier import Qualifier
 from typing import List, Optional, Sequence, Dict
 try:
     from aws_lambda_powertools import Metrics, Logger, Tracer
@@ -827,19 +828,22 @@ def get_term_links_with_counts(
 
 
 def create_term_link(
-    subject_iri: str, term_iri: str, creator_iri: str, qualifiers=None
+    subject_iri: str,
+    term_iri: str,
+    creator_iri: str,
+    qualifiers: Optional[List[Qualifier]] = None
 ) -> dict:
     """
     Create a term link between a subject and a term.
 
     Args:
-        subject_iri (str): The IRI of the subject
-        term_iri (str): The IRI of the term
-        creator_iri (str): The IRI of the creator
-        qualifiers (list): List of qualifiers in name:value format (e.g., ["negated:true"])
+        subject_iri: The IRI of the subject
+        term_iri: The IRI of the term
+        creator_iri: The IRI of the creator
+        qualifiers: List of Qualifier objects
 
     Returns:
-        dict: Dictionary with the term link IRI and whether it was created
+        Dictionary with the term link IRI and whether it was created
     """
     # Generate deterministic hash based on subject, term, and qualifiers
     # Qualifiers are in name:value format for consistency with Iceberg
@@ -865,14 +869,14 @@ def create_term_link(
     ]
 
     # Add qualifier triples if any
-    # Convert name:value format to IRIs for RDF storage
     if qualifiers:
-        for qualifier in qualifiers:
-            # Extract qualifier name from name:value format
-            if ":" in qualifier:
-                qualifier_name = qualifier.split(":", 1)[0]
-            else:
-                qualifier_name = qualifier
+        from phebee.utils.qualifier import normalize_qualifier_type
+        for q in qualifiers:
+            if not q.is_active():
+                continue  # Skip inactive qualifiers
+
+            # Normalize the qualifier type (defensive programming)
+            qualifier_name = normalize_qualifier_type(q.type)
 
             # Convert to full IRI (or use as-is if already an IRI)
             if qualifier_name.startswith('http://') or qualifier_name.startswith('https://'):
