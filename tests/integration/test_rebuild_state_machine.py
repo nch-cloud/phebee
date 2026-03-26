@@ -1,11 +1,15 @@
 """
 Integration test for RebuildMaterializedDataStateMachine
 
+IMPORTANT: This test clears the entire evidence table before running.
+Only run in isolated test/dev environments, never against production data.
+
 This test:
-1. Creates diverse test data (evidence + DynamoDB subjects)
-2. Executes the rebuild state machine with various flag combinations
-3. Validates results across all layers (Evidence, Iceberg, Neptune)
-4. Cleans up test data afterwards
+1. Clears evidence table (removes any orphaned test data)
+2. Creates diverse test data (evidence + DynamoDB subjects)
+3. Executes the rebuild state machine with various flag combinations
+4. Validates results across all layers (Evidence, Iceberg, Neptune)
+5. Cleans up test data afterwards
 
 Usage:
     pytest tests/integration/test_rebuild_state_machine.py -v
@@ -51,6 +55,54 @@ class TestRebuildStateMachine:
             'test_run_prefix': 'integration-test',
             'app_name': physical_resources['AppName']
         }
+
+    @pytest.fixture(scope="class", autouse=True)
+    def clean_evidence_table(self, aws_clients, test_config):
+        """
+        Clear evidence table before rebuild test.
+
+        IMPORTANT: This deletes ALL evidence data. Only run in test environments.
+
+        Rationale:
+        - Integration tests may leave orphaned data if interrupted
+        - Duplicates cause MERGE cardinality violations in rehash
+        - All integration tests clean up after themselves, so table ends empty anyway
+        """
+        athena = aws_clients['athena']
+        database = test_config['database']
+        evidence_table = test_config['evidence_table']
+        bucket = test_config['bucket']
+
+        print(f"\nClearing evidence table: {database}.{evidence_table}")
+
+        # Delete all rows
+        cleanup_query = f"DELETE FROM glue_catalog.{database}.{evidence_table}"
+
+        response = athena.start_query_execution(
+            QueryString=cleanup_query,
+            QueryExecutionContext={'Database': database},
+            ResultConfiguration={
+                'OutputLocation': f"s3://{bucket}/athena-results/"
+            }
+        )
+
+        # Wait for completion
+        query_execution_id = response['QueryExecutionId']
+        max_wait = 60  # 60 seconds
+        elapsed = 0
+        while elapsed < max_wait:
+            response = athena.get_query_execution(QueryExecutionId=query_execution_id)
+            status = response['QueryExecution']['Status']['State']
+            if status in ['SUCCEEDED', 'FAILED', 'CANCELLED']:
+                break
+            time.sleep(2)
+            elapsed += 2
+
+        assert status == 'SUCCEEDED', f"Failed to clear evidence table: {status}"
+        print("Evidence table cleared successfully")
+
+        yield
+        # Normal teardown continues after test
 
     @pytest.fixture(scope="class")
     def test_data(self):
