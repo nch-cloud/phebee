@@ -76,7 +76,7 @@ class TestRebuildStateMachine:
         print(f"\nClearing evidence table: {database}.{evidence_table}")
 
         # Delete all rows
-        cleanup_query = f"DELETE FROM glue_catalog.{database}.{evidence_table}"
+        cleanup_query = f"DELETE FROM {database}.{evidence_table}"
 
         response = athena.start_query_execution(
             QueryString=cleanup_query,
