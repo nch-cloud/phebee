@@ -40,7 +40,7 @@ def lambda_handler(event, context):
         from phebee.utils import sparql
 
         graph_uri = event['graphUri']
-        batch_size = event.get('batchSize', 10000)  # Number of subjects per batch
+        batch_size = event.get('batchSize', 50000)  # Number of subjects per batch
         total_subjects_deleted = event.get('totalSubjectsDeleted', 0)
         iteration = event.get('iteration', 0)
 
