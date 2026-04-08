@@ -2191,6 +2191,150 @@ Resources:
 
   # Lambda Functions for Rebuild Pipeline
 
+  # Shared IAM Roles for Rebuild Pipeline
+
+  RebuildAthenaQueriesRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AppName}-RebuildAthenaQueriesRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: AthenaAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - athena:StartQueryExecution
+                  - athena:GetQueryExecution
+                  - athena:GetQueryResults
+                  - athena:GetWorkGroup
+                Resource: "*"
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                  - s3:GetBucketLocation
+                Resource:
+                  - !GetAtt PheBeeBucket.Arn
+                  - !Sub "${PheBeeBucket.Arn}/*"
+        - PolicyName: GlueAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - glue:GetDatabase
+                  - glue:GetTable
+                  - glue:UpdateTable
+                Resource: "*"
+        - PolicyName: LakeFormationAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lakeformation:GetDataAccess
+                  - lakeformation:GetWorkUnits
+                  - lakeformation:StartQueryPlanning
+                  - lakeformation:GetWorkUnitResults
+                  - lakeformation:GetQueryState
+                  - lakeformation:GetQueryStatistics
+                Resource: "*"
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:Scan
+                  - dynamodb:Query
+                  - dynamodb:GetItem
+                Resource: !GetAtt DynamoDBTable.Arn
+
+  RebuildNeptuneQueriesRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AppName}-RebuildNeptuneQueriesRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: AthenaAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - athena:StartQueryExecution
+                  - athena:GetQueryExecution
+                  - athena:GetQueryResults
+                  - athena:GetWorkGroup
+                Resource: "*"
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                  - s3:GetBucketLocation
+                Resource:
+                  - !GetAtt PheBeeBucket.Arn
+                  - !Sub "${PheBeeBucket.Arn}/*"
+        - PolicyName: GlueAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - glue:GetDatabase
+                  - glue:GetTable
+                Resource: "*"
+        - PolicyName: LakeFormationAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lakeformation:GetDataAccess
+                  - lakeformation:GetWorkUnits
+                  - lakeformation:StartQueryPlanning
+                  - lakeformation:GetWorkUnitResults
+                  - lakeformation:GetQueryState
+                  - lakeformation:GetQueryStatistics
+                Resource: "*"
+        - PolicyName: NeptuneAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - neptune-db:ReadDataViaQuery
+                  - neptune-db:GetQueryStatus
+                Resource: !Sub "arn:aws:neptune-db:${AWS::Region}:${AWS::AccountId}:${PheBeeNeptuneCluster.ClusterResourceId}/*"
+
   ValidateRebuildInputFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -2208,35 +2352,12 @@ Resources:
       Handler: truncate_iceberg_table.lambda_handler
       MemorySize: 512
       Timeout: 300
+      Role: !GetAtt RebuildAthenaQueriesRole.Arn
       Layers:
         - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
-      Policies:
-        - Statement:
-          - Effect: Allow
-            Action:
-              - athena:StartQueryExecution
-              - athena:GetQueryExecution
-              - athena:GetQueryResults
-              - athena:GetWorkGroup
-            Resource: "*"
-          - Effect: Allow
-            Action:
-              - s3:GetObject
-              - s3:PutObject
-              - s3:ListBucket
-              - s3:GetBucketLocation
-            Resource:
-              - !GetAtt PheBeeBucket.Arn
-              - !Sub "${PheBeeBucket.Arn}/*"
-          - Effect: Allow
-            Action:
-              - glue:GetDatabase
-              - glue:GetTable
-              - glue:UpdateTable
-            Resource: "*"
 
   ClearNeptuneGraphFunction:
     Type: AWS::Serverless::Function
@@ -2305,34 +2426,12 @@ Resources:
       Handler: gather_evidence_baseline_stats.lambda_handler
       MemorySize: 512
       Timeout: 300
+      Role: !GetAtt RebuildAthenaQueriesRole.Arn
       Layers:
         - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
-      Policies:
-        - Statement:
-          - Effect: Allow
-            Action:
-              - athena:StartQueryExecution
-              - athena:GetQueryExecution
-              - athena:GetQueryResults
-              - athena:GetWorkGroup
-            Resource: "*"
-          - Effect: Allow
-            Action:
-              - s3:GetObject
-              - s3:PutObject
-              - s3:ListBucket
-              - s3:GetBucketLocation
-            Resource:
-              - !GetAtt PheBeeBucket.Arn
-              - !Sub "${PheBeeBucket.Arn}/*"
-          - Effect: Allow
-            Action:
-              - glue:GetDatabase
-              - glue:GetTable
-            Resource: "*"
 
   ValidateRehashFunction:
     Type: AWS::Serverless::Function
@@ -2342,34 +2441,12 @@ Resources:
       Handler: validate_rehash.lambda_handler
       MemorySize: 512
       Timeout: 300
+      Role: !GetAtt RebuildAthenaQueriesRole.Arn
       Layers:
         - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
-      Policies:
-        - Statement:
-          - Effect: Allow
-            Action:
-              - athena:StartQueryExecution
-              - athena:GetQueryExecution
-              - athena:GetQueryResults
-              - athena:GetWorkGroup
-            Resource: "*"
-          - Effect: Allow
-            Action:
-              - s3:GetObject
-              - s3:PutObject
-              - s3:ListBucket
-              - s3:GetBucketLocation
-            Resource:
-              - !GetAtt PheBeeBucket.Arn
-              - !Sub "${PheBeeBucket.Arn}/*"
-          - Effect: Allow
-            Action:
-              - glue:GetDatabase
-              - glue:GetTable
-            Resource: "*"
 
   GatherIcebergBaselineStatsFunction:
     Type: AWS::Serverless::Function
@@ -2379,36 +2456,13 @@ Resources:
       Handler: gather_iceberg_baseline_stats.lambda_handler
       MemorySize: 512
       Timeout: 300
+      Role: !GetAtt RebuildAthenaQueriesRole.Arn
       Layers:
         - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           PheBeeDynamoTable: !Ref DynamoDBTable
           PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
-      Policies:
-        - !Ref PheBeeDynamoDBReadPolicy
-        - Statement:
-          - Effect: Allow
-            Action:
-              - athena:StartQueryExecution
-              - athena:GetQueryExecution
-              - athena:GetQueryResults
-              - athena:GetWorkGroup
-            Resource: "*"
-          - Effect: Allow
-            Action:
-              - s3:GetObject
-              - s3:PutObject
-              - s3:ListBucket
-              - s3:GetBucketLocation
-            Resource:
-              - !GetAtt PheBeeBucket.Arn
-              - !Sub "${PheBeeBucket.Arn}/*"
-          - Effect: Allow
-            Action:
-              - glue:GetDatabase
-              - glue:GetTable
-            Resource: "*"
 
   ValidateMaterializationFunction:
     Type: AWS::Serverless::Function
@@ -2418,34 +2472,12 @@ Resources:
       Handler: validate_materialization.lambda_handler
       MemorySize: 512
       Timeout: 300
+      Role: !GetAtt RebuildAthenaQueriesRole.Arn
       Layers:
         - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
-      Policies:
-        - Statement:
-          - Effect: Allow
-            Action:
-              - athena:StartQueryExecution
-              - athena:GetQueryExecution
-              - athena:GetQueryResults
-              - athena:GetWorkGroup
-            Resource: "*"
-          - Effect: Allow
-            Action:
-              - s3:GetObject
-              - s3:PutObject
-              - s3:ListBucket
-              - s3:GetBucketLocation
-            Resource:
-              - !GetAtt PheBeeBucket.Arn
-              - !Sub "${PheBeeBucket.Arn}/*"
-          - Effect: Allow
-            Action:
-              - glue:GetDatabase
-              - glue:GetTable
-            Resource: "*"
 
   GatherNeptuneBaselineStatsFunction:
     Type: AWS::Serverless::Function
@@ -2455,6 +2487,7 @@ Resources:
       Handler: gather_neptune_baseline_stats.lambda_handler
       MemorySize: 512
       Timeout: 300
+      Role: !GetAtt RebuildNeptuneQueriesRole.Arn
       Layers:
         - !Ref PheBeeUtilsLayer
       VpcConfig:
@@ -2468,30 +2501,6 @@ Resources:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
           Region: !Ref AWS::Region
           PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
-      Policies:
-        - !Ref PheBeeNeptuneReadPolicy
-        - Statement:
-          - Effect: Allow
-            Action:
-              - athena:StartQueryExecution
-              - athena:GetQueryExecution
-              - athena:GetQueryResults
-              - athena:GetWorkGroup
-            Resource: "*"
-          - Effect: Allow
-            Action:
-              - s3:GetObject
-              - s3:PutObject
-              - s3:ListBucket
-              - s3:GetBucketLocation
-            Resource:
-              - !GetAtt PheBeeBucket.Arn
-              - !Sub "${PheBeeBucket.Arn}/*"
-          - Effect: Allow
-            Action:
-              - glue:GetDatabase
-              - glue:GetTable
-            Resource: "*"
 
   ValidateNeptuneFunction:
     Type: AWS::Serverless::Function
@@ -2501,6 +2510,7 @@ Resources:
       Handler: validate_neptune.lambda_handler
       MemorySize: 512
       Timeout: 300
+      Role: !GetAtt RebuildNeptuneQueriesRole.Arn
       Layers:
         - !Ref PheBeeUtilsLayer
       VpcConfig:
@@ -2514,30 +2524,6 @@ Resources:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
           Region: !Ref AWS::Region
           PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
-      Policies:
-        - !Ref PheBeeNeptuneReadPolicy
-        - Statement:
-          - Effect: Allow
-            Action:
-              - athena:StartQueryExecution
-              - athena:GetQueryExecution
-              - athena:GetQueryResults
-              - athena:GetWorkGroup
-            Resource: "*"
-          - Effect: Allow
-            Action:
-              - s3:GetObject
-              - s3:PutObject
-              - s3:ListBucket
-              - s3:GetBucketLocation
-            Resource:
-              - !GetAtt PheBeeBucket.Arn
-              - !Sub "${PheBeeBucket.Arn}/*"
-          - Effect: Allow
-            Action:
-              - glue:GetDatabase
-              - glue:GetTable
-            Resource: "*"
 
   ExecuteSparqlReadonlyFunction:
     Type: AWS::Serverless::Function
