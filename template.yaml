@@ -2208,6 +2208,8 @@ Resources:
       Handler: truncate_iceberg_table.lambda_handler
       MemorySize: 512
       Timeout: 300
+      Layers:
+        - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
@@ -2218,6 +2220,7 @@ Resources:
               - athena:StartQueryExecution
               - athena:GetQueryExecution
               - athena:GetQueryResults
+              - athena:GetWorkGroup
             Resource: "*"
           - Effect: Allow
             Action:
@@ -2302,6 +2305,8 @@ Resources:
       Handler: gather_evidence_baseline_stats.lambda_handler
       MemorySize: 512
       Timeout: 300
+      Layers:
+        - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
@@ -2312,6 +2317,7 @@ Resources:
               - athena:StartQueryExecution
               - athena:GetQueryExecution
               - athena:GetQueryResults
+              - athena:GetWorkGroup
             Resource: "*"
           - Effect: Allow
             Action:
@@ -2348,6 +2354,7 @@ Resources:
               - athena:StartQueryExecution
               - athena:GetQueryExecution
               - athena:GetQueryResults
+              - athena:GetWorkGroup
             Resource: "*"
           - Effect: Allow
             Action:
@@ -2372,6 +2379,8 @@ Resources:
       Handler: gather_iceberg_baseline_stats.lambda_handler
       MemorySize: 512
       Timeout: 300
+      Layers:
+        - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           PheBeeDynamoTable: !Ref DynamoDBTable
@@ -2384,6 +2393,7 @@ Resources:
               - athena:StartQueryExecution
               - athena:GetQueryExecution
               - athena:GetQueryResults
+              - athena:GetWorkGroup
             Resource: "*"
           - Effect: Allow
             Action:
@@ -2408,6 +2418,8 @@ Resources:
       Handler: validate_materialization.lambda_handler
       MemorySize: 512
       Timeout: 300
+      Layers:
+        - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
@@ -2418,6 +2430,7 @@ Resources:
               - athena:StartQueryExecution
               - athena:GetQueryExecution
               - athena:GetQueryResults
+              - athena:GetWorkGroup
             Resource: "*"
           - Effect: Allow
             Action:
@@ -2463,6 +2476,7 @@ Resources:
               - athena:StartQueryExecution
               - athena:GetQueryExecution
               - athena:GetQueryResults
+              - athena:GetWorkGroup
             Resource: "*"
           - Effect: Allow
             Action:
@@ -2508,6 +2522,7 @@ Resources:
               - athena:StartQueryExecution
               - athena:GetQueryExecution
               - athena:GetQueryResults
+              - athena:GetWorkGroup
             Resource: "*"
           - Effect: Allow
             Action:
