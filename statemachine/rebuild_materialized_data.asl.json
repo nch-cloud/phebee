@@ -299,12 +299,24 @@
         }
       },
       "ResultPath": "$.neptuneBaseline",
-      "Next": "ClearSubjectsGraph",
+      "Next": "InitializeClearGraph",
       "Catch": [{
         "ErrorEquals": ["States.ALL"],
         "Next": "NotifyFailure",
         "ResultPath": "$.error"
       }]
+    },
+
+    "InitializeClearGraph": {
+      "Type": "Pass",
+      "Result": {
+        "Payload": {
+          "totalDeleted": 0,
+          "iteration": 0
+        }
+      },
+      "ResultPath": "$.clearGraphResult",
+      "Next": "ClearSubjectsGraph"
     },
 
     "ClearSubjectsGraph": {
@@ -313,16 +325,29 @@
       "Parameters": {
         "FunctionName": "${ClearNeptuneGraphFunction}",
         "Payload": {
-          "graphUri": "http://ods.nationwidechildrens.org/phebee/subjects"
+          "graphUri": "http://ods.nationwidechildrens.org/phebee/subjects",
+          "batchSize": 500000,
+          "totalDeleted.$": "$.clearGraphResult.Payload.totalDeleted",
+          "iteration.$": "$.clearGraphResult.Payload.iteration"
         }
       },
       "ResultPath": "$.clearGraphResult",
-      "Next": "GenerateNeptuneTTL",
+      "Next": "CheckClearGraphStatus",
       "Catch": [{
         "ErrorEquals": ["States.ALL"],
         "Next": "NotifyFailure",
         "ResultPath": "$.error"
       }]
+    },
+
+    "CheckClearGraphStatus": {
+      "Type": "Choice",
+      "Choices": [{
+        "Variable": "$.clearGraphResult.Payload.status",
+        "StringEquals": "COMPLETE",
+        "Next": "GenerateNeptuneTTL"
+      }],
+      "Default": "ClearSubjectsGraph"
     },
 
     "GenerateNeptuneTTL": {
