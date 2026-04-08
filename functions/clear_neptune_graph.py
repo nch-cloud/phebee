@@ -20,17 +20,18 @@ def lambda_handler(event, context):
     Input:
         {
             "graphUri": "http://ods.nationwidechildrens.org/phebee/subjects",
-            "batchSize": 50000,  // optional, default 50000
-            "totalDeleted": 0,    // optional, cumulative count
-            "iteration": 0        // optional, iteration counter
+            "batchSize": 1000,            // optional, subjects per batch
+            "totalSubjectsDeleted": 0,    // optional, cumulative subject count
+            "iteration": 0                 // optional, iteration counter
         }
 
     Output:
         {
             "graphUri": "...",
             "status": "IN_PROGRESS" | "COMPLETE",
-            "remaining": 123456,
-            "totalDeleted": 50000,
+            "remainingSubjects": 1234,
+            "remainingTriples": 123456,
+            "totalSubjectsDeleted": 1000,
             "iteration": 1
         }
     """
@@ -39,14 +40,14 @@ def lambda_handler(event, context):
         from phebee.utils import sparql
 
         graph_uri = event['graphUri']
-        batch_size = event.get('batchSize', 1000)  # Number of subjects per batch
-        total_deleted = event.get('totalDeleted', 0)
+        batch_size = event.get('batchSize', 10000)  # Number of subjects per batch
+        total_subjects_deleted = event.get('totalSubjectsDeleted', 0)
         iteration = event.get('iteration', 0)
 
         iteration += 1
 
         logger.info(f"Clearing Neptune graph: {graph_uri}")
-        logger.info(f"Iteration {iteration}, batch size: {batch_size} subjects, total deleted so far: {total_deleted:,}")
+        logger.info(f"Iteration {iteration}, batch size: {batch_size} subjects, total subjects deleted so far: {total_subjects_deleted:,}")
 
         # Get a batch of distinct subjects from the graph
         select_query = f"""
@@ -94,47 +95,53 @@ def lambda_handler(event, context):
             logger.info(f"Deleting all triples for {subject_count} subjects")
             sparql.execute_update(delete_query)
 
-        # Check remaining count
+        # Check remaining counts (both triples and subjects)
         count_query = f"""
-        SELECT (COUNT(*) AS ?count)
+        SELECT (COUNT(*) AS ?tripleCount) (COUNT(DISTINCT ?s) AS ?subjectCount)
         WHERE {{
             GRAPH <{graph_uri}> {{
                 ?s ?p ?o
             }}
-        }} LIMIT 1
+        }}
         """
 
         result = sparql.execute_query(count_query)
-        remaining = 0
+        remaining_triples = 0
+        remaining_subjects = 0
 
         if result and 'results' in result and 'bindings' in result['results']:
             bindings = result['results']['bindings']
-            if bindings and 'count' in bindings[0]:
-                remaining = int(bindings[0]['count']['value'])
+            if bindings:
+                if 'tripleCount' in bindings[0]:
+                    remaining_triples = int(bindings[0]['tripleCount']['value'])
+                if 'subjectCount' in bindings[0]:
+                    remaining_subjects = int(bindings[0]['subjectCount']['value'])
 
-        logger.info(f"Remaining triples: {remaining:,}")
+        logger.info(f"Remaining: {remaining_subjects:,} subjects, {remaining_triples:,} triples")
 
-        new_total = total_deleted + subject_count
+        new_total_subjects = total_subjects_deleted + subject_count
 
-        if remaining == 0:
+        if remaining_triples == 0:
             logger.info(f"Graph cleared successfully!")
-            logger.info(f"Total subjects deleted: {new_total:,} (in {iteration} iterations)")
+            logger.info(f"Total subjects deleted: {new_total_subjects:,} (in {iteration} iterations)")
 
             return {
                 "graphUri": graph_uri,
                 "status": "COMPLETE",
-                "remaining": 0,
-                "totalDeleted": new_total,
+                "remainingSubjects": 0,
+                "remainingTriples": 0,
+                "totalSubjectsDeleted": new_total_subjects,
                 "iteration": iteration
             }
         else:
-            logger.info(f"More triples remain, will continue...")
+            logger.info(f"More data remains, will continue...")
 
             return {
                 "graphUri": graph_uri,
                 "status": "IN_PROGRESS",
-                "remaining": remaining,
-                "totalDeleted": new_total,
+                "remainingSubjects": remaining_subjects,
+                "remainingTriples": remaining_triples,
+                "totalSubjectsDeleted": new_total_subjects,
                 "iteration": iteration
             }
 

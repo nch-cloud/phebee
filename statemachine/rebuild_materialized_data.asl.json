@@ -311,7 +311,7 @@
       "Type": "Pass",
       "Result": {
         "Payload": {
-          "totalDeleted": 0,
+          "totalSubjectsDeleted": 0,
           "iteration": 0
         }
       },
@@ -326,8 +326,8 @@
         "FunctionName": "${ClearNeptuneGraphFunction}",
         "Payload": {
           "graphUri": "http://ods.nationwidechildrens.org/phebee/subjects",
-          "batchSize": 1000,
-          "totalDeleted.$": "$.clearGraphResult.Payload.totalDeleted",
+          "batchSize": 10000,
+          "totalSubjectsDeleted.$": "$.clearGraphResult.Payload.totalSubjectsDeleted",
           "iteration.$": "$.clearGraphResult.Payload.iteration"
         }
       },
