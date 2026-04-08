@@ -39,26 +39,55 @@ def lambda_handler(event, context):
         from phebee.utils import sparql
 
         graph_uri = event['graphUri']
-        batch_size = event.get('batchSize', 500000)  # Larger batches for ~5 min execution
+        batch_size = event.get('batchSize', 1000)  # Number of subjects per batch
         total_deleted = event.get('totalDeleted', 0)
         iteration = event.get('iteration', 0)
 
         iteration += 1
 
         logger.info(f"Clearing Neptune graph: {graph_uri}")
-        logger.info(f"Iteration {iteration}, batch size: {batch_size:,}, total deleted so far: {total_deleted:,}")
+        logger.info(f"Iteration {iteration}, batch size: {batch_size} subjects, total deleted so far: {total_deleted:,}")
 
-        # Delete a batch of triples
-        query = f"""
-        DELETE WHERE {{
+        # Get a batch of distinct subjects from the graph
+        select_query = f"""
+        SELECT DISTINCT ?s
+        WHERE {{
             GRAPH <{graph_uri}> {{
                 ?s ?p ?o
             }}
-        }} LIMIT {batch_size}
+        }}
+        LIMIT {batch_size}
         """
 
-        logger.info(f"Deleting batch of up to {batch_size:,} triples")
-        sparql.execute_update(query)
+        logger.info(f"Fetching batch of up to {batch_size} subjects")
+        result = sparql.execute_query(select_query)
+
+        if not result or 'results' not in result or 'bindings' not in result['results']:
+            logger.error("No results from SELECT query")
+            raise Exception("Failed to fetch subjects from graph")
+
+        subjects = [binding['s']['value'] for binding in result['results']['bindings']]
+        subject_count = len(subjects)
+
+        if subject_count == 0:
+            logger.info("No subjects found, graph is empty")
+        else:
+            logger.info(f"Found {subject_count} subjects to delete")
+
+            # Build DELETE query for these specific subjects
+            # Use DELETE WHERE to delete all triples for these subjects
+            subjects_list = '>, <'.join(subjects)
+            delete_query = f"""
+            DELETE WHERE {{
+                GRAPH <{graph_uri}> {{
+                    ?s ?p ?o
+                    FILTER(?s IN (<{subjects_list}>))
+                }}
+            }}
+            """
+
+            logger.info(f"Deleting all triples for {subject_count} subjects")
+            sparql.execute_update(delete_query)
 
         # Check remaining count
         count_query = f"""
@@ -80,15 +109,17 @@ def lambda_handler(event, context):
 
         logger.info(f"Remaining triples: {remaining:,}")
 
+        new_total = total_deleted + subject_count
+
         if remaining == 0:
             logger.info(f"Graph cleared successfully!")
-            logger.info(f"Total deleted: ~{total_deleted + batch_size:,} (in {iteration} iterations)")
+            logger.info(f"Total subjects deleted: {new_total:,} (in {iteration} iterations)")
 
             return {
                 "graphUri": graph_uri,
                 "status": "COMPLETE",
                 "remaining": 0,
-                "totalDeleted": total_deleted + batch_size,
+                "totalDeleted": new_total,
                 "iteration": iteration
             }
         else:
@@ -98,7 +129,7 @@ def lambda_handler(event, context):
                 "graphUri": graph_uri,
                 "status": "IN_PROGRESS",
                 "remaining": remaining,
-                "totalDeleted": total_deleted + batch_size,
+                "totalDeleted": new_total,
                 "iteration": iteration
             }
 

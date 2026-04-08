@@ -326,7 +326,7 @@
         "FunctionName": "${ClearNeptuneGraphFunction}",
         "Payload": {
           "graphUri": "http://ods.nationwidechildrens.org/phebee/subjects",
-          "batchSize": 500000,
+          "batchSize": 1000,
           "totalDeleted.$": "$.clearGraphResult.Payload.totalDeleted",
           "iteration.$": "$.clearGraphResult.Payload.iteration"
         }
