@@ -142,6 +142,8 @@ Conditions:
 
   ShouldCreateOntologyHierarchyTable: !Equals [!Ref CreateOntologyHierarchyTableFlag, "true"]
 
+  ShouldCreateIcebergDatabase: !Not [!Condition IcebergDatabaseProvided]
+
 Resources:
   PheBeeUtilsLayer:
     Type: AWS::Serverless::LayerVersion
@@ -2024,7 +2026,7 @@ Resources:
 
   IcebergGlueDatabase:
     Type: AWS::Glue::Database
-    Condition: ShouldCreateEvidenceTable
+    Condition: ShouldCreateIcebergDatabase
     Properties:
       CatalogId: !Ref AWS::AccountId
       DatabaseInput:
@@ -2033,7 +2035,6 @@ Resources:
   CreateEvidenceTableResource:
     Type: Custom::IcebergTable
     Condition: ShouldCreateEvidenceTable
-    DependsOn: IcebergGlueDatabase
     Properties:
       ServiceToken: !GetAtt CreateEvidenceTableFunction.Arn
       Database: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
@@ -2045,7 +2046,6 @@ Resources:
   CreateSubjectTermsBySubjectTableResource:
     Type: Custom::IcebergTable
     Condition: ShouldCreateSubjectTermsBySubjectTable
-    DependsOn: IcebergGlueDatabase
     Properties:
       ServiceToken: !GetAtt CreateSubjectTermsBySubjectTableFunction.Arn
       Database: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
@@ -2057,7 +2057,6 @@ Resources:
   CreateSubjectTermsByProjectTermTableResource:
     Type: Custom::IcebergTable
     Condition: ShouldCreateSubjectTermsByProjectTermTable
-    DependsOn: IcebergGlueDatabase
     Properties:
       ServiceToken: !GetAtt CreateSubjectTermsByProjectTermTableFunction.Arn
       Database: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
@@ -2069,7 +2068,6 @@ Resources:
   CreateOntologyHierarchyTableResource:
     Type: Custom::IcebergTable
     Condition: ShouldCreateOntologyHierarchyTable
-    DependsOn: IcebergGlueDatabase
     Properties:
       ServiceToken: !GetAtt CreateOntologyHierarchyTableFunction.Arn
       Database: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
