@@ -75,14 +75,19 @@ def lambda_handler(event, context):
             logger.info(f"Found {subject_count} subjects to delete")
 
             # Build DELETE query for these specific subjects
-            # Use DELETE WHERE to delete all triples for these subjects
-            subjects_list = '>, <'.join(subjects)
+            # Use explicit DELETE/WHERE with VALUES
+            subjects_values = ' '.join(f'<{s}>' for s in subjects)
             delete_query = f"""
-            DELETE WHERE {{
+            DELETE {{
                 GRAPH <{graph_uri}> {{
                     ?s ?p ?o
-                    FILTER(?s IN (<{subjects_list}>))
                 }}
+            }}
+            WHERE {{
+                GRAPH <{graph_uri}> {{
+                    ?s ?p ?o
+                }}
+                VALUES ?s {{ {subjects_values} }}
             }}
             """
 
