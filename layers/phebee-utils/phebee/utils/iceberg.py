@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 _WORKGROUP_CONFIG_CACHE = {}
 
 
-def _get_workgroup_config_cached(athena_client, workgroup="primary"):
+def get_workgroup_config_cached(athena_client, workgroup="primary"):
     """
     Get Athena workgroup configuration with caching to avoid rate limiting.
 
@@ -47,6 +47,68 @@ def _get_workgroup_config_cached(athena_client, workgroup="primary"):
         _WORKGROUP_CONFIG_CACHE[workgroup] = (is_managed, wg_cfg)
 
     return _WORKGROUP_CONFIG_CACHE[workgroup]
+
+
+def execute_athena_query(query, database, bucket_name=None, workgroup="primary", max_wait_time=300, poll_interval=2):
+    """
+    Execute Athena query and wait for results.
+
+    Handles workgroup configuration checking (with caching) and conditional
+    ResultConfiguration based on whether managed query results are enabled.
+
+    Args:
+        query: SQL query string
+        database: Database name for query context
+        bucket_name: S3 bucket for results (defaults to PHEBEE_BUCKET_NAME env var)
+        workgroup: Athena workgroup name (default: "primary")
+        max_wait_time: Maximum seconds to wait for query completion (default: 300)
+        poll_interval: Seconds between status checks (default: 2)
+
+    Returns:
+        dict: Athena query results from get_query_results()
+
+    Raises:
+        Exception: If query fails or times out
+    """
+    athena_client = boto3.client('athena')
+
+    if bucket_name is None:
+        bucket_name = os.environ.get('PHEBEE_BUCKET_NAME')
+        if not bucket_name:
+            raise ValueError("bucket_name parameter or PHEBEE_BUCKET_NAME environment variable is required")
+
+    # Check workgroup configuration (cached to avoid rate limiting)
+    managed, wg_cfg = get_workgroup_config_cached(athena_client, workgroup)
+
+    params = {
+        "QueryString": query,
+        "QueryExecutionContext": {"Database": database}
+    }
+
+    if not managed:
+        params["ResultConfiguration"] = {"OutputLocation": f's3://{bucket_name}/athena-results/'}
+
+    response = athena_client.start_query_execution(**params)
+    query_execution_id = response['QueryExecutionId']
+
+    # Wait for completion
+    elapsed_time = 0
+    while elapsed_time < max_wait_time:
+        response = athena_client.get_query_execution(QueryExecutionId=query_execution_id)
+        status = response['QueryExecution']['Status']['State']
+
+        if status in ['SUCCEEDED', 'FAILED', 'CANCELLED']:
+            break
+
+        time.sleep(poll_interval)
+        elapsed_time += poll_interval
+
+    if status != 'SUCCEEDED':
+        error_msg = response['QueryExecution']['Status'].get('StateChangeReason', 'Unknown error')
+        raise Exception(f"Athena query failed: {error_msg}")
+
+    results = athena_client.get_query_results(QueryExecutionId=query_execution_id)
+    return results
 
 
 def parse_athena_row_array(row_str, field_names):
@@ -268,7 +330,7 @@ def query_iceberg_evidence(query: str) -> List[Dict[str, Any]]:
         athena_client = boto3.client('athena')
 
         # Check if primary workgroup is managed (cached to avoid rate limiting)
-        managed, wg_cfg = _get_workgroup_config_cached(athena_client)
+        managed, wg_cfg = get_workgroup_config_cached(athena_client)
 
         database_name = os.environ.get('ICEBERG_DATABASE')
         if not database_name:
@@ -515,7 +577,7 @@ def create_evidence_record(
             athena_client = boto3.client('athena')
 
             # Check if primary workgroup is managed (cached to avoid rate limiting)
-            managed, wg_cfg = _get_workgroup_config_cached(athena_client)
+            managed, wg_cfg = get_workgroup_config_cached(athena_client)
 
             database_name = os.environ.get('ICEBERG_DATABASE')
             if not database_name:
@@ -1120,7 +1182,7 @@ def delete_evidence_record(evidence_id: str) -> bool:
         athena_client = boto3.client('athena')
 
         # Check if primary workgroup is managed (cached to avoid rate limiting)
-        managed, wg_cfg = _get_workgroup_config_cached(athena_client)
+        managed, wg_cfg = get_workgroup_config_cached(athena_client)
 
         database_name = os.environ.get('ICEBERG_DATABASE')
         if not database_name:
@@ -1854,7 +1916,7 @@ def _execute_athena_query(query: str, wait_for_completion: bool = True) -> str:
         raise ValueError("ICEBERG_DATABASE environment variable is required")
 
     # Check if primary workgroup is managed (cached to avoid rate limiting)
-    managed, wg_cfg = _get_workgroup_config_cached(athena_client)
+    managed, wg_cfg = get_workgroup_config_cached(athena_client)
 
     params = {
         "QueryString": query,
@@ -2892,7 +2954,7 @@ def reset_iceberg_tables() -> bool:
     athena_client = boto3.client('athena')
 
     # Check if primary workgroup is managed (cached to avoid rate limiting)
-    managed, wg_cfg = _get_workgroup_config_cached(athena_client)
+    managed, wg_cfg = get_workgroup_config_cached(athena_client)
 
     bucket_name = os.environ.get('PHEBEE_BUCKET_NAME') if not managed else None
 

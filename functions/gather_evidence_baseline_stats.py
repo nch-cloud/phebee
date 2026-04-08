@@ -5,55 +5,12 @@ Queries evidence table via Athena to gather baseline statistics before rehashing
 Collects total row count, distinct subject count, and sample evidence IDs.
 """
 
-import time
 import logging
-import os
-import boto3
 import random
+from phebee.utils.iceberg import execute_athena_query
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
-
-athena = boto3.client('athena')
-s3 = boto3.client('s3')
-
-
-def execute_athena_query(query, database):
-    """Execute Athena query and wait for results."""
-    bucket_name = os.environ['PHEBEE_BUCKET_NAME']
-    response = athena.start_query_execution(
-        QueryString=query,
-        QueryExecutionContext={'Database': database},
-        ResultConfiguration={
-            'OutputLocation': f's3://{bucket_name}/athena-results/'
-        }
-    )
-
-    query_execution_id = response['QueryExecutionId']
-    logger.info(f"Started Athena query: {query_execution_id}")
-
-    # Wait for completion
-    max_wait_time = 300  # 5 minutes
-    poll_interval = 2
-    elapsed_time = 0
-
-    while elapsed_time < max_wait_time:
-        response = athena.get_query_execution(QueryExecutionId=query_execution_id)
-        status = response['QueryExecution']['Status']['State']
-
-        if status in ['SUCCEEDED', 'FAILED', 'CANCELLED']:
-            break
-
-        time.sleep(poll_interval)
-        elapsed_time += poll_interval
-
-    if status != 'SUCCEEDED':
-        error_msg = response['QueryExecution']['Status'].get('StateChangeReason', 'Unknown error')
-        raise Exception(f"Athena query failed: {error_msg}")
-
-    # Get results
-    results = athena.get_query_results(QueryExecutionId=query_execution_id)
-    return results
 
 
 def lambda_handler(event, context):

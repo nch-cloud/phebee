@@ -5,50 +5,11 @@ Validates evidence table after rehashing by comparing to baseline stats
 and verifying hash consistency.
 """
 
-import time
-import os
 import logging
-import boto3
+from phebee.utils.iceberg import execute_athena_query
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
-
-athena = boto3.client('athena')
-
-
-def execute_athena_query(query, database):
-    """Execute Athena query and wait for results."""
-    response = athena.start_query_execution(
-        QueryString=query,
-        QueryExecutionContext={'Database': database},
-        ResultConfiguration={
-            'OutputLocation': f's3://{os.environ["PHEBEE_BUCKET_NAME"]}/athena-results/'
-        }
-    )
-
-    query_execution_id = response['QueryExecutionId']
-
-    # Wait for completion
-    max_wait_time = 300
-    poll_interval = 2
-    elapsed_time = 0
-
-    while elapsed_time < max_wait_time:
-        response = athena.get_query_execution(QueryExecutionId=query_execution_id)
-        status = response['QueryExecution']['Status']['State']
-
-        if status in ['SUCCEEDED', 'FAILED', 'CANCELLED']:
-            break
-
-        time.sleep(poll_interval)
-        elapsed_time += poll_interval
-
-    if status != 'SUCCEEDED':
-        error_msg = response['QueryExecution']['Status'].get('StateChangeReason', 'Unknown error')
-        raise Exception(f"Athena query failed: {error_msg}")
-
-    results = athena.get_query_results(QueryExecutionId=query_execution_id)
-    return results
 
 
 def lambda_handler(event, context):

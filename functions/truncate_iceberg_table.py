@@ -8,6 +8,7 @@ import time
 import os
 import logging
 import boto3
+from phebee.utils.iceberg import get_workgroup_config_cached
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -46,14 +47,20 @@ def lambda_handler(event, context):
         query = f"DELETE FROM {database}.{table}"
 
         # Submit query to Athena
-        response = athena.start_query_execution(
-            QueryString=query,
-            QueryExecutionContext={'Database': database},
-            ResultConfiguration={
-                'OutputLocation': f's3://{os.environ["PHEBEE_BUCKET_NAME"]}/athena-results/'
-            }
-        )
+        bucket_name = os.environ['PHEBEE_BUCKET_NAME']
 
+        # Check workgroup configuration (cached to avoid rate limiting)
+        managed, wg_cfg = get_workgroup_config_cached(athena)
+
+        params = {
+            "QueryString": query,
+            "QueryExecutionContext": {"Database": database}
+        }
+
+        if not managed:
+            params["ResultConfiguration"] = {"OutputLocation": f's3://{bucket_name}/athena-results/'}
+
+        response = athena.start_query_execution(**params)
         query_execution_id = response['QueryExecutionId']
         logger.info(f"Started Athena query: {query_execution_id}")
 
