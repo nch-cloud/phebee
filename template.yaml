@@ -410,6 +410,12 @@ Resources:
               - athena:GetQueryResults
               - athena:StopQueryExecution
               - athena:GetWorkGroup
+              - lakeformation:GetDataAccess
+              - lakeformation:GetWorkUnits
+              - lakeformation:StartQueryPlanning
+              - lakeformation:GetWorkUnitResults
+              - lakeformation:GetQueryState
+              - lakeformation:GetQueryStatistics
             Resource: "*"
           - Effect: Allow
             Action:
@@ -1217,6 +1223,7 @@ Resources:
         Variables:
           DYNAMODB_TABLE_NAME: !Ref DynamoDBTable
       Policies:
+        - !Ref PheBeeIcebergPolicy
         - Statement:
             - Effect: Allow
               Action:
@@ -1247,7 +1254,7 @@ Resources:
                 - s3:AbortMultipartUpload
                 - s3:PutObject
                 - s3:DeleteObject
-              Resource: 
+              Resource:
                 - !Sub "arn:aws:s3:::${PheBeeBucket}/*"
                 - !Sub "arn:aws:s3:::${PheBeeBucket}"
 
@@ -1302,6 +1309,7 @@ Resources:
           PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
           PheBeeDynamoTable: !Ref DynamoDBTable
       Policies:
+        - !Ref PheBeeIcebergPolicy
         - Statement:
             - Effect: Allow
               Action:
@@ -1359,6 +1367,7 @@ Resources:
           ICEBERG_ONTOLOGY_HIERARCHY_TABLE: !Ref IcebergOntologyHierarchyTable
           PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
       Policies:
+        - !Ref PheBeeIcebergPolicy
         - Statement:
             - Effect: Allow
               Action:
@@ -1414,6 +1423,7 @@ Resources:
           ICEBERG_ONTOLOGY_HIERARCHY_TABLE: !Ref IcebergOntologyHierarchyTable
           PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
       Policies:
+        - !Ref PheBeeIcebergPolicy
         - Statement:
             - Effect: Allow
               Action:
