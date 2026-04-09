@@ -92,14 +92,14 @@ def main():
 
             for item in response.get('Items', []):
                 # PK format: "SUBJECT#{subject_id}"
-                # SK format: "PROJECT#{project_id}#{project_subject_id}"
+                # SK format: "PROJECT#{project_id}#SUBJECT#{project_subject_id}"
                 pk_parts = item['PK'].split('#')
                 sk_parts = item['SK'].split('#')
 
-                if len(pk_parts) >= 2 and len(sk_parts) >= 3:
+                if len(pk_parts) >= 2 and len(sk_parts) >= 4 and sk_parts[0] == 'PROJECT' and sk_parts[2] == 'SUBJECT':
                     subject_id = pk_parts[1]
                     project_id = sk_parts[1]
-                    project_subject_id = sk_parts[2]
+                    project_subject_id = sk_parts[3]
 
                     mapping_records.append({
                         'subject_id': subject_id,
