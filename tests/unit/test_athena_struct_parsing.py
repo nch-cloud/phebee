@@ -2,7 +2,7 @@
 Unit tests for Athena struct parsing utilities.
 """
 import pytest
-from phebee.utils.iceberg import parse_athena_struct_array, parse_qualifiers_field
+from phebee.utils.iceberg import parse_athena_struct_array, parse_athena_row_array, parse_qualifiers_field
 from phebee.utils.qualifier import Qualifier
 
 
@@ -50,6 +50,28 @@ class TestParseAthenaStructArray:
         assert parse_athena_struct_array(input_str) == expected
 
 
+class TestParseAthenaRowArray:
+    """Test the parse_athena_row_array function."""
+
+    def test_row_with_nested_qualifiers(self):
+        """Test parsing ROW containing nested qualifiers array (regression test).
+
+        This tests the fix for a bug where '}, {' inside a nested qualifiers
+        array was incorrectly treated as a ROW separator.
+        """
+        # Simulates: ROW(term_id, term_iri, term_label, qualifiers)
+        row_str = "[{HP:0033000, http://purl.obolibrary.org/obo/HP_0033000, Abnormality, [{qualifier_type=family, qualifier_value=true}, {qualifier_type=negated, qualifier_value=false}]}]"
+        field_names = ['term_id', 'term_iri', 'term_label', 'qualifiers']
+        result = parse_athena_row_array(row_str, field_names)
+
+        assert len(result) == 1
+        assert result[0]['term_id'] == 'HP:0033000'
+        assert result[0]['term_iri'] == 'http://purl.obolibrary.org/obo/HP_0033000'
+        assert result[0]['term_label'] == 'Abnormality'
+        # The qualifiers field should be the complete array string
+        assert result[0]['qualifiers'] == '[{qualifier_type=family, qualifier_value=true}, {qualifier_type=negated, qualifier_value=false}]'
+
+
 class TestParseQualifiersField:
     """Test the parse_qualifiers_field function."""
     
@@ -79,4 +101,14 @@ class TestParseQualifiersField:
         """Test numeric qualifier values."""
         struct_str = "[{qualifier_type=negated, qualifier_value=1}, {qualifier_type=family, qualifier_value=0}]"
         expected = [Qualifier(type="negated", value="1")]  # Only value=1 should be active
+        assert parse_qualifiers_field(struct_str) == expected
+
+    def test_multiple_qualifiers_in_array(self):
+        """Test parsing multiple qualifiers in a single array (regression test).
+
+        This tests the fix for a bug where '}, {' inside a qualifiers array
+        was incorrectly treated as a ROW separator, causing truncation.
+        """
+        struct_str = "[{qualifier_type=family, qualifier_value=true}, {qualifier_type=negated, qualifier_value=false}]"
+        expected = [Qualifier(type="family", value="true")]  # Only active qualifier
         assert parse_qualifiers_field(struct_str) == expected

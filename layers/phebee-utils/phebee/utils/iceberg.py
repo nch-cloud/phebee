@@ -165,10 +165,6 @@ def parse_athena_row_array(row_str, field_names):
             if not part.strip():
                 continue
 
-            # Debug logging
-            if 'qualifier' in part.lower():
-                logger.warning(f"ROW part being parsed (contains 'qualifier'): {part[:200]}...")
-
             # Split on comma, respecting nested structures
             values = []
             current_value = ""
@@ -192,13 +188,6 @@ def parse_athena_row_array(row_str, field_names):
 
             if current_value.strip():
                 values.append(current_value.strip())
-
-            # Debug logging for qualifier parsing issues
-            if any('[{qualifier_type' in v for v in values):
-                logger.warning(f"ROW parsing found qualifiers field. Total values: {len(values)}")
-                for i, v in enumerate(values):
-                    if 'qualifier' in v.lower():
-                        logger.warning(f"  Value {i}: {v}")
 
             # Map values to field names
             row_dict = {}
@@ -335,30 +324,11 @@ def parse_qualifiers_field(qualifiers_str) -> List[Qualifier]:
     if not qualifiers_str or qualifiers_str == 'null':
         return []
 
-    # Debug: log the input
-    if 'family' in qualifiers_str:
-        logger.warning(f"parse_qualifiers_field input: repr={repr(qualifiers_str)}, len={len(qualifiers_str)}")
+    qualifiers_list = parse_athena_struct_array(qualifiers_str)
 
-    try:
-        qualifiers_list = parse_athena_struct_array(qualifiers_str)
-
-        # Convert to Qualifier objects, filtering inactive qualifiers
-        qualifiers = []
-        for q in qualifiers_list:
-            try:
-                qualifier = Qualifier.from_dict(q)
-                qualifiers.append(qualifier)
-            except KeyError as e:
-                logger.warning(f"Malformed qualifier dict missing key {e}: {q}")
-                logger.warning(f"Original qualifiers_str (length={len(qualifiers_str)}): {qualifiers_str}")
-                logger.warning(f"Parsed qualifiers_list: {qualifiers_list}")
-                continue
-
-        return [q for q in qualifiers if q.is_active()]
-    except Exception as e:
-        logger.error(f"Error parsing qualifiers field: {e}")
-        logger.error(f"qualifiers_str (length={len(qualifiers_str)}): {qualifiers_str}")
-        raise
+    # Convert to Qualifier objects, filtering inactive qualifiers
+    qualifiers = [Qualifier.from_dict(q) for q in qualifiers_list]
+    return [q for q in qualifiers if q.is_active()]
 
 PHEBEE_NS = Namespace(PHEBEE)
 OBO = Namespace("http://purl.obolibrary.org/obo/")
@@ -1766,9 +1736,6 @@ def query_subjects_by_project(
                 # Parse the array of ROW structures
                 # ROW format: (term_id, term_iri, term_label, qualifiers, evidence_count, termlink_id, first_evidence_date, last_evidence_date)
                 field_names = ['term_id', 'term_iri', 'term_label', 'qualifiers', 'evidence_count', 'termlink_id', 'first_evidence_date', 'last_evidence_date']
-                # Debug: log first 500 chars of terms_str to see structure
-                if 'qualifier' in terms_str.lower():
-                    logger.warning(f"terms_str sample (first 500 chars): {terms_str[:500]}")
                 terms_list = parse_athena_row_array(terms_str, field_names)
                 for term_dict in terms_list:
                     # Parse qualifiers array of structs
