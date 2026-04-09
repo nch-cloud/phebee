@@ -309,8 +309,9 @@
 
     "InitializeClearGraph": {
       "Type": "Pass",
-      "Result": {
+      "Parameters": {
         "Payload": {
+          "batchSize.$": "$.batchSize",
           "totalSubjectsDeleted": 0,
           "iteration": 0
         }
@@ -326,7 +327,7 @@
         "FunctionName": "${ClearNeptuneGraphFunction}",
         "Payload": {
           "graphUri": "http://ods.nationwidechildrens.org/phebee/subjects",
-          "batchSize": 50000,
+          "batchSize.$": "$.clearGraphResult.Payload.batchSize",
           "totalSubjectsDeleted.$": "$.clearGraphResult.Payload.totalSubjectsDeleted",
           "iteration.$": "$.clearGraphResult.Payload.iteration"
         }

@@ -145,6 +145,10 @@ def parse_athena_row_array(row_str, field_names):
             if not part.strip():
                 continue
 
+            # Debug logging
+            if 'qualifier' in part.lower():
+                logger.warning(f"ROW part being parsed (contains 'qualifier'): {part[:200]}...")
+
             # Split on comma, respecting nested structures
             values = []
             current_value = ""
@@ -168,6 +172,13 @@ def parse_athena_row_array(row_str, field_names):
 
             if current_value.strip():
                 values.append(current_value.strip())
+
+            # Debug logging for qualifier parsing issues
+            if any('[{qualifier_type' in v for v in values):
+                logger.warning(f"ROW parsing found qualifiers field. Total values: {len(values)}")
+                for i, v in enumerate(values):
+                    if 'qualifier' in v.lower():
+                        logger.warning(f"  Value {i}: {v}")
 
             # Map values to field names
             row_dict = {}
@@ -240,42 +251,42 @@ def parse_athena_struct_array(struct_str):
     if not struct_str or struct_str == 'null':
         return []
 
-    # Remove outer brackets
+    # Remove outer brackets and whitespace
+    struct_str = struct_str.strip()
     if struct_str.startswith('[') and struct_str.endswith(']'):
-        inner = struct_str[1:-1].strip()
-    else:
-        inner = struct_str.strip()
+        struct_str = struct_str[1:-1].strip()
 
     structs = []
-    if inner:
+    if struct_str:
         # Split by }, { to handle multiple structs
-        if '}, {' in inner:
-            struct_parts = inner.split('}, {')
-            struct_parts = [part.strip('{}') for part in struct_parts]
+        if '}, {' in struct_str:
+            struct_parts = struct_str.split('}, {')
+            # Clean up each part - remove leading/trailing braces
+            struct_parts = [part.lstrip('{').rstrip('}').strip() for part in struct_parts]
         else:
             # Single struct, remove outer braces
-            struct_parts = [inner.strip('{}')]
+            struct_parts = [struct_str.lstrip('{').rstrip('}').strip()]
 
         for part in struct_parts:
-            if not part.strip():
+            if not part:
                 continue
 
             # Parse key=value pairs
             struct_dict = {}
-            # Split on comma, but be careful of commas within values
+            # Split on comma, but be careful of commas within nested structures
             pairs = []
             current_pair = ""
-            paren_depth = 0
+            depth = 0
 
             for char in part:
-                if char == ',' and paren_depth == 0:
+                if char == ',' and depth == 0:
                     pairs.append(current_pair.strip())
                     current_pair = ""
                 else:
                     if char in '({[':
-                        paren_depth += 1
+                        depth += 1
                     elif char in ')}]':
-                        paren_depth -= 1
+                        depth -= 1
                     current_pair += char
 
             if current_pair.strip():
@@ -1730,6 +1741,9 @@ def query_subjects_by_project(
                 # Parse the array of ROW structures
                 # ROW format: (term_id, term_iri, term_label, qualifiers, evidence_count, termlink_id, first_evidence_date, last_evidence_date)
                 field_names = ['term_id', 'term_iri', 'term_label', 'qualifiers', 'evidence_count', 'termlink_id', 'first_evidence_date', 'last_evidence_date']
+                # Debug: log first 500 chars of terms_str to see structure
+                if 'qualifier' in terms_str.lower():
+                    logger.warning(f"terms_str sample (first 500 chars): {terms_str[:500]}")
                 terms_list = parse_athena_row_array(terms_str, field_names)
                 for term_dict in terms_list:
                     # Parse qualifiers array of structs
