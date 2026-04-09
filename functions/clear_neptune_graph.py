@@ -40,7 +40,7 @@ def lambda_handler(event, context):
         from phebee.utils import sparql
 
         graph_uri = event['graphUri']
-        batch_size = event.get('batchSize', 50000)  # Number of subjects per batch
+        batch_size = event.get('batchSize', 10000)  # Number of subjects per batch
         total_subjects_deleted = event.get('totalSubjectsDeleted', 0)
         iteration = event.get('iteration', 0)
 
@@ -131,7 +131,8 @@ def lambda_handler(event, context):
                 "remainingSubjects": 0,
                 "remainingTriples": 0,
                 "totalSubjectsDeleted": new_total_subjects,
-                "iteration": iteration
+                "iteration": iteration,
+                "batchSize": batch_size
             }
         else:
             logger.info(f"More data remains, will continue...")
@@ -142,7 +143,8 @@ def lambda_handler(event, context):
                 "remainingSubjects": remaining_subjects,
                 "remainingTriples": remaining_triples,
                 "totalSubjectsDeleted": new_total_subjects,
-                "iteration": iteration
+                "iteration": iteration,
+                "batchSize": batch_size
             }
 
     except KeyError as e:
