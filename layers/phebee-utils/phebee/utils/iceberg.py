@@ -133,13 +133,33 @@ def parse_athena_row_array(row_str, field_names):
 
     rows = []
     if inner:
-        # Split by }, { to handle multiple ROWs
-        if '}, {' in inner:
-            row_parts = inner.split('}, {')
-            row_parts = [part.strip('{}') for part in row_parts]
-        else:
-            # Single ROW, remove outer braces
-            row_parts = [inner.strip('{}')]
+        # Split by }, { to handle multiple ROWs, but respect nested structures
+        row_parts = []
+        current_row = ""
+        depth = 0
+        i = 0
+        while i < len(inner):
+            char = inner[i]
+
+            if char in '({[':
+                depth += 1
+                current_row += char
+            elif char in ')}]':
+                depth -= 1
+                current_row += char
+            elif depth == 0 and i + 3 < len(inner) and inner[i:i+4] == '}, {':
+                # Found a ROW separator at depth 0
+                row_parts.append(current_row.strip('{}').strip())
+                current_row = ""
+                i += 3  # Skip past the '}, {' separator
+            else:
+                current_row += char
+
+            i += 1
+
+        # Add the last row
+        if current_row.strip():
+            row_parts.append(current_row.strip('{}').strip())
 
         for part in row_parts:
             if not part.strip():
@@ -314,6 +334,10 @@ def parse_qualifiers_field(qualifiers_str) -> List[Qualifier]:
     """
     if not qualifiers_str or qualifiers_str == 'null':
         return []
+
+    # Debug: log the input
+    if 'family' in qualifiers_str:
+        logger.warning(f"parse_qualifiers_field input: repr={repr(qualifiers_str)}, len={len(qualifiers_str)}")
 
     try:
         qualifiers_list = parse_athena_struct_array(qualifiers_str)
