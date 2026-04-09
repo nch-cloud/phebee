@@ -304,11 +304,25 @@ def parse_qualifiers_field(qualifiers_str) -> List[Qualifier]:
     if not qualifiers_str or qualifiers_str == 'null':
         return []
 
-    qualifiers_list = parse_athena_struct_array(qualifiers_str)
+    try:
+        qualifiers_list = parse_athena_struct_array(qualifiers_str)
 
-    # Convert to Qualifier objects, filtering inactive qualifiers
-    qualifiers = [Qualifier.from_dict(q) for q in qualifiers_list]
-    return [q for q in qualifiers if q.is_active()]
+        # Convert to Qualifier objects, filtering inactive qualifiers
+        qualifiers = []
+        for q in qualifiers_list:
+            try:
+                qualifier = Qualifier.from_dict(q)
+                qualifiers.append(qualifier)
+            except KeyError as e:
+                logger.warning(f"Malformed qualifier dict missing key {e}: {q}")
+                logger.warning(f"Original qualifiers_str: {qualifiers_str}")
+                continue
+
+        return [q for q in qualifiers if q.is_active()]
+    except Exception as e:
+        logger.error(f"Error parsing qualifiers field: {e}")
+        logger.error(f"qualifiers_str: {qualifiers_str}")
+        raise
 
 PHEBEE_NS = Namespace(PHEBEE)
 OBO = Namespace("http://purl.obolibrary.org/obo/")
