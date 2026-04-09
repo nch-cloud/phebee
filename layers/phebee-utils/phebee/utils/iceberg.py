@@ -326,13 +326,14 @@ def parse_qualifiers_field(qualifiers_str) -> List[Qualifier]:
                 qualifiers.append(qualifier)
             except KeyError as e:
                 logger.warning(f"Malformed qualifier dict missing key {e}: {q}")
-                logger.warning(f"Original qualifiers_str: {qualifiers_str}")
+                logger.warning(f"Original qualifiers_str (length={len(qualifiers_str)}): {qualifiers_str}")
+                logger.warning(f"Parsed qualifiers_list: {qualifiers_list}")
                 continue
 
         return [q for q in qualifiers if q.is_active()]
     except Exception as e:
         logger.error(f"Error parsing qualifiers field: {e}")
-        logger.error(f"qualifiers_str: {qualifiers_str}")
+        logger.error(f"qualifiers_str (length={len(qualifiers_str)}): {qualifiers_str}")
         raise
 
 PHEBEE_NS = Namespace(PHEBEE)
