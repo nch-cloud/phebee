@@ -2535,6 +2535,52 @@ Resources:
           Region: !Ref AWS::Region
           PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
 
+  ResetNeptuneDatabaseFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AppName}-ResetNeptuneDatabase
+      CodeUri: functions
+      Handler: reset_neptune_database_wrapper.lambda_handler
+      MemorySize: 512
+      Timeout: 600
+      Layers:
+        - !Ref PheBeeUtilsLayer
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Ref AWS::Region
+      Policies:
+        - !Ref PheBeeNeptuneWritePolicy
+
+  ValidateNeptuneCompleteFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AppName}-ValidateNeptuneComplete
+      CodeUri: functions
+      Handler: validate_neptune_complete.lambda_handler
+      MemorySize: 1024
+      Timeout: 900
+      Role: !GetAtt RebuildNeptuneQueriesRole.Arn
+      Layers:
+        - !Ref PheBeeUtilsLayer
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Environment:
+        Variables:
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          Region: !Ref AWS::Region
+          PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
+
   ExecuteSparqlReadonlyFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -2606,10 +2652,15 @@ Resources:
         ValidateMaterializationFunction: !GetAtt ValidateMaterializationFunction.Arn
         GatherNeptuneBaselineStatsFunction: !GetAtt GatherNeptuneBaselineStatsFunction.Arn
         ValidateNeptuneFunction: !GetAtt ValidateNeptuneFunction.Arn
+        ResetNeptuneDatabaseFunction: !GetAtt ResetNeptuneDatabaseFunction.Arn
+        ValidateNeptuneCompleteFunction: !GetAtt ValidateNeptuneCompleteFunction.Arn
         TruncateIcebergTableFunction: !GetAtt TruncateIcebergTableFunction.Arn
         ClearNeptuneGraphFunction: !GetAtt ClearNeptuneGraphFunction.Arn
         NotifyRebuildCompleteFunction: !GetAtt NotifyRebuildCompleteFunction.Arn
         NotifyRebuildFailureFunction: !GetAtt NotifyRebuildFailureFunction.Arn
+        UpdateHPOSFN: !Ref UpdateHPOSFN
+        UpdateMondoSFN: !Ref UpdateMondoSFN
+        UpdateECOSFN: !Ref UpdateECOSFN
         EMRServerlessApplicationId: !Ref EMRServerlessApplication
         EMRExecutionRoleArn: !GetAtt EMRExecutionRole.Arn
         PheBeeBucketName: !Ref PheBeeBucket
@@ -2649,6 +2700,8 @@ Resources:
                   - !GetAtt ValidateMaterializationFunction.Arn
                   - !GetAtt GatherNeptuneBaselineStatsFunction.Arn
                   - !GetAtt ValidateNeptuneFunction.Arn
+                  - !GetAtt ResetNeptuneDatabaseFunction.Arn
+                  - !GetAtt ValidateNeptuneCompleteFunction.Arn
                   - !GetAtt TruncateIcebergTableFunction.Arn
                   - !GetAtt ClearNeptuneGraphFunction.Arn
                   - !GetAtt NotifyRebuildCompleteFunction.Arn
@@ -2698,6 +2751,9 @@ Resources:
                   - states:StopExecution
                 Resource:
                   - !Ref ClearNeptuneGraphStateMachine
+                  - !Ref UpdateHPOSFN
+                  - !Ref UpdateMondoSFN
+                  - !Ref UpdateECOSFN
               - Effect: Allow
                 Action:
                   - events:PutTargets

@@ -39,7 +39,7 @@ def lambda_handler(event, context):
         from phebee.utils import sparql
 
         graph_uri = event['graphUri']
-        batch_size = event.get('batchSize', 10000)  # Number of triples per batch
+        batch_size = event.get('batchSize', 25000)  # Number of triples per batch
         total_triples_deleted = event.get('totalTriplesDeleted', 0)
         iteration = event.get('iteration', 0)
 

@@ -52,4 +52,7 @@ aws s3 cp scripts/rebuild/materialize_all_analytical_tables.py "s3://$BUCKET_NAM
 aws s3 cp scripts/rebuild/generate_neptune_ttl_from_analytical.py "s3://$BUCKET_NAME/scripts/rebuild/" \
     --content-type "text/x-python"
 
+aws s3 cp scripts/rebuild/generate_all_ttl_from_analytical.py "s3://$BUCKET_NAME/scripts/rebuild/" \
+    --content-type "text/x-python"
+
 echo "Scripts deployed successfully to $BUCKET_NAME"

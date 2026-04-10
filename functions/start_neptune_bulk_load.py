@@ -60,14 +60,7 @@ def lambda_handler(event, context):
                     'total_loads': 0
                 }
             }
-        projects_prefix = f"{prefix}projects/"
-        response = s3.list_objects_v2(Bucket=bucket, Prefix=projects_prefix, Delimiter='/')
-        
-        for common_prefix in response.get('CommonPrefixes', []):
-            project_dir = common_prefix['Prefix']
-            project_id = project_dir.split('/')[-2]  # Extract project ID from path
-            ttl_directories[f'project_{project_id}'] = f"s3://{bucket}/{project_dir}"
-        
+
         # Process each TTL directory
         for graph_name, source_dir in ttl_directories.items():
             
