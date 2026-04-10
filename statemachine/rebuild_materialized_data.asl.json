@@ -440,28 +440,39 @@
       "Choices": [{
         "Variable": "$.loadStart.Payload.body.total_loads",
         "NumericGreaterThan": 0,
-        "Next": "WaitForLoad"
+        "Next": "WaitForAllLoads"
       }],
       "Default": "ValidateNeptuneComplete"
     },
 
-    "WaitForLoad": {
+    "WaitForAllLoads": {
       "Type": "Wait",
       "Seconds": 30,
-      "Next": "CheckLoadStatus"
+      "Next": "CheckAllLoadStatuses"
     },
 
-    "CheckLoadStatus": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::lambda:invoke",
-      "Parameters": {
-        "FunctionName": "${CheckNeptuneBulkLoadStatusFunction}",
-        "Payload": {
-          "load_id.$": "$.loadStart.Payload.body.loads[0].load_id"
+    "CheckAllLoadStatuses": {
+      "Type": "Map",
+      "ItemsPath": "$.loadStart.Payload.body.loads",
+      "MaxConcurrency": 10,
+      "Iterator": {
+        "StartAt": "CheckSingleLoadStatus",
+        "States": {
+          "CheckSingleLoadStatus": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "${CheckNeptuneBulkLoadStatusFunction}",
+              "Payload": {
+                "load_id.$": "$.load_id"
+              }
+            },
+            "End": true
+          }
         }
       },
-      "ResultPath": "$.loadStatus",
-      "Next": "EvaluateLoadStatus",
+      "ResultPath": "$.allLoadStatuses",
+      "Next": "EvaluateAllLoadStatuses",
       "Catch": [{
         "ErrorEquals": ["States.ALL"],
         "Next": "NotifyFailure",
@@ -469,18 +480,36 @@
       }]
     },
 
-    "EvaluateLoadStatus": {
+    "EvaluateAllLoadStatuses": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${EvaluateAllLoadStatusesFunction}",
+        "Payload": {
+          "statuses.$": "$.allLoadStatuses"
+        }
+      },
+      "ResultPath": "$.loadEvaluation",
+      "Next": "CheckLoadEvaluation",
+      "Catch": [{
+        "ErrorEquals": ["States.ALL"],
+        "Next": "NotifyFailure",
+        "ResultPath": "$.error"
+      }]
+    },
+
+    "CheckLoadEvaluation": {
       "Type": "Choice",
       "Choices": [{
-        "Variable": "$.loadStatus.Payload.body.status",
-        "StringEquals": "LOAD_COMPLETED",
+        "Variable": "$.loadEvaluation.Payload.allComplete",
+        "BooleanEquals": true,
         "Next": "ValidateNeptuneComplete"
       }, {
-        "Variable": "$.loadStatus.Payload.body.status",
-        "StringEquals": "LOAD_FAILED",
+        "Variable": "$.loadEvaluation.Payload.anyFailed",
+        "BooleanEquals": true,
         "Next": "NotifyFailure"
       }],
-      "Default": "WaitForLoad"
+      "Default": "WaitForAllLoads"
     },
 
     "ValidateNeptuneComplete": {

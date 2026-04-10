@@ -1176,6 +1176,15 @@ Resources:
       Policies:
         - !Ref PheBeeNeptuneLoadPolicy
 
+  EvaluateAllLoadStatusesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AppName}-EvaluateAllLoadStatusesFunction
+      CodeUri: functions
+      Handler: evaluate_all_load_statuses.lambda_handler
+      MemorySize: 256
+      Timeout: 30
+
   GenerateTTLManifestFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -2690,6 +2699,7 @@ Resources:
         IcebergSubjectTermsByProjectTermTable: !Ref IcebergSubjectTermsByProjectTermTable
         StartNeptuneBulkLoadFunction: !GetAtt StartNeptuneBulkLoadFunction.Arn
         CheckNeptuneBulkLoadStatusFunction: !GetAtt CheckNeptuneBulkLoadStatusFunction.Arn
+        EvaluateAllLoadStatusesFunction: !GetAtt EvaluateAllLoadStatusesFunction.Arn
         ClearNeptuneGraphStateMachine: !Ref ClearNeptuneGraphStateMachine
 
   RebuildStateMachineRole:
@@ -2726,6 +2736,7 @@ Resources:
                   - !GetAtt NotifyRebuildFailureFunction.Arn
                   - !GetAtt StartNeptuneBulkLoadFunction.Arn
                   - !GetAtt CheckNeptuneBulkLoadStatusFunction.Arn
+                  - !GetAtt EvaluateAllLoadStatusesFunction.Arn
         - PolicyName: EMRServerlessAccess
           PolicyDocument:
             Version: '2012-10-17'
