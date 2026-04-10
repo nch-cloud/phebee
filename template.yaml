@@ -374,9 +374,14 @@ Resources:
           - Effect: Allow
             Action:
               - neptune-db:ResetDatabase
+              - neptune-db:GetEngineStatus
             Resource: !Sub
               - arn:${AWS::Partition}:neptune-db:${AWS::Region}:${AWS::AccountId}:${ClusterId}/*
               - ClusterId: !GetAtt PheBeeNeptuneCluster.ClusterResourceId
+          - Effect: Allow
+            Action:
+              - rds:DescribeDBClusters
+            Resource: !Sub arn:${AWS::Partition}:rds:${AWS::Region}:${AWS::AccountId}:cluster:${AppName}-neptune-cluster
 
   PheBeePutEventsPolicy:
     Type: AWS::IAM::ManagedPolicy
@@ -2554,6 +2559,7 @@ Resources:
       Environment:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+          NeptuneClusterIdentifier: !Ref PheBeeNeptuneCluster
           Region: !Ref AWS::Region
       Policies:
         - !Ref PheBeeNeptuneResetPolicy
@@ -2579,6 +2585,7 @@ Resources:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
           Region: !Ref AWS::Region
+          PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
           PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
 
   ExecuteSparqlReadonlyFunction:
