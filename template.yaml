@@ -2350,6 +2350,16 @@ Resources:
                   - neptune-db:ReadDataViaQuery
                   - neptune-db:GetQueryStatus
                 Resource: !Sub "arn:aws:neptune-db:${AWS::Region}:${AWS::AccountId}:${PheBeeNeptuneCluster.ClusterResourceId}/*"
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:Scan
+                  - dynamodb:Query
+                  - dynamodb:GetItem
+                Resource: !GetAtt DynamoDBTable.Arn
 
   ValidateRebuildInputFunction:
     Type: AWS::Serverless::Function
