@@ -335,7 +335,7 @@
               "Parameters": {
                 "StateMachineArn": "${UpdateHPOSFN}",
                 "Input": {
-                  "test": false
+                  "test": true
                 }
               },
               "End": true
@@ -351,7 +351,7 @@
               "Parameters": {
                 "StateMachineArn": "${UpdateMondoSFN}",
                 "Input": {
-                  "test": false
+                  "test": true
                 }
               },
               "End": true
@@ -367,7 +367,7 @@
               "Parameters": {
                 "StateMachineArn": "${UpdateECOSFN}",
                 "Input": {
-                  "test": false
+                  "test": true
                 }
               },
               "End": true
