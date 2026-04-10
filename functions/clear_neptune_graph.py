@@ -20,18 +20,17 @@ def lambda_handler(event, context):
     Input:
         {
             "graphUri": "http://ods.nationwidechildrens.org/phebee/subjects",
-            "batchSize": 1000,            // optional, subjects per batch
-            "totalSubjectsDeleted": 0,    // optional, cumulative subject count
-            "iteration": 0                 // optional, iteration counter
+            "batchSize": 10000,           // optional, triples per batch
+            "totalTriplesDeleted": 0,     // optional, cumulative triple count
+            "iteration": 0                // optional, iteration counter
         }
 
     Output:
         {
             "graphUri": "...",
             "status": "IN_PROGRESS" | "COMPLETE",
-            "remainingSubjects": 1234,
             "remainingTriples": 123456,
-            "totalSubjectsDeleted": 1000,
+            "totalTriplesDeleted": 10000,
             "iteration": 1
         }
     """
@@ -40,18 +39,18 @@ def lambda_handler(event, context):
         from phebee.utils import sparql
 
         graph_uri = event['graphUri']
-        batch_size = event.get('batchSize', 10000)  # Number of subjects per batch
-        total_subjects_deleted = event.get('totalSubjectsDeleted', 0)
+        batch_size = event.get('batchSize', 10000)  # Number of triples per batch
+        total_triples_deleted = event.get('totalTriplesDeleted', 0)
         iteration = event.get('iteration', 0)
 
         iteration += 1
 
         logger.info(f"Clearing Neptune graph: {graph_uri}")
-        logger.info(f"Iteration {iteration}, batch size: {batch_size} subjects, total subjects deleted so far: {total_subjects_deleted:,}")
+        logger.info(f"Iteration {iteration}, batch size: {batch_size} triples, total triples deleted so far: {total_triples_deleted:,}")
 
-        # Get a batch of distinct subjects from the graph
+        # Get a batch of triples from the graph
         select_query = f"""
-        SELECT DISTINCT ?s
+        SELECT ?s ?p ?o
         WHERE {{
             GRAPH <{graph_uri}> {{
                 ?s ?p ?o
@@ -60,24 +59,49 @@ def lambda_handler(event, context):
         LIMIT {batch_size}
         """
 
-        logger.info(f"Fetching batch of up to {batch_size} subjects")
+        logger.info(f"Fetching batch of up to {batch_size} triples")
         result = sparql.execute_query(select_query)
 
         if not result or 'results' not in result or 'bindings' not in result['results']:
             logger.error("No results from SELECT query")
-            raise Exception("Failed to fetch subjects from graph")
+            raise Exception("Failed to fetch triples from graph")
 
-        subjects = [binding['s']['value'] for binding in result['results']['bindings']]
-        subject_count = len(subjects)
+        triples = result['results']['bindings']
+        triple_count = len(triples)
 
-        if subject_count == 0:
-            logger.info("No subjects found, graph is empty")
+        if triple_count == 0:
+            logger.info("No triples found, graph is empty")
         else:
-            logger.info(f"Found {subject_count} subjects to delete")
+            logger.info(f"Found {triple_count} triples to delete")
 
-            # Build DELETE query for these specific subjects
-            # Use explicit DELETE/WHERE with VALUES
-            subjects_values = ' '.join(f'<{s}>' for s in subjects)
+            # Build DELETE query for these specific triples using VALUES
+            # Format each triple for VALUES clause
+            def format_rdf_term(term):
+                """Format an RDF term for use in SPARQL VALUES clause."""
+                if term['type'] == 'uri':
+                    return f"<{term['value']}>"
+                elif term['type'] == 'literal':
+                    value = term['value'].replace('\\', '\\\\').replace('"', '\\"')
+                    if 'datatype' in term:
+                        return f'"{value}"^^<{term["datatype"]}>'
+                    elif 'xml:lang' in term:
+                        return f'"{value}"@{term["xml:lang"]}'
+                    else:
+                        return f'"{value}"'
+                elif term['type'] == 'bnode':
+                    return f"_:{term['value']}"
+                else:
+                    raise ValueError(f"Unknown RDF term type: {term['type']}")
+
+            values_list = []
+            for triple in triples:
+                s = format_rdf_term(triple['s'])
+                p = format_rdf_term(triple['p'])
+                o = format_rdf_term(triple['o'])
+                values_list.append(f"({s} {p} {o})")
+
+            values_clause = '\n        '.join(values_list)
+
             delete_query = f"""
             DELETE {{
                 GRAPH <{graph_uri}> {{
@@ -88,16 +112,18 @@ def lambda_handler(event, context):
                 GRAPH <{graph_uri}> {{
                     ?s ?p ?o
                 }}
-                VALUES ?s {{ {subjects_values} }}
+                VALUES (?s ?p ?o) {{
+                    {values_clause}
+                }}
             }}
             """
 
-            logger.info(f"Deleting all triples for {subject_count} subjects")
+            logger.info(f"Deleting {triple_count} triples")
             sparql.execute_update(delete_query)
 
-        # Check remaining counts (both triples and subjects)
+        # Check remaining triple count
         count_query = f"""
-        SELECT (COUNT(*) AS ?tripleCount) (COUNT(DISTINCT ?s) AS ?subjectCount)
+        SELECT (COUNT(*) AS ?tripleCount)
         WHERE {{
             GRAPH <{graph_uri}> {{
                 ?s ?p ?o
@@ -107,30 +133,25 @@ def lambda_handler(event, context):
 
         result = sparql.execute_query(count_query)
         remaining_triples = 0
-        remaining_subjects = 0
 
         if result and 'results' in result and 'bindings' in result['results']:
             bindings = result['results']['bindings']
-            if bindings:
-                if 'tripleCount' in bindings[0]:
-                    remaining_triples = int(bindings[0]['tripleCount']['value'])
-                if 'subjectCount' in bindings[0]:
-                    remaining_subjects = int(bindings[0]['subjectCount']['value'])
+            if bindings and 'tripleCount' in bindings[0]:
+                remaining_triples = int(bindings[0]['tripleCount']['value'])
 
-        logger.info(f"Remaining: {remaining_subjects:,} subjects, {remaining_triples:,} triples")
+        logger.info(f"Remaining: {remaining_triples:,} triples")
 
-        new_total_subjects = total_subjects_deleted + subject_count
+        new_total_triples = total_triples_deleted + triple_count
 
         if remaining_triples == 0:
             logger.info(f"Graph cleared successfully!")
-            logger.info(f"Total subjects deleted: {new_total_subjects:,} (in {iteration} iterations)")
+            logger.info(f"Total triples deleted: {new_total_triples:,} (in {iteration} iterations)")
 
             return {
                 "graphUri": graph_uri,
                 "status": "COMPLETE",
-                "remainingSubjects": 0,
                 "remainingTriples": 0,
-                "totalSubjectsDeleted": new_total_subjects,
+                "totalTriplesDeleted": new_total_triples,
                 "iteration": iteration,
                 "batchSize": batch_size
             }
@@ -140,9 +161,8 @@ def lambda_handler(event, context):
             return {
                 "graphUri": graph_uri,
                 "status": "IN_PROGRESS",
-                "remainingSubjects": remaining_subjects,
                 "remainingTriples": remaining_triples,
-                "totalSubjectsDeleted": new_total_subjects,
+                "totalTriplesDeleted": new_total_triples,
                 "iteration": iteration,
                 "batchSize": batch_size
             }

@@ -312,7 +312,7 @@
       "Parameters": {
         "Payload": {
           "batchSize.$": "$.batchSize",
-          "totalSubjectsDeleted": 0,
+          "totalTriplesDeleted": 0,
           "iteration": 0
         }
       },
@@ -328,7 +328,7 @@
         "Payload": {
           "graphUri": "http://ods.nationwidechildrens.org/phebee/subjects",
           "batchSize.$": "$.clearGraphResult.Payload.batchSize",
-          "totalSubjectsDeleted.$": "$.clearGraphResult.Payload.totalSubjectsDeleted",
+          "totalTriplesDeleted.$": "$.clearGraphResult.Payload.totalTriplesDeleted",
           "iteration.$": "$.clearGraphResult.Payload.iteration"
         }
       },
