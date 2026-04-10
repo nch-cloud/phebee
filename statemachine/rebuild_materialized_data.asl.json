@@ -299,7 +299,7 @@
         }
       },
       "ResultPath": "$.neptuneBaseline",
-      "Next": "InitializeClearGraph",
+      "Next": "ClearSubjectsGraph",
       "Catch": [{
         "ErrorEquals": ["States.ALL"],
         "Next": "NotifyFailure",
