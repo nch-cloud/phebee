@@ -1,0 +1,66 @@
+{
+  "Comment": "Child state machine to clear Neptune graph in batches - handles looping to avoid parent execution event limits",
+  "StartAt": "InitializeClearGraph",
+  "States": {
+    "InitializeClearGraph": {
+      "Type": "Pass",
+      "Parameters": {
+        "Payload": {
+          "batchSize.$": "$.batchSize",
+          "totalTriplesDeleted": 0,
+          "iteration": 0
+        }
+      },
+      "ResultPath": "$.clearGraphResult",
+      "Next": "ClearBatch"
+    },
+
+    "ClearBatch": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${ClearNeptuneGraphFunction}",
+        "Payload": {
+          "graphUri": "${GraphUri}",
+          "batchSize.$": "$.clearGraphResult.Payload.batchSize",
+          "totalTriplesDeleted.$": "$.clearGraphResult.Payload.totalTriplesDeleted",
+          "iteration.$": "$.clearGraphResult.Payload.iteration"
+        }
+      },
+      "ResultPath": "$.clearGraphResult",
+      "Next": "CheckStatus",
+      "Retry": [{
+        "ErrorEquals": ["States.TaskFailed"],
+        "IntervalSeconds": 10,
+        "MaxAttempts": 3,
+        "BackoffRate": 2.0
+      }],
+      "Catch": [{
+        "ErrorEquals": ["States.ALL"],
+        "ResultPath": "$.error",
+        "Next": "ClearFailed"
+      }]
+    },
+
+    "CheckStatus": {
+      "Type": "Choice",
+      "Choices": [{
+        "Variable": "$.clearGraphResult.Payload.status",
+        "StringEquals": "COMPLETE",
+        "Next": "ClearComplete"
+      }],
+      "Default": "ClearBatch"
+    },
+
+    "ClearComplete": {
+      "Type": "Succeed",
+      "OutputPath": "$.clearGraphResult.Payload"
+    },
+
+    "ClearFailed": {
+      "Type": "Fail",
+      "Error": "GraphClearFailed",
+      "Cause": "Failed to clear Neptune graph"
+    }
+  }
+}

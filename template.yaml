@@ -2560,6 +2560,38 @@ Resources:
 
   # State Machine and IAM Role
 
+  ClearNeptuneGraphStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: !Sub ${AppName}-ClearNeptuneGraphStateMachine
+      Role: !GetAtt ClearNeptuneGraphStateMachineRole.Arn
+      DefinitionUri: statemachine/clear_neptune_graph.asl.json
+      DefinitionSubstitutions:
+        ClearNeptuneGraphFunction: !GetAtt ClearNeptuneGraphFunction.Arn
+        GraphUri: "http://ods.nationwidechildrens.org/phebee/subjects"
+
+  ClearNeptuneGraphStateMachineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AppName}-ClearNeptuneGraphStateMachineRole"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: LambdaInvoke
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !GetAtt ClearNeptuneGraphFunction.Arn
+
   RebuildMaterializedDataStateMachine:
     Type: AWS::Serverless::StateMachine
     Properties:
@@ -2589,6 +2621,7 @@ Resources:
         IcebergSubjectTermsByProjectTermTable: !Ref IcebergSubjectTermsByProjectTermTable
         StartNeptuneBulkLoadFunction: !GetAtt StartNeptuneBulkLoadFunction.Arn
         CheckNeptuneBulkLoadStatusFunction: !GetAtt CheckNeptuneBulkLoadStatusFunction.Arn
+        ClearNeptuneGraphStateMachine: !Ref ClearNeptuneGraphStateMachine
 
   RebuildStateMachineRole:
     Type: AWS::IAM::Role
@@ -2654,6 +2687,24 @@ Resources:
                 Resource:
                   - !Sub "arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/${AppName}-*"
                   - !Sub "arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/StepFunctionsGetEventsForEMRServerlessJobRule"
+        - PolicyName: ChildStateMachineAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - states:StartExecution
+                  - states:DescribeExecution
+                  - states:StopExecution
+                Resource:
+                  - !Ref ClearNeptuneGraphStateMachine
+              - Effect: Allow
+                Action:
+                  - events:PutTargets
+                  - events:PutRule
+                  - events:DescribeRule
+                Resource:
+                  - !Sub "arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/StepFunctionsGetEventsForStepFunctionsExecutionRule"
 
 Outputs:
   UpdateHPOSFNArn:

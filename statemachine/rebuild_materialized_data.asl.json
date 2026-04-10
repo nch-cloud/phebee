@@ -307,48 +307,23 @@
       }]
     },
 
-    "InitializeClearGraph": {
-      "Type": "Pass",
-      "Parameters": {
-        "Payload": {
-          "batchSize.$": "$.batchSize",
-          "totalTriplesDeleted": 0,
-          "iteration": 0
-        }
-      },
-      "ResultPath": "$.clearGraphResult",
-      "Next": "ClearSubjectsGraph"
-    },
-
     "ClearSubjectsGraph": {
       "Type": "Task",
-      "Resource": "arn:aws:states:::lambda:invoke",
+      "Resource": "arn:aws:states:::states:startExecution.sync:2",
       "Parameters": {
-        "FunctionName": "${ClearNeptuneGraphFunction}",
-        "Payload": {
-          "graphUri": "http://ods.nationwidechildrens.org/phebee/subjects",
-          "batchSize.$": "$.clearGraphResult.Payload.batchSize",
-          "totalTriplesDeleted.$": "$.clearGraphResult.Payload.totalTriplesDeleted",
-          "iteration.$": "$.clearGraphResult.Payload.iteration"
+        "StateMachineArn": "${ClearNeptuneGraphStateMachine}",
+        "Input": {
+          "batchSize.$": "$.batchSize",
+          "AWS_STEP_FUNCTIONS_STARTED_BY_EXECUTION_ID.$": "$$.Execution.Id"
         }
       },
       "ResultPath": "$.clearGraphResult",
-      "Next": "CheckClearGraphStatus",
+      "Next": "GenerateNeptuneTTL",
       "Catch": [{
         "ErrorEquals": ["States.ALL"],
         "Next": "NotifyFailure",
         "ResultPath": "$.error"
       }]
-    },
-
-    "CheckClearGraphStatus": {
-      "Type": "Choice",
-      "Choices": [{
-        "Variable": "$.clearGraphResult.Payload.status",
-        "StringEquals": "COMPLETE",
-        "Next": "GenerateNeptuneTTL"
-      }],
-      "Default": "ClearSubjectsGraph"
     },
 
     "GenerateNeptuneTTL": {
