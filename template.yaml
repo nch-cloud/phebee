@@ -2556,7 +2556,7 @@ Resources:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
           Region: !Ref AWS::Region
       Policies:
-        - !Ref PheBeeNeptuneWritePolicy
+        - !Ref PheBeeNeptuneResetPolicy
 
   ValidateNeptuneCompleteFunction:
     Type: AWS::Serverless::Function
