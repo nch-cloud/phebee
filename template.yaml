@@ -1547,6 +1547,15 @@ Resources:
                 - !Sub
                   - "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/${DbName}/*"
                   - DbName: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
+            - Effect: Allow
+              Action:
+                - lakeformation:GetDataAccess
+                - lakeformation:GetWorkUnits
+                - lakeformation:StartQueryPlanning
+                - lakeformation:GetWorkUnitResults
+                - lakeformation:GetQueryState
+                - lakeformation:GetQueryStatistics
+              Resource: "*"
 
   # EMR Serverless Application
   EMRServerlessApplication:
