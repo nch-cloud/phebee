@@ -375,6 +375,7 @@ Resources:
             Action:
               - neptune-db:ResetDatabase
               - neptune-db:GetEngineStatus
+              - neptune-db:ReadDataViaQuery
             Resource: !Sub
               - arn:${AWS::Partition}:neptune-db:${AWS::Region}:${AWS::AccountId}:${ClusterId}/*
               - ClusterId: !GetAtt PheBeeNeptuneCluster.ClusterResourceId
