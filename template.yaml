@@ -98,6 +98,17 @@ Parameters:
     AllowedValues: ["true", "false"]
     Description: "Whether to create the subject-terms-by-project-term table"
 
+  # Multi-Account Lake Formation Parameters
+  CatalogAccountId:
+    Type: String
+    Default: ""
+    Description: "Optional AWS account ID for cross-account Glue catalog access. If empty, uses current account."
+
+  CatalogDatabaseName:
+    Type: String
+    Default: ""
+    Description: "Optional database name in external catalog. If empty, uses IcebergDatabase value."
+
   # Ontology Hierarchy Table Parameters
   IcebergOntologyHierarchyTable:
     Type: String
@@ -143,6 +154,10 @@ Conditions:
   ShouldCreateOntologyHierarchyTable: !Equals [!Ref CreateOntologyHierarchyTableFlag, "true"]
 
   ShouldCreateIcebergDatabase: !Not [!Condition IcebergDatabaseProvided]
+
+  CatalogAccountIdProvided: !Not [!Equals [!Ref CatalogAccountId, ""]]
+
+  CatalogDatabaseNameProvided: !Not [!Equals [!Ref CatalogDatabaseName, ""]]
 
 Resources:
   PheBeeUtilsLayer:
@@ -1498,6 +1513,116 @@ Resources:
                 - !GetAtt PheBeeBucket.Arn
                 - !Sub "${PheBeeBucket.Arn}/*"
 
+  DeleteOntologyHierarchyPartitionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AppName}-DeleteOntologyHierarchyPartitionRole"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+          - Effect: Allow
+            Principal:
+              Service: lakeformation.amazonaws.com
+            Action:
+              - sts:AssumeRole
+              - sts:TagSession
+              - sts:SetContext
+              - sts:SetSourceIdentity
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: AthenaAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - athena:StartQueryExecution
+                  - athena:GetQueryExecution
+                  - athena:GetQueryResults
+                  - athena:GetWorkGroup
+                Resource:
+                  - !Sub "arn:aws:athena:${AWS::Region}:${AWS::AccountId}:workgroup/primary"
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                  - s3:GetBucketLocation
+                Resource:
+                  - !GetAtt PheBeeBucket.Arn
+                  - !Sub "${PheBeeBucket.Arn}/*"
+        - PolicyName: GlueAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - glue:GetDatabase
+                  - glue:GetTable
+                  - glue:GetPartitions
+                  - glue:UpdateTable
+                Resource: !If
+                  - IcebergDatabaseProvided
+                  - !If
+                    - CatalogAccountIdProvided
+                    # Multi-account: Add both local AND cross-account Glue resources
+                    - - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog"
+                      - !Sub
+                        - "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/${DbName}"
+                        - DbName: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
+                      - !Sub
+                        - "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/${DbName}/*"
+                        - DbName: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
+                      - !Sub "arn:aws:glue:${AWS::Region}:${CatalogAccountId}:catalog"
+                      - !Sub
+                        - "arn:aws:glue:${AWS::Region}:${CatalogAccountId}:database/${DbName}"
+                        - DbName: !If [CatalogDatabaseNameProvided, !Ref CatalogDatabaseName, !Ref IcebergDatabase]
+                      - !Sub
+                        - "arn:aws:glue:${AWS::Region}:${CatalogAccountId}:table/${DbName}/*"
+                        - DbName: !If [CatalogDatabaseNameProvided, !Ref CatalogDatabaseName, !Ref IcebergDatabase]
+                    # Single-account: Only local Glue resources
+                    - - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog"
+                      - !Sub
+                        - "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/${DbName}"
+                        - DbName: !Ref IcebergDatabase
+                      - !Sub
+                        - "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/${DbName}/*"
+                        - DbName: !Ref IcebergDatabase
+                  # IcebergDatabase not provided: Use default naming
+                  - - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog"
+                    - !Sub
+                      - "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/${DbName}"
+                      - DbName: !Join ['_', !Split ['-', !Ref AppName]]
+                    - !Sub
+                      - "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/${DbName}/*"
+                      - DbName: !Join ['_', !Split ['-', !Ref AppName]]
+        - PolicyName: LakeFormationAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lakeformation:GetDataAccess
+                  - lakeformation:GetWorkUnits
+                  - lakeformation:StartQueryPlanning
+                  - lakeformation:GetWorkUnitResults
+                  - lakeformation:GetQueryState
+                  - lakeformation:GetQueryStatistics
+                Resource: "*"
+
   DeleteOntologyHierarchyPartitionFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -1506,6 +1631,7 @@ Resources:
       Handler: delete_ontology_hierarchy_partition.lambda_handler
       MemorySize: 256
       Timeout: 300
+      Role: !GetAtt DeleteOntologyHierarchyPartitionRole.Arn
       Layers:
         - !Ref PheBeeUtilsLayer
       Environment:
@@ -1513,49 +1639,6 @@ Resources:
           ICEBERG_DATABASE: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
           ICEBERG_ONTOLOGY_HIERARCHY_TABLE: !Ref IcebergOntologyHierarchyTable
           PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
-      Policies:
-        - Statement:
-            - Effect: Allow
-              Action:
-                - athena:StartQueryExecution
-                - athena:GetQueryExecution
-                - athena:GetQueryResults
-                - athena:GetWorkGroup
-              Resource:
-                - !Sub "arn:aws:athena:${AWS::Region}:${AWS::AccountId}:workgroup/primary"
-            - Effect: Allow
-              Action:
-                - s3:GetObject
-                - s3:PutObject
-                - s3:DeleteObject
-                - s3:ListBucket
-                - s3:GetBucketLocation
-              Resource:
-                - !GetAtt PheBeeBucket.Arn
-                - !Sub "${PheBeeBucket.Arn}/*"
-            - Effect: Allow
-              Action:
-                - glue:GetDatabase
-                - glue:GetTable
-                - glue:GetPartitions
-                - glue:UpdateTable
-              Resource:
-                - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog"
-                - !Sub
-                  - "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/${DbName}"
-                  - DbName: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
-                - !Sub
-                  - "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/${DbName}/*"
-                  - DbName: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
-            - Effect: Allow
-              Action:
-                - lakeformation:GetDataAccess
-                - lakeformation:GetWorkUnits
-                - lakeformation:StartQueryPlanning
-                - lakeformation:GetWorkUnitResults
-                - lakeformation:GetQueryState
-                - lakeformation:GetQueryStatistics
-              Resource: "*"
 
   # EMR Serverless Application
   EMRServerlessApplication:
