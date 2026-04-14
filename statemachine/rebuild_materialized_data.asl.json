@@ -1,5 +1,5 @@
 {
-  "Comment": "Rebuild Materialized Data Pipeline with inline validation - operational tool for hash migration, disaster recovery, and schema changes",
+  "Comment": "Rebuild Materialized Data Pipeline with inline validation - operational tool for hash migration, disaster recovery, and schema changes. Updated 2026-04-14.",
   "StartAt": "ValidateInput",
   "States": {
     "ValidateInput": {

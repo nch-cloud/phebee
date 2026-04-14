@@ -38,8 +38,14 @@ def validate_ontologies(sparql, iceberg_database, dynamodb_table, region):
     logger.info("VALIDATING ONTOLOGY GRAPHS (HPO, MONDO, ECO)")
     logger.info("=" * 80)
 
+    # Debug logging
+    logger.info(f"DEBUG: iceberg_database={iceberg_database}")
+    logger.info(f"DEBUG: dynamodb_table={dynamodb_table}")
+    logger.info(f"DEBUG: region={region}")
+
     # Get hierarchy table name from environment
     hierarchy_table = os.environ.get('ICEBERG_ONTOLOGY_HIERARCHY_TABLE', 'ontology_hierarchy')
+    logger.info(f"DEBUG: hierarchy_table={hierarchy_table}")
 
     dynamodb = boto3.resource('dynamodb', region_name=region)
     table = dynamodb.Table(dynamodb_table)
@@ -92,6 +98,9 @@ def validate_ontologies(sparql, iceberg_database, dynamodb_table, region):
                 WHERE source = '{onto['source']}'
                 AND version = '{current_version}'
                 """
+
+                logger.info(f"  DEBUG: About to execute Athena query with database={iceberg_database}")
+                logger.info(f"  DEBUG: Query: {count_query}")
 
                 result = execute_athena_query(count_query, iceberg_database)
 
@@ -758,6 +767,8 @@ def lambda_handler(event, context):
         logger.info("=" * 80)
         logger.info("COMPLETE NEPTUNE VALIDATION")
         logger.info(f"Run ID: {run_id}")
+        logger.info(f"DEBUG: Received event: {event}")
+        logger.info(f"DEBUG: database={database}, dynamodb_table={dynamodb_table}")
         logger.info("=" * 80)
 
         # Validate ontologies
