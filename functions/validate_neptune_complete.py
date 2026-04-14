@@ -95,7 +95,7 @@ def validate_ontologies(sparql, iceberg_database, dynamodb_table, region):
                 count_query = f"""
                 SELECT COUNT(*) as term_count
                 FROM {iceberg_database}.{hierarchy_table}
-                WHERE source = '{onto['source']}'
+                WHERE ontology_source = '{onto['source']}'
                 AND version = '{current_version}'
                 """
 
