@@ -2698,6 +2698,7 @@ Resources:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
           Region: !Ref AWS::Region
           PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
+          PheBeeDynamoTable: !Ref DynamoDBTable
           ICEBERG_DATABASE: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
           ICEBERG_ONTOLOGY_HIERARCHY_TABLE: !Ref IcebergOntologyHierarchyTable
 
