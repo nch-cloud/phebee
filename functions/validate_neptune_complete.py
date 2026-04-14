@@ -56,21 +56,24 @@ def validate_ontologies(sparql, iceberg_database, dynamodb_table, region):
             "graph_prefix": "http://ods.nationwidechildrens.org/phebee/hpo~",
             "sample_terms": ["HP:0000001", "HP:0001250"],  # All, Seizure
             "namespace": "http://purl.obolibrary.org/obo/",
-            "term_prefix": "http://purl.obolibrary.org/obo/HP_"  # More specific for counting
+            "term_prefix": "http://purl.obolibrary.org/obo/HP_",
+            "materializes_hierarchy": True  # HPO materializes hierarchy table
         },
         {
             "source": "mondo",
             "graph_prefix": "http://ods.nationwidechildrens.org/phebee/mondo~",
             "sample_terms": ["MONDO:0000001", "MONDO:0005015"],  # disease, diabetes mellitus
             "namespace": "http://purl.obolibrary.org/obo/",
-            "term_prefix": "http://purl.obolibrary.org/obo/MONDO_"
+            "term_prefix": "http://purl.obolibrary.org/obo/MONDO_",
+            "materializes_hierarchy": True  # MONDO materializes hierarchy table
         },
         {
             "source": "eco",
             "graph_prefix": "http://ods.nationwidechildrens.org/phebee/eco~",
             "sample_terms": ["ECO:0000000", "ECO:0000501"],  # evidence, author statement from published clinical study used in manual assertion
             "namespace": "http://purl.obolibrary.org/obo/",
-            "term_prefix": "http://purl.obolibrary.org/obo/ECO_"
+            "term_prefix": "http://purl.obolibrary.org/obo/ECO_",
+            "materializes_hierarchy": False  # ECO does NOT materialize hierarchy table
         }
     ]
 
@@ -83,46 +86,53 @@ def validate_ontologies(sparql, iceberg_database, dynamodb_table, region):
 
         # 1. Get current version from DynamoDB and expected count from Iceberg hierarchy table
         logger.info(f"  Getting current {onto['source']} version from DynamoDB...")
-        try:
-            current_version = get_current_term_source_version(onto['source'])
-            if not current_version:
-                error_msg = f"{onto['source']}: No version found in DynamoDB"
+
+        # Check if this ontology materializes hierarchy table
+        if not onto.get('materializes_hierarchy', True):
+            logger.info(f"  {onto['source']} does not materialize hierarchy table - skipping count comparison")
+            expected_count = None  # Skip count validation
+            current_version = None
+        else:
+            try:
+                current_version = get_current_term_source_version(onto['source'])
+                if not current_version:
+                    error_msg = f"{onto['source']}: No version found in DynamoDB"
+                    logger.error(f"  ✗ {error_msg}")
+                    onto_errors.append(error_msg)
+                    expected_count = 0
+                else:
+                    logger.info(f"  Current version: {current_version}")
+
+                    # Query Iceberg hierarchy table for term count
+                    logger.info(f"  Querying Iceberg hierarchy table for {onto['source']} term count...")
+                    count_query = f"""
+                    SELECT COUNT(*) as term_count
+                    FROM {iceberg_database}.{hierarchy_table}
+                    WHERE ontology_source = '{onto['source']}'
+                    AND version = '{current_version}'
+                    """
+
+                    logger.info(f"  DEBUG: About to execute Athena query with database={iceberg_database}")
+                    logger.info(f"  DEBUG: Query: {count_query}")
+
+                    result = execute_athena_query(count_query, iceberg_database)
+
+                    if result and 'ResultSet' in result and 'Rows' in result['ResultSet']:
+                        rows = result['ResultSet']['Rows']
+                        if len(rows) > 1:  # Skip header row
+                            expected_count = int(rows[1]['Data'][0].get('VarCharValue', '0'))
+                            logger.info(f"  Expected {onto['source']} terms: {expected_count:,}")
+                        else:
+                            expected_count = 0
+                            logger.warning(f"  No data returned from hierarchy table for {onto['source']}")
+                    else:
+                        expected_count = 0
+                        logger.warning(f"  Empty result from hierarchy table query for {onto['source']}")
+            except Exception as e:
+                error_msg = f"{onto['source']}: Failed to get term count from hierarchy table: {str(e)}"
                 logger.error(f"  ✗ {error_msg}")
                 onto_errors.append(error_msg)
                 expected_count = 0
-            else:
-                logger.info(f"  Current version: {current_version}")
-
-                # Query Iceberg hierarchy table for term count
-                logger.info(f"  Querying Iceberg hierarchy table for {onto['source']} term count...")
-                count_query = f"""
-                SELECT COUNT(*) as term_count
-                FROM {iceberg_database}.{hierarchy_table}
-                WHERE ontology_source = '{onto['source']}'
-                AND version = '{current_version}'
-                """
-
-                logger.info(f"  DEBUG: About to execute Athena query with database={iceberg_database}")
-                logger.info(f"  DEBUG: Query: {count_query}")
-
-                result = execute_athena_query(count_query, iceberg_database)
-
-                if result and 'ResultSet' in result and 'Rows' in result['ResultSet']:
-                    rows = result['ResultSet']['Rows']
-                    if len(rows) > 1:  # Skip header row
-                        expected_count = int(rows[1]['Data'][0].get('VarCharValue', '0'))
-                        logger.info(f"  Expected {onto['source']} terms: {expected_count:,}")
-                    else:
-                        expected_count = 0
-                        logger.warning(f"  No data returned from hierarchy table for {onto['source']}")
-                else:
-                    expected_count = 0
-                    logger.warning(f"  Empty result from hierarchy table query for {onto['source']}")
-        except Exception as e:
-            error_msg = f"{onto['source']}: Failed to get term count from hierarchy table: {str(e)}"
-            logger.error(f"  ✗ {error_msg}")
-            onto_errors.append(error_msg)
-            expected_count = 0
 
         # 2. Get actual count from Neptune (query latest version graph)
         logger.info(f"  Querying Neptune for {onto['source']} term count...")
@@ -166,12 +176,24 @@ def validate_ontologies(sparql, iceberg_database, dynamodb_table, region):
                             logger.info(f"  Actual {onto['source']} terms: {actual_count:,}")
 
                             # Validate counts - pragmatic approach
-                            if expected_count == 0:
-                                error_msg = f"{onto['source']}: Hierarchy table is empty (0 terms)"
+                            if expected_count is None:
+                                # Ontology doesn't materialize hierarchy - just check Neptune has data
+                                if actual_count == 0:
+                                    error_msg = f"{onto['source']}: Neptune is empty (0 terms)"
+                                    logger.error(f"  ✗ {error_msg}")
+                                    onto_errors.append(error_msg)
+                                else:
+                                    logger.info(f"  ✓ {onto['source']} has {actual_count:,} terms in Neptune")
+                            elif expected_count == 0 and actual_count == 0:
+                                error_msg = f"{onto['source']}: Both hierarchy table and Neptune are empty"
                                 logger.error(f"  ✗ {error_msg}")
                                 onto_errors.append(error_msg)
                             elif actual_count == 0:
                                 error_msg = f"{onto['source']}: Neptune is empty (0 terms)"
+                                logger.error(f"  ✗ {error_msg}")
+                                onto_errors.append(error_msg)
+                            elif expected_count == 0:
+                                error_msg = f"{onto['source']}: Hierarchy table is empty but Neptune has {actual_count:,} terms"
                                 logger.error(f"  ✗ {error_msg}")
                                 onto_errors.append(error_msg)
                             else:
@@ -242,13 +264,22 @@ def validate_ontologies(sparql, iceberg_database, dynamodb_table, region):
                                 onto_errors.append(error_msg)
 
                             # Calculate difference for reporting
-                            diff_pct = abs(actual_count - expected_count) / expected_count * 100 if expected_count > 0 else 0
+                            if expected_count is None:
+                                diff_pct = None
+                                counts_reasonable = actual_count > 0
+                            elif expected_count > 0:
+                                diff_pct = abs(actual_count - expected_count) / expected_count * 100
+                                counts_reasonable = expected_count > 0 and actual_count > 0
+                            else:
+                                diff_pct = 0
+                                counts_reasonable = False
 
                             ontology_details[onto['source']] = {
                                 "expected_count": expected_count,
                                 "actual_count": actual_count,
                                 "count_difference_pct": diff_pct,
-                                "counts_reasonable": expected_count > 0 and actual_count > 0,
+                                "counts_reasonable": counts_reasonable,
+                                "materializes_hierarchy": onto.get('materializes_hierarchy', True),
                                 "latest_graph": latest_graph,
                                 "errors": onto_errors
                             }
