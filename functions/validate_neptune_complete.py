@@ -55,19 +55,22 @@ def validate_ontologies(sparql, iceberg_database, dynamodb_table, region):
             "source": "hpo",
             "graph_prefix": "http://ods.nationwidechildrens.org/phebee/hpo~",
             "sample_terms": ["HP:0000001", "HP:0001250"],  # All, Seizure
-            "namespace": "http://purl.obolibrary.org/obo/"
+            "namespace": "http://purl.obolibrary.org/obo/",
+            "term_prefix": "http://purl.obolibrary.org/obo/HP_"  # More specific for counting
         },
         {
             "source": "mondo",
             "graph_prefix": "http://ods.nationwidechildrens.org/phebee/mondo~",
             "sample_terms": ["MONDO:0000001", "MONDO:0005015"],  # disease, diabetes mellitus
-            "namespace": "http://purl.obolibrary.org/obo/"
+            "namespace": "http://purl.obolibrary.org/obo/",
+            "term_prefix": "http://purl.obolibrary.org/obo/MONDO_"
         },
         {
             "source": "eco",
             "graph_prefix": "http://ods.nationwidechildrens.org/phebee/eco~",
             "sample_terms": ["ECO:0000000", "ECO:0000501"],  # evidence, author statement from published clinical study used in manual assertion
-            "namespace": "http://purl.obolibrary.org/obo/"
+            "namespace": "http://purl.obolibrary.org/obo/",
+            "term_prefix": "http://purl.obolibrary.org/obo/ECO_"
         }
     ]
 
@@ -144,13 +147,13 @@ def validate_ontologies(sparql, iceberg_database, dynamodb_table, region):
                     latest_graph = bindings[0]['g']['value']
                     logger.info(f"  Latest {onto['source']} graph: {latest_graph}")
 
-                    # Count terms in this graph
+                    # Count terms in this graph - only owl:Class with specific prefix to match hierarchy table
                     count_query = f"""
                     SELECT (COUNT(DISTINCT ?term) AS ?count)
                     WHERE {{
                         GRAPH <{latest_graph}> {{
-                            ?term a ?type
-                            FILTER(STRSTARTS(STR(?term), "{onto['namespace']}"))
+                            ?term a <http://www.w3.org/2002/07/owl#Class>
+                            FILTER(STRSTARTS(STR(?term), "{onto['term_prefix']}"))
                         }}
                     }}
                     """
