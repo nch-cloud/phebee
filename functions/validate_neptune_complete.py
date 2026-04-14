@@ -21,12 +21,13 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 
-def validate_ontologies(sparql, dynamodb_table, region):
+def validate_ontologies(sparql, iceberg_database, dynamodb_table, region):
     """
     Validate ontology graphs (HPO, MONDO, ECO) in Neptune.
 
     Args:
         sparql: SPARQL utility module
+        iceberg_database: Iceberg database name
         dynamodb_table: DynamoDB table name for ontology hierarchy
         region: AWS region
 
@@ -37,8 +38,7 @@ def validate_ontologies(sparql, dynamodb_table, region):
     logger.info("VALIDATING ONTOLOGY GRAPHS (HPO, MONDO, ECO)")
     logger.info("=" * 80)
 
-    # Get Iceberg configuration from environment
-    iceberg_database = os.environ.get('ICEBERG_DATABASE')
+    # Get hierarchy table name from environment
     hierarchy_table = os.environ.get('ICEBERG_ONTOLOGY_HIERARCHY_TABLE', 'ontology_hierarchy')
 
     dynamodb = boto3.resource('dynamodb', region_name=region)
@@ -761,7 +761,7 @@ def lambda_handler(event, context):
         logger.info("=" * 80)
 
         # Validate ontologies
-        ontologies_result = validate_ontologies(sparql, dynamodb_table, region)
+        ontologies_result = validate_ontologies(sparql, database, dynamodb_table, region)
 
         # Validate projects
         projects_result = validate_projects(sparql, dynamodb_table, region)
