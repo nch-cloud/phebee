@@ -26,11 +26,21 @@
       "Choices": [{
         "Variable": "$.validation.Payload.body.validated",
         "BooleanEquals": true,
-        "Next": "ResolveSubjectMappings"
+        "Next": "CheckSkipToMaterialization"
       }],
       "Default": "NotifyFailure"
     },
-    
+
+    "CheckSkipToMaterialization": {
+      "Type": "Choice",
+      "Choices": [{
+        "Variable": "$.skipToMaterialization",
+        "BooleanEquals": true,
+        "Next": "MaterializeProjectSubjectTerms"
+      }],
+      "Default": "ResolveSubjectMappings"
+    },
+
     "ResolveSubjectMappings": {
       "Type": "Task",
       "Resource": "arn:aws:states:::emr-serverless:startJobRun.sync",
