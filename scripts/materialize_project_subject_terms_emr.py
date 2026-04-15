@@ -204,6 +204,7 @@ def main():
             USING new_by_subject_data AS source
             ON target.subject_id = source.subject_id
                AND target.term_iri = source.term_iri
+               AND target.termlink_id = source.termlink_id
             WHEN MATCHED THEN UPDATE SET
                 subject_iri = source.subject_iri,
                 term_id = source.term_id,
@@ -211,7 +212,6 @@ def main():
                 evidence_count = target.evidence_count + source.evidence_count,
                 first_evidence_date = LEAST(target.first_evidence_date, source.first_evidence_date),
                 last_evidence_date = GREATEST(target.last_evidence_date, source.last_evidence_date),
-                termlink_id = source.termlink_id,
                 qualifiers = array_union(target.qualifiers, source.qualifiers)
             WHEN NOT MATCHED THEN INSERT *
         """)
@@ -278,6 +278,7 @@ def main():
             ON target.project_id = source.project_id
                AND target.subject_id = source.subject_id
                AND target.term_iri = source.term_iri
+               AND target.termlink_id = source.termlink_id
             WHEN MATCHED THEN UPDATE SET
                 project_subject_id = source.project_subject_id,
                 subject_iri = source.subject_iri,
@@ -287,7 +288,6 @@ def main():
                 evidence_count = target.evidence_count + source.evidence_count,
                 first_evidence_date = LEAST(target.first_evidence_date, source.first_evidence_date),
                 last_evidence_date = GREATEST(target.last_evidence_date, source.last_evidence_date),
-                termlink_id = source.termlink_id,
                 qualifiers = array_union(target.qualifiers, source.qualifiers)
             WHEN NOT MATCHED THEN INSERT *
         """)
