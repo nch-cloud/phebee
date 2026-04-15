@@ -55,28 +55,41 @@ def main():
         dynamodb = boto3.resource('dynamodb', region_name=region)
         table = dynamodb.Table(dynamodb_table)
 
-        response = table.query(
-            KeyConditionExpression='PK = :pk AND begins_with(SK, :sk_prefix)',
-            ExpressionAttributeValues={
+        # Query DynamoDB with pagination handling
+        mapping_records = []
+        query_params = {
+            'KeyConditionExpression': 'PK = :pk AND begins_with(SK, :sk_prefix)',
+            'ExpressionAttributeValues': {
                 ':pk': f'PROJECT#{args.project_id}',
                 ':sk_prefix': 'SUBJECT#'
             }
-        )
+        }
 
-        # Parse DynamoDB results into mapping records
-        mapping_records = []
-        for item in response.get('Items', []):
-            # Parse SK: "SUBJECT#{project_subject_id}"
-            sk_parts = item['SK'].split('#')
-            if len(sk_parts) >= 2:
-                project_subject_id = sk_parts[1]
-                subject_id = item.get('subject_id')
-                if subject_id:
-                    mapping_records.append({
-                        'project_id': args.project_id,
-                        'project_subject_id': project_subject_id,
-                        'subject_id': subject_id
-                    })
+        # Paginate through all results
+        while True:
+            response = table.query(**query_params)
+
+            # Parse DynamoDB results into mapping records
+            for item in response.get('Items', []):
+                # Parse SK: "SUBJECT#{project_subject_id}"
+                sk_parts = item['SK'].split('#')
+                if len(sk_parts) >= 2:
+                    project_subject_id = sk_parts[1]
+                    subject_id = item.get('subject_id')
+                    if subject_id:
+                        mapping_records.append({
+                            'project_id': args.project_id,
+                            'project_subject_id': project_subject_id,
+                            'subject_id': subject_id
+                        })
+
+            # Check if there are more pages
+            if 'LastEvaluatedKey' not in response:
+                break
+
+            # Set the ExclusiveStartKey for the next page
+            query_params['ExclusiveStartKey'] = response['LastEvaluatedKey']
+            print(f"Loaded {len(mapping_records)} mappings so far, fetching next page...")
 
         print(f"Loaded {len(mapping_records)} subject mappings from DynamoDB")
 
