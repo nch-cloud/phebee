@@ -34,8 +34,16 @@
     "CheckSkipToMaterialization": {
       "Type": "Choice",
       "Choices": [{
-        "Variable": "$.skipToMaterialization",
-        "BooleanEquals": true,
+        "And": [
+          {
+            "Variable": "$.skipToMaterialization",
+            "IsPresent": true
+          },
+          {
+            "Variable": "$.skipToMaterialization",
+            "BooleanEquals": true
+          }
+        ],
         "Next": "MaterializeProjectSubjectTerms"
       }],
       "Default": "ResolveSubjectMappings"
