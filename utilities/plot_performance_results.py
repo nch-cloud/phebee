@@ -395,6 +395,38 @@ def plot_dataset_scaling(ax, results_list: List[Dict[str, Any]],
         ax.set_ylim(0, max_y * 1.1)
 
 
+def save_figure_all_formats(fig, base_path: Path, description: str):
+    """
+    Save figure in all manuscript formats (PNG, PDF, EPS, SVG).
+
+    Args:
+        fig: Matplotlib figure object
+        base_path: Base path (with extension) for output files
+        description: Description of what's being saved (for console output)
+    """
+    output_path = Path(base_path)
+
+    # PNG for preview (high resolution)
+    fig.savefig(output_path, dpi=300, bbox_inches='tight')
+    print(f"  {description} PNG: {output_path}")
+
+    # PDF with embedded fonts
+    pdf_path = output_path.with_suffix('.pdf')
+    fig.savefig(pdf_path, format='pdf', bbox_inches='tight')
+    print(f"  {description} PDF: {pdf_path}")
+
+    # EPS with embedded fonts
+    eps_path = output_path.with_suffix('.eps')
+    fig.savefig(eps_path, format='eps', bbox_inches='tight')
+    print(f"  {description} EPS: {eps_path}")
+
+    # SVG with text converted to paths
+    svg_path = output_path.with_suffix('.svg')
+    plt.rcParams['svg.fonttype'] = 'path'
+    fig.savefig(svg_path, format='svg', bbox_inches='tight')
+    print(f"  {description} SVG: {svg_path}")
+
+
 def create_performance_figure(results_list: List[Dict[str, Any]],
                               output_file: str = 'performance_figure.png',
                               metric: str = 'p95',
@@ -402,13 +434,14 @@ def create_performance_figure(results_list: List[Dict[str, Any]],
                               panel_b_conc: int = 1,
                               show_p95_bars: bool = True):
     """
-    Create two-panel figure:
+    Create two-panel figure AND individual standalone panels:
+    - Combined: Panel A + Panel B side-by-side
     - Panel A: Concurrency scaling with stacked P50+P95 bars (c=1, c=10, c=25) for a specific dataset size
     - Panel B: Dataset size scaling (1K, 5K, 10K, ...) at a specific concurrency
 
-    Saves figure in multiple formats for manuscript submission:
+    Saves figures in multiple formats for manuscript submission:
     - PNG (300 DPI) for preview
-    - PDF with embedded fonts
+    - PDF with embedded fonts (high-quality vector graphics)
     - EPS with embedded fonts
     - SVG with text converted to paths (for consistent browser display)
 
@@ -472,30 +505,35 @@ def create_performance_figure(results_list: List[Dict[str, Any]],
 
     plt.tight_layout()
 
-    # Save figure in multiple formats for manuscript submission
+    # Save combined figure in all formats
     output_path = Path(output_file)
+    print("\nSaving combined figure:")
+    save_figure_all_formats(fig, output_path, "Combined")
+    plt.close(fig)
 
-    # PNG for preview (high resolution)
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
-    print(f"PNG saved to: {output_path}")
+    # Generate and save Panel A as standalone figure (larger for better clarity)
+    print("\nGenerating Panel A (concurrency scaling) as standalone figure:")
+    fig_a = plt.figure(figsize=(10, 6))
+    ax_a = fig_a.add_subplot(111)
+    plot_concurrency_scaling(ax_a, results_list, panel_a_size, metric, show_p95_bars, max_y)
+    ax_a.text(-0.1, 1.05, 'A', transform=ax_a.transAxes, fontsize=16, fontweight='bold')
+    plt.tight_layout()
 
-    # PDF with embedded fonts
-    pdf_path = output_path.with_suffix('.pdf')
-    plt.savefig(pdf_path, format='pdf', bbox_inches='tight')
-    print(f"PDF saved to: {pdf_path}")
+    panel_a_path = output_path.with_name(output_path.stem + '_panel_a' + output_path.suffix)
+    save_figure_all_formats(fig_a, panel_a_path, "Panel A")
+    plt.close(fig_a)
 
-    # EPS with embedded fonts
-    eps_path = output_path.with_suffix('.eps')
-    plt.savefig(eps_path, format='eps', bbox_inches='tight')
-    print(f"EPS saved to: {eps_path}")
+    # Generate and save Panel B as standalone figure (larger for better clarity)
+    print("\nGenerating Panel B (dataset scaling) as standalone figure:")
+    fig_b = plt.figure(figsize=(10, 6))
+    ax_b = fig_b.add_subplot(111)
+    plot_dataset_scaling(ax_b, results_list, panel_b_conc, metric, max_y)
+    ax_b.text(-0.1, 1.05, 'B', transform=ax_b.transAxes, fontsize=16, fontweight='bold')
+    plt.tight_layout()
 
-    # SVG with text converted to paths (for consistent browser display)
-    svg_path = output_path.with_suffix('.svg')
-    plt.rcParams['svg.fonttype'] = 'path'  # Convert all text to paths
-    plt.savefig(svg_path, format='svg', bbox_inches='tight')
-    print(f"SVG saved to: {svg_path}")
-
-    plt.close()
+    panel_b_path = output_path.with_name(output_path.stem + '_panel_b' + output_path.suffix)
+    save_figure_all_formats(fig_b, panel_b_path, "Panel B")
+    plt.close(fig_b)
 
 
 def main():
@@ -503,8 +541,12 @@ def main():
         description='Generate two-panel performance figure from PheBee API test results',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Panel A: Concurrency scaling (c=1, c=10, c=25)
-Panel B: Dataset size scaling (1K, 5K, 10K, ...)
+Generates THREE figures automatically:
+  1. Combined two-panel figure (Panel A + Panel B side-by-side)
+  2. Panel A standalone (concurrency scaling: c=1, c=10, c=25)
+  3. Panel B standalone (dataset size scaling: 1K, 5K, 10K, ...)
+
+Each figure saved in 4 formats: PNG (300 DPI), PDF, EPS, SVG
 
 Examples:
   # Basic usage with all results
@@ -551,9 +593,19 @@ Examples:
         print("Error: No valid result files found")
         return 1
 
-    # Create figure
+    # Create figures
     create_performance_figure(results_list, args.output, args.metric,
                              args.panel_a_size, args.panel_b_conc, args.show_p95_bars)
+
+    print("\n" + "="*80)
+    print("GENERATION COMPLETE")
+    print("="*80)
+    print(f"\nGenerated 3 figures × 4 formats = 12 files total:")
+    output_path = Path(args.output)
+    print(f"  Combined: {output_path.stem}.[png|pdf|eps|svg]")
+    print(f"  Panel A:  {output_path.stem}_panel_a.[png|pdf|eps|svg]")
+    print(f"  Panel B:  {output_path.stem}_panel_b.[png|pdf|eps|svg]")
+    print()
 
     return 0
 
