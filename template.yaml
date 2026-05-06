@@ -2709,7 +2709,7 @@ Resources:
       CodeUri: functions
       Handler: execute_sparql_readonly.lambda_handler
       MemorySize: 256
-      Timeout: 120
+      Timeout: 900
       Layers:
         - !Ref PheBeeUtilsLayer
       VpcConfig:
