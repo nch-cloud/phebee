@@ -45,8 +45,15 @@ def lambda_handler(event, context):
         graph_restriction = event.get('graphRestriction', 'subjects')
 
         # Validate query is read-only (SELECT, ASK, DESCRIBE, CONSTRUCT)
+        # Strip PREFIX declarations and comments to find the actual query operation
         query_upper = query.strip().upper()
-        if not any(query_upper.startswith(op) for op in ['SELECT', 'ASK', 'DESCRIBE', 'CONSTRUCT']):
+
+        # Remove PREFIX declarations (PREFIX x: <...>)
+        query_without_prefix = re.sub(r'PREFIX\s+\w+:\s*<[^>]+>\s*', '', query_upper, flags=re.IGNORECASE)
+        query_without_prefix = query_without_prefix.strip()
+
+        # Check if query starts with allowed read-only operation
+        if not any(query_without_prefix.startswith(op) for op in ['SELECT', 'ASK', 'DESCRIBE', 'CONSTRUCT']):
             raise ValueError(f"Only read-only queries (SELECT, ASK, DESCRIBE, CONSTRUCT) are allowed. Got: {query[:50]}...")
 
         # Block write operations
@@ -100,20 +107,27 @@ def lambda_handler(event, context):
 
 
 def get_allowed_graphs(restriction):
-    """Get list of allowed graph IRIs based on restriction level."""
+    """
+    Get list of allowed graph IRIs/patterns based on restriction level.
+
+    Returns a dict with:
+    - 'exact': list of exact graph IRIs that are allowed
+    - 'patterns': list of regex patterns for allowed graph IRI patterns
+    """
     subjects_graph = 'http://ods.nationwidechildrens.org/phebee/subjects'
-    ontology_graphs = [
-        'http://purl.obolibrary.org/obo/hp.owl',
-        'http://purl.obolibrary.org/obo/mondo.owl',
-        'http://purl.obolibrary.org/obo/eco.owl'
+
+    # Allow versioned PheBee ontology graphs (e.g., hpo~v2026-02-16, mondo~v2026-04-07)
+    ontology_patterns = [
+        r'^http://ods\.nationwidechildrens\.org/phebee/(hpo|mondo|eco)~v\d{4}-\d{2}-\d{2}$',
+        r'^http://purl\.obolibrary\.org/obo/(hp|mondo|eco)\.owl$'
     ]
 
     if restriction == 'subjects':
-        return [subjects_graph]
+        return {'exact': [subjects_graph], 'patterns': []}
     elif restriction == 'ontology':
-        return ontology_graphs
+        return {'exact': [], 'patterns': ontology_patterns}
     elif restriction == 'any':
-        return [subjects_graph] + ontology_graphs
+        return {'exact': [subjects_graph], 'patterns': ontology_patterns}
     else:
         raise ValueError(f"Invalid graphRestriction: {restriction}. Must be 'subjects', 'ontology', or 'any'")
 
@@ -122,6 +136,10 @@ def validate_query_graphs(query, allowed_graphs):
     """
     Validate that query only accesses allowed graphs.
     Blocks access to project graphs (which may contain PHI).
+
+    Args:
+        query: SPARQL query string
+        allowed_graphs: Dict with 'exact' (list of exact IRIs) and 'patterns' (list of regex patterns)
     """
     # Extract all graph IRIs from query
     # Pattern: GRAPH <...> or FROM <...>
@@ -138,11 +156,27 @@ def validate_query_graphs(query, allowed_graphs):
 
     # If query specifies graphs explicitly, verify they're allowed
     if found_graphs:
+        exact_allowed = allowed_graphs.get('exact', [])
+        pattern_allowed = allowed_graphs.get('patterns', [])
+
         for graph_iri in found_graphs:
-            if graph_iri not in allowed_graphs:
+            # Check exact match
+            if graph_iri in exact_allowed:
+                continue
+
+            # Check pattern match
+            matched = False
+            for pattern in pattern_allowed:
+                if re.match(pattern, graph_iri):
+                    matched = True
+                    break
+
+            if not matched:
+                # Build helpful error message
+                allowed_examples = exact_allowed + ['<ontology graphs matching patterns>']
                 raise ValueError(
                     f"Access to graph '{graph_iri}' is not allowed. "
-                    f"Allowed graphs: {', '.join(allowed_graphs)}"
+                    f"Allowed: subjects graph, versioned PheBee ontology graphs (e.g., .../hpo~v2026-02-16)"
                 )
 
     logger.info(f"Query validation passed. Graphs referenced: {found_graphs if found_graphs else 'default'}")
