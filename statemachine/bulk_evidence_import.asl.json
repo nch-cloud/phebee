@@ -283,6 +283,14 @@
           }
         },
         "ConfigurationOverrides": {
+          "ApplicationConfiguration": [{
+            "Classification": "spark-defaults",
+            "Properties": {
+              "spark.executor.memory": "8g",
+              "spark.executor.cores": "4",
+              "spark.driver.memory": "4g"
+            }
+          }],
           "MonitoringConfiguration": {
             "S3MonitoringConfiguration": {
               "LogUri": "s3://${PheBeeBucketName}/emr-logs/"
