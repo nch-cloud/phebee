@@ -577,6 +577,17 @@ Resources:
       DBSubnetGroupDescription: Subnet group for PheBee subnets
       DBSubnetGroupName: !Sub phebee-neptune-subnets-${AppName}
 
+  PheBeeNeptuneParameterGroup:
+    Type: AWS::Neptune::DBClusterParameterGroup
+    Properties:
+      Description: !Sub "Custom parameter group for ${AppName} Neptune cluster"
+      Family: neptune1.4
+      Parameters:
+        neptune_query_timeout: 300000  # 5 minutes in milliseconds (default is 120000)
+      Tags:
+        - Key: Name
+          Value: !Sub ${AppName}-neptune-parameters
+
   PheBeeNeptuneCluster:
     Type: AWS::Neptune::DBCluster
     Properties:
@@ -596,7 +607,7 @@ Resources:
       VpcSecurityGroupIds:
         - !Ref PheBeeNeptuneSecurityGroup
       CopyTagsToSnapshot: true
-      DBClusterParameterGroupName: default.neptune1.4
+      DBClusterParameterGroupName: !Ref PheBeeNeptuneParameterGroup
       BackupRetentionPeriod: 7
       EnableCloudwatchLogsExports:
       - audit
