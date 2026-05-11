@@ -62,18 +62,24 @@ Parameters:
   IcebergDatabase:
     Type: String
     Default: ""
-    Description: "Glue database name for Iceberg tables. If empty, will use 'phebee-{AppName}'"
-  
+    Description: "Glue database name for Iceberg tables. If empty, will use 'phebee_{AppName}'"
+
+  CreateIcebergDatabaseFlag:
+    Type: String
+    Default: ""
+    AllowedValues: ["true", "false", ""]
+    Description: "Whether to create the Glue database. If empty, creates database only when IcebergDatabase is not provided (default behavior for backwards compatibility)"
+
   IcebergEvidenceTable:
     Type: String
     Default: "evidence"
     Description: "Iceberg table name for evidence storage"
-  
+
   CreateEvidenceTableFlag:
     Type: String
     Default: "true"
     AllowedValues: ["true", "false"]
-    Description: "Whether to create the Glue database and Iceberg table for evidence storage"
+    Description: "Whether to create the Iceberg table for evidence storage"
 
   # Subject-Terms Analytical Table Parameters (two tables with different partitioning)
   IcebergSubjectTermsBySubjectTable:
@@ -145,6 +151,10 @@ Conditions:
 
   IcebergDatabaseProvided: !Not [!Equals [!Ref IcebergDatabase, ""]]
 
+  CreateIcebergDatabaseFlagIsTrue: !Equals [!Ref CreateIcebergDatabaseFlag, "true"]
+
+  CreateIcebergDatabaseFlagIsEmpty: !Equals [!Ref CreateIcebergDatabaseFlag, ""]
+
   ShouldCreateEvidenceTable: !Equals [!Ref CreateEvidenceTableFlag, "true"]
 
   ShouldCreateSubjectTermsBySubjectTable: !Equals [!Ref CreateSubjectTermsBySubjectTableFlag, "true"]
@@ -153,7 +163,12 @@ Conditions:
 
   ShouldCreateOntologyHierarchyTable: !Equals [!Ref CreateOntologyHierarchyTableFlag, "true"]
 
-  ShouldCreateIcebergDatabase: !Not [!Condition IcebergDatabaseProvided]
+  # Create database if: flag is explicitly true OR (flag is empty AND database name not provided)
+  ShouldCreateIcebergDatabase: !Or
+    - !Condition CreateIcebergDatabaseFlagIsTrue
+    - !And
+      - !Condition CreateIcebergDatabaseFlagIsEmpty
+      - !Not [!Condition IcebergDatabaseProvided]
 
   CatalogAccountIdProvided: !Not [!Equals [!Ref CatalogAccountId, ""]]
 
