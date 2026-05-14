@@ -186,6 +186,10 @@ def main():
             "last_evidence_date"
         )
 
+        # Repartition by MERGE join keys for better parallelism and memory efficiency
+        # Distributes work across 100 tasks instead of just 2, reducing per-task memory pressure
+        by_subject_df = by_subject_df.repartition(100, "subject_id", "term_iri", "termlink_id")
+
         # Skip count operation to avoid OOM - count() forces materialization of all 27.5M records
         # Just proceed directly to write
         num_partitions = by_subject_df.rdd.getNumPartitions()
@@ -263,6 +267,10 @@ def main():
             "first_evidence_date",
             "last_evidence_date"
         )
+
+        # Repartition by MERGE join keys for better parallelism and memory efficiency
+        # Distributes work across 100 tasks instead of just 2, reducing per-task memory pressure
+        by_project_term_df = by_project_term_df.repartition(100, "project_id", "subject_id", "term_iri", "termlink_id")
 
         # Skip count operation to avoid OOM - count() forces materialization
         num_partitions = by_project_term_df.rdd.getNumPartitions()
