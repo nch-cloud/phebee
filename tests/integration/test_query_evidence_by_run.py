@@ -127,6 +127,10 @@ def shared_run_evidence(physical_resources, module_test_subject, standard_hpo_te
     # Create 20 evidence records sequentially
     # Note: Keep sequential to avoid race conditions in termlink creation
     # when multiple evidence records are created for the same subject+term
+    #
+    # Each record must differ in at least one hashed field, or CreateEvidence
+    # rejects it as a duplicate (409). run_id and batch_id are NOT part of the
+    # evidence hash, so clinical_note_id is what distinguishes these records.
     for i in range(20):
         payload = {
             "subject_id": subject_uuid,
@@ -134,6 +138,7 @@ def shared_run_evidence(physical_resources, module_test_subject, standard_hpo_te
             "evidence_type": "phenotype_assertion",
             "run_id": run_id,
             "batch_id": f"batch-{i}",
+            "clinical_note_id": f"note-{i}",
             "creator_id": "test-creator",
             "creator_type": "human"
         }

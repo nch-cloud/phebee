@@ -23,6 +23,26 @@ from phebee.utils.dynamodb import get_term_descendants_from_cache, put_term_desc
 
 logger = logging.getLogger(__name__)
 
+
+class EvidenceAlreadyExistsError(Exception):
+    """
+    Raised when creating evidence that already exists in the evidence table.
+
+    evidence_id is a deterministic hash of the evidence content, so a collision
+    means an identical assertion (same subject, term, creator, span, note and
+    qualifiers) has already been recorded. Mirrors the insert-only behaviour of
+    the bulk import path, which skips such records rather than duplicating them.
+    """
+
+    def __init__(self, evidence_id: str):
+        self.evidence_id = evidence_id
+        super().__init__(
+            f"Evidence record {evidence_id} already exists. The same assertion "
+            f"(subject, term, creator, span, note context and qualifiers) has "
+            f"already been recorded."
+        )
+
+
 # Cache for Athena workgroup configuration to avoid rate limiting
 _WORKGROUP_CONFIG_CACHE = {}
 
@@ -406,6 +426,26 @@ def query_iceberg_evidence(query: str) -> List[Dict[str, Any]]:
         raise
 
 
+def evidence_record_exists(evidence_id: str) -> bool:
+    """
+    Check whether an evidence record with this ID is already in the evidence table.
+
+    Lighter than get_evidence_record - only needs to know whether a row exists,
+    so it selects a constant rather than the full struct set.
+    """
+    database_name = os.environ['ICEBERG_DATABASE']
+    table_name = os.environ['ICEBERG_EVIDENCE_TABLE']
+
+    query = f"""
+    SELECT 1 AS found
+    FROM {database_name}.{table_name}
+    WHERE evidence_id = '{evidence_id}'
+    LIMIT 1
+    """
+
+    return bool(query_iceberg_evidence(query))
+
+
 def create_evidence_record(
     subject_id: str,
     term_iri: str,
@@ -428,9 +468,14 @@ def create_evidence_record(
 ) -> str:
     """
     Create a single evidence record in Iceberg.
-    
+
     Returns:
         str: The generated evidence_id
+
+    Raises:
+        EvidenceAlreadyExistsError: if an identical assertion has already been
+            recorded. evidence_id is a content hash, so this keeps the API path
+            insert-only, matching the anti-join in the bulk import path.
     """
     # Get environment variables before any local imports
     database_name = os.environ['ICEBERG_DATABASE']
@@ -450,6 +495,14 @@ def create_evidence_record(
         subject_id=subject_id,
         creator_id=creator_id
     )
+
+    # Reject duplicates before writing anything. evidence_id is a deterministic
+    # content hash, so an existing row means this exact assertion was already
+    # recorded - inserting again would duplicate the row and double-count it in
+    # the downstream subject_terms aggregates.
+    if evidence_record_exists(evidence_id):
+        logger.info(f"Evidence record already exists, skipping insert: {evidence_id}")
+        raise EvidenceAlreadyExistsError(evidence_id)
 
     # Generate termlink ID using shared function
     subject_iri = f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_id}"

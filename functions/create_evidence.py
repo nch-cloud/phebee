@@ -2,7 +2,11 @@ import json
 import os
 from aws_lambda_powertools import Metrics, Logger, Tracer
 from phebee.utils.aws import extract_body
-from phebee.utils.iceberg import create_evidence_record, count_evidence_by_termlink
+from phebee.utils.iceberg import (
+    create_evidence_record,
+    count_evidence_by_termlink,
+    EvidenceAlreadyExistsError,
+)
 from phebee.utils.hash import generate_termlink_hash
 from phebee.utils.qualifier import Qualifier, normalize_qualifiers
 from phebee.utils.sparql import create_term_link
@@ -112,26 +116,49 @@ def lambda_handler(event, context):
         termlink_id = generate_termlink_hash(subject_iri, term_iri, normalized_qualifiers)
 
         # Create evidence record in Iceberg
-        evidence_id = create_evidence_record(
-            subject_id=subject_id,
-            term_iri=term_iri,
-            creator_id=creator_id,
-            creator_name=creator_name,
-            creator_type=creator_type,
-            evidence_type=evidence_type,
-            run_id=run_id,
-            batch_id=batch_id,
-            encounter_id=encounter_id,
-            clinical_note_id=clinical_note_id,
-            span_start=span_start,
-            span_end=span_end,
-            qualifiers=normalized_qualifiers,  # Pass normalized Qualifier objects
-            note_timestamp=note_timestamp,
-            provider_type=provider_type,
-            author_specialty=author_specialty,
-            note_type=note_type,
-            term_source=term_source
-        )
+        # Duplicates are rejected: evidence_id is a content hash, so an existing
+        # row means this exact assertion was already recorded. Return 409 without
+        # touching Neptune or the subject-terms aggregates, which would otherwise
+        # double-count the evidence.
+        try:
+            evidence_id = create_evidence_record(
+                subject_id=subject_id,
+                term_iri=term_iri,
+                creator_id=creator_id,
+                creator_name=creator_name,
+                creator_type=creator_type,
+                evidence_type=evidence_type,
+                run_id=run_id,
+                batch_id=batch_id,
+                encounter_id=encounter_id,
+                clinical_note_id=clinical_note_id,
+                span_start=span_start,
+                span_end=span_end,
+                qualifiers=normalized_qualifiers,  # Pass normalized Qualifier objects
+                note_timestamp=note_timestamp,
+                provider_type=provider_type,
+                author_specialty=author_specialty,
+                note_type=note_type,
+                term_source=term_source
+            )
+        except EvidenceAlreadyExistsError as e:
+            logger.info("Duplicate evidence rejected: %s", e.evidence_id)
+            return {
+                "statusCode": 409,
+                "body": json.dumps({
+                    "message": (
+                        "Evidence already exists. This exact assertion (subject, term, "
+                        "creator, span, note context and qualifiers) has already been "
+                        "recorded. To record a distinct assertion, vary the creator_id, "
+                        "qualifiers, or note context."
+                    ),
+                    "evidence_id": e.evidence_id,
+                    "subject_id": subject_id,
+                    "term_iri": term_iri,
+                    "termlink_id": termlink_id
+                }),
+                "headers": {"Content-Type": "application/json"}
+            }
 
         # Create the term link in Neptune (idempotent - will not recreate if it exists)
         try:

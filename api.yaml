@@ -328,6 +328,12 @@ paths:
         Evidence can include clinical note context, text annotations, and qualifiers.
         Evidence is project-agnostic and automatically updates analytical tables for all projects
         that have this subject to maintain data consistency.
+
+        Duplicates are rejected. The evidence_id is a deterministic hash of the evidence
+        content (subject_id, term_iri, creator_id, clinical_note_id, encounter_id, span and
+        qualifiers), so submitting the same assertion twice returns 409 rather than creating a
+        second row. This matches the insert-only behaviour of the bulk import path. To record
+        a genuinely distinct assertion, vary the creator_id, qualifiers, or note context.
       operationId: createEvidence
       requestBody:
         required: true
@@ -416,6 +422,26 @@ paths:
                     type: string
         "400":
           description: Missing required fields
+        "409":
+          description: |
+            Evidence already exists. An identical assertion has already been recorded and no
+            new row was written. The response includes the evidence_id of the existing record.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  evidence_id:
+                    type: string
+                    description: ID of the existing evidence record
+                  subject_id:
+                    type: string
+                  term_iri:
+                    type: string
+                  termlink_id:
+                    type: string
       security:
         - sigv4: []
       x-amazon-apigateway-integration:

@@ -349,6 +349,85 @@ def test_create_evidence_multiple_same_termlink(physical_resources, test_subject
     assert by_project["first_evidence_date"] <= by_project["last_evidence_date"]
 
 
+def test_create_evidence_duplicate_rejected(physical_resources, test_subject, test_project_id,
+                                             query_athena, standard_hpo_terms):
+    """
+    Test: Duplicate Evidence Rejected with 409
+
+    evidence_id is a deterministic content hash, so re-submitting an identical
+    assertion must be rejected rather than written a second time. Verifies that
+    the second attempt returns 409 with the existing evidence_id, that no second
+    row is written, and that evidence_count is not double-incremented.
+
+    This matches the insert-only anti-join behavior of the bulk import path.
+    """
+    subject_uuid, project_subject_iri = test_subject
+    term_iri = standard_hpo_terms["seizure"]
+    creator_id = f"dup-test-creator-{uuid.uuid4().hex[:8]}"
+
+    # First submission succeeds
+    result1 = create_evidence(
+        subject_id=subject_uuid,
+        term_iri=term_iri,
+        creator_id=creator_id,
+        physical_resources=physical_resources
+    )
+
+    assert result1["statusCode"] == 201, f"First creation should succeed: {result1}"
+    body1 = json.loads(result1["body"])
+    evidence_id = body1["evidence_id"]
+
+    # Wait for the record to be visible in Iceberg before re-submitting
+    evidence_record = get_evidence_from_iceberg(query_athena, evidence_id)
+    termlink_id = evidence_record["termlink_id"]
+
+    count_after_first = count_evidence_for_termlink(query_athena, termlink_id)
+    by_subject_before, by_project_before = get_subject_terms(
+        query_athena, subject_uuid, termlink_id, test_project_id
+    )
+
+    # Identical second submission is rejected
+    result2 = create_evidence(
+        subject_id=subject_uuid,
+        term_iri=term_iri,
+        creator_id=creator_id,
+        physical_resources=physical_resources
+    )
+
+    assert result2["statusCode"] == 409, \
+        f"Duplicate creation should return 409, got {result2['statusCode']}: {result2}"
+
+    body2 = json.loads(result2["body"])
+    assert body2["evidence_id"] == evidence_id, \
+        "409 response should report the existing evidence_id"
+    assert "message" in body2
+
+    # No second row was written
+    count_after_second = count_evidence_for_termlink(query_athena, termlink_id)
+    assert count_after_second == count_after_first, \
+        f"Duplicate should not add a row: {count_after_first} -> {count_after_second}"
+
+    # Aggregates were not double-incremented
+    by_subject_after, by_project_after = get_subject_terms(
+        query_athena, subject_uuid, termlink_id, test_project_id
+    )
+    assert by_subject_after["evidence_count"] == by_subject_before["evidence_count"], \
+        "Rejected duplicate should not increment by_subject evidence_count"
+    assert by_project_after["evidence_count"] == by_project_before["evidence_count"], \
+        "Rejected duplicate should not increment by_project evidence_count"
+
+    # A different creator for the same subject+term is still accepted
+    result3 = create_evidence(
+        subject_id=subject_uuid,
+        term_iri=term_iri,
+        creator_id=f"{creator_id}-other",
+        physical_resources=physical_resources
+    )
+    assert result3["statusCode"] == 201, \
+        f"Distinct creator_id should still be accepted: {result3}"
+    assert json.loads(result3["body"])["evidence_id"] != evidence_id
+
+
 def test_create_evidence_qualifier_standardization(physical_resources, test_subject, test_project_id,
                                                    query_athena, standard_hpo_terms):
     """
