@@ -226,6 +226,58 @@ def stored_context_flag(name):
     return when(is_set, "true").otherwise("false").alias("qualifier_value")
 
 
+# Mirrors the term_source column in the evidence table DDL.
+# KEEP IN SYNC with functions/create_evidence_table.py.
+# Field order matters: the struct is built in this order so the write does not depend
+# on the order the producer happened to use for its JSON keys.
+TERM_SOURCE_TYPE = StructType([
+    StructField("source", StringType(), True),
+    StructField("version", StringType(), True),
+    StructField("iri", StringType(), True),
+])
+
+
+def term_source_column(df):
+    """
+    Resolve the term_source column to the struct the target table declares.
+
+    Inference cannot be trusted to produce that struct. term_source is optional, so
+    across real batches it arrives three ways, and only one of them lines up with the
+    target on its own:
+
+    - absent from every record, so there is no column at all
+    - present but null in every record, which infers as StringType
+    - present and populated, which infers a struct of whatever subfields appear, in
+      whatever order the producer's JSON used
+
+    The first two carry nothing, so both become a null typed as the target struct.
+    The third is rebuilt field by field, by name, so a producer sending a subset still
+    lands and a producer using a different key order does not have its values shifted
+    into the wrong columns.
+
+    term_source is not an input to either hash, so nothing here can move an
+    evidence_id or a termlink_id.
+    """
+    inferred = (
+        df.schema["term_source"].dataType if "term_source" in df.columns else None
+    )
+
+    if not isinstance(inferred, StructType):
+        return lit(None).cast(TERM_SOURCE_TYPE).alias("term_source")
+
+    present = {field.name for field in inferred.fields}
+    target_names = [field.name for field in TERM_SOURCE_TYPE.fields]
+
+    return struct(*[
+        (
+            col(f"term_source.{name}")
+            if name in present
+            else lit(None).cast(StringType())
+        ).alias(name)
+        for name in target_names
+    ]).alias("term_source")
+
+
 # For PySpark, we need a wrapper that handles the specific columns
 def create_termlink_hash_wrapper(subject_id, term_iri, family, hypothetical, negated):
     """Wrapper for PySpark UDF with current qualifier columns"""
@@ -540,21 +592,18 @@ def main():
         # Join to add subject_id to the DataFrame
         df_with_subjects = df.join(mapping_df, ["project_id", "project_subject_id"], "left")
         
-        # Explode evidence array to create one row per evidence item
-        # Handle optional term_source field
+        # Explode evidence array to create one row per evidence item.
+        # term_source is optional and inference does not reliably give the struct the
+        # target column declares, so it is resolved against the target - see
+        # term_source_column.
         select_cols = [
             col("subject_id"),
             col("project_id"),
             col("project_subject_id"),
             col("term_iri"),
+            term_source_column(df_with_subjects),
             explode("evidence").alias("evidence_item")
         ]
-
-        # Add term_source if it exists, otherwise use null
-        if "term_source" in df_with_subjects.columns:
-            select_cols.insert(-1, col("term_source"))
-        else:
-            select_cols.insert(-1, lit(None).cast(StringType()).alias("term_source"))
 
         evidence_df = df_with_subjects.select(*select_cols)
 
