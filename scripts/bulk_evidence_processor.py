@@ -522,12 +522,61 @@ def main():
         if "term_source" in df_with_subjects.columns:
             select_cols.insert(-1, col("term_source"))
         else:
-            select_cols.insert(-1, lit(None).alias("term_source"))
+            select_cols.insert(-1, lit(None).cast(StringType()).alias("term_source"))
             
         evidence_df = df_with_subjects.select(*select_cols)
 
         # Create common timestamp for all rows in the batch
         run_ts = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+
+        # The input schema is inferred from the JSONL, so a field that is absent or
+        # null in every record of a batch does not come back with the type the
+        # Iceberg table expects: Spark infers an all-null field as string, and a
+        # field no record carries at all is simply not in the schema. A batch of
+        # purely manual assertions carries no spans, so span_start/span_end hit both
+        # cases - hence resolve optional fields by name and pin their types here
+        # rather than trusting inference.
+        evidence_struct = evidence_df.schema["evidence_item"].dataType
+        evidence_field_names = {f.name for f in evidence_struct.fields}
+
+        def evidence_field(name, cast_to=None):
+            """Read an optional field off the exploded evidence struct."""
+            column = (
+                col(f"evidence_item.{name}")
+                if name in evidence_field_names
+                else lit(None)
+            )
+            if cast_to is not None:
+                column = column.cast(cast_to)
+            return column.alias(name)
+
+        # contexts is optional as a whole, and is inferred as string (not struct)
+        # when every record leaves it null, so it can't always be traversed.
+        contexts_type = (
+            evidence_struct["contexts"].dataType
+            if "contexts" in evidence_field_names
+            else None
+        )
+        context_field_names = (
+            {f.name for f in contexts_type.fields}
+            if isinstance(contexts_type, StructType)
+            else set()
+        )
+
+        def context_field(name):
+            """Read an optional context flag. Absent means false - see the hash wrappers."""
+            if name in context_field_names:
+                # Keep whatever type the batch used (bool, string or number); both the
+                # qualifier expressions and the hash wrappers already normalize those.
+                return col(f"evidence_item.contexts.{name}").alias(name)
+            # An untyped null literal is not safe to compare or hand to a UDF, so give
+            # the absent case a concrete type. Null still normalizes to false.
+            return lit(None).cast(StringType()).alias(name)
+
+        logger.info(
+            f"Evidence fields present in batch: {sorted(evidence_field_names)}; "
+            f"context flags present: {sorted(context_field_names)}"
+        )
 
         # Flatten evidence structure to match Iceberg schema
         flattened_df = evidence_df.select(
@@ -535,20 +584,20 @@ def main():
             "term_iri",
             "term_source",  # Add term_source field
             col("evidence_item.type").alias("evidence_type"),
-            col("evidence_item.clinical_note_id").alias("clinical_note_id"),
-            col("evidence_item.encounter_id").alias("encounter_id"),
+            evidence_field("clinical_note_id", StringType()),
+            evidence_field("encounter_id", StringType()),
             col("evidence_item.evidence_creator_id").alias("evidence_creator_id"),
             col("evidence_item.evidence_creator_type").alias("evidence_creator_type"),
-            col("evidence_item.evidence_creator_name").alias("evidence_creator_name"),
-            col("evidence_item.note_timestamp").alias("note_timestamp"),
-            col("evidence_item.note_type").alias("note_type"),
-            col("evidence_item.provider_type").alias("provider_type"),
-            col("evidence_item.author_specialty").alias("author_specialty"),
-            col("evidence_item.span_start").alias("span_start"),
-            col("evidence_item.span_end").alias("span_end"),
-            col("evidence_item.contexts.negated").alias("negated"),
-            col("evidence_item.contexts.family").alias("family"),
-            col("evidence_item.contexts.hypothetical").alias("hypothetical")
+            evidence_field("evidence_creator_name", StringType()),
+            evidence_field("note_timestamp", StringType()),
+            evidence_field("note_type", StringType()),
+            evidence_field("provider_type", StringType()),
+            evidence_field("author_specialty", StringType()),
+            evidence_field("span_start", IntegerType()),
+            evidence_field("span_end", IntegerType()),
+            context_field("negated"),
+            context_field("family"),
+            context_field("hypothetical")
         ).withColumn("run_id", lit(args.run_id)) \
          .withColumn("evidence_id", generate_evidence_hash_udf(
             col("subject_id"),
