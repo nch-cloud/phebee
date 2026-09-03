@@ -24,7 +24,7 @@ import logging
 import boto3
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
-from pyspark.sql.types import StringType
+from pyspark.sql.types import StringType, DateType
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -160,8 +160,12 @@ def main():
                 F.col("subject_id")
             ).alias("subject_iri"),
             F.countDistinct("evidence_id").alias("evidence_count"),
-            F.min("note_date").alias("first_evidence_date"),
-            F.max("note_date").alias("last_evidence_date"),
+            # Prefer note_date (clinical observation date). Fall back to created_date
+            # (import date) for evidence with no note behind it - e.g. manually curated
+            # records, where note_date is null. Without the fallback those rows aggregate
+            # to null dates, since MIN/MAX skip nulls.
+            F.min(F.coalesce(F.col("note_date").cast(DateType()), F.col("created_date").cast(DateType()))).alias("first_evidence_date"),
+            F.max(F.coalesce(F.col("note_date").cast(DateType()), F.col("created_date").cast(DateType()))).alias("last_evidence_date"),
             # Collect qualifier structs directly (matches evidence table schema)
             F.collect_set("qualifier_struct").alias("qualifiers")
         ).select(
@@ -212,8 +216,10 @@ def main():
                 F.col("project_subject_id")
             ).alias("project_subject_iri"),
             F.countDistinct("evidence_id").alias("evidence_count"),
-            F.min("note_date").alias("first_evidence_date"),
-            F.max("note_date").alias("last_evidence_date"),
+            # Prefer note_date, falling back to created_date for note-less evidence.
+            # See the by_subject aggregation above for the rationale.
+            F.min(F.coalesce(F.col("note_date").cast(DateType()), F.col("created_date").cast(DateType()))).alias("first_evidence_date"),
+            F.max(F.coalesce(F.col("note_date").cast(DateType()), F.col("created_date").cast(DateType()))).alias("last_evidence_date"),
             # Collect qualifier structs directly (matches evidence table schema)
             F.collect_set("qualifier_struct").alias("qualifiers")
         ).select(

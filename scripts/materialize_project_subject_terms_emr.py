@@ -165,8 +165,13 @@ def main():
                 F.col("subject_id")
             ).alias("subject_iri"),
             F.countDistinct("evidence_id").alias("evidence_count"),  # Count distinct evidence records by evidence_id
-            F.min("note_date").alias("first_evidence_date"),  # Use note_date for clinical observation date
-            F.max("note_date").alias("last_evidence_date"),  # Use note_date for clinical observation date
+            # Prefer note_date (clinical observation date). Fall back to created_date
+            # (import date) for evidence with no note behind it - e.g. manually curated
+            # records, where note_date is null. Without the fallback those rows aggregate
+            # to null dates, since MIN/MAX skip nulls.
+            # Cast to date to match the target column type, as the Athena queries do.
+            F.min(F.coalesce(F.col("note_date").cast(DateType()), F.col("created_date").cast(DateType()))).alias("first_evidence_date"),
+            F.max(F.coalesce(F.col("note_date").cast(DateType()), F.col("created_date").cast(DateType()))).alias("last_evidence_date"),
             # Collect qualifier structs directly (matches evidence table schema)
             F.collect_set("qualifier_struct").alias("qualifiers")
         ).select(
@@ -245,8 +250,10 @@ def main():
                 F.col("project_subject_id")
             ).alias("project_subject_iri"),
             F.countDistinct("evidence_id").alias("evidence_count"),  # Count distinct evidence records by evidence_id
-            F.min("note_date").alias("first_evidence_date"),  # Use note_date for clinical observation date
-            F.max("note_date").alias("last_evidence_date"),  # Use note_date for clinical observation date
+            # Prefer note_date, falling back to created_date for note-less evidence.
+            # See the by_subject aggregation above for the rationale.
+            F.min(F.coalesce(F.col("note_date").cast(DateType()), F.col("created_date").cast(DateType()))).alias("first_evidence_date"),
+            F.max(F.coalesce(F.col("note_date").cast(DateType()), F.col("created_date").cast(DateType()))).alias("last_evidence_date"),
             # Collect qualifier structs directly (matches evidence table schema)
             F.collect_set("qualifier_struct").alias("qualifiers")
         ).select(

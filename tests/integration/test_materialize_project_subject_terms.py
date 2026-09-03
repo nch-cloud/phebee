@@ -335,6 +335,81 @@ def test_materialize_evidence_dates_aggregated(
     assert row["first_evidence_date"] <= row["last_evidence_date"]
 
 
+def test_materialize_curated_evidence_dates_fall_back_to_created_date(
+    physical_resources,
+    test_project_id,
+    test_subject,
+    create_evidence_helper,
+    standard_hpo_terms,
+    query_athena
+):
+    """
+    Evidence with no note behind it still gets dated.
+
+    Manually curated evidence has no clinical observation date, so note_timestamp
+    is null and note_context.note_date is null with it. Materialization coalesces
+    to created_date so these rows don't silently aggregate to null dates - MIN/MAX
+    skip nulls, and the target columns are nullable, so nothing would error.
+    """
+    subject_uuid, _ = test_subject
+
+    # note_timestamp=None is the point of the test: no clinical date to aggregate.
+    # The other note fields go with it, so source_level lands on "subject".
+    create_evidence_helper(
+        subject_id=subject_uuid,
+        term_iri=standard_hpo_terms["disturbance_in_speech"],
+        evidence_type="curated",
+        note_timestamp=None,
+        clinical_note_id=None,
+        encounter_id=None,
+        note_type=None,
+        provider_type=None,
+        author_specialty=None,
+        span_start=None,
+        span_end=None,
+        evidence_creator_id="curator@example.org",
+        evidence_creator_type="human",  # API vocabulary; bulk import uses "manual"
+        evidence_creator_name="Test Curator",
+    )
+
+    result = invoke_materialize(test_project_id, physical_resources)
+    assert result["statusCode"] == 200
+
+    # Confirm the premise: the evidence really has no note date, so a regression
+    # that drops the COALESCE would produce nulls below rather than passing.
+    evidence_dates = query_athena(f"""
+        SELECT note_context.note_date AS note_date, created_date
+        FROM evidence
+        WHERE subject_id = '{subject_uuid}'
+        AND term_iri = '{standard_hpo_terms["disturbance_in_speech"]}'
+    """)
+    assert len(evidence_dates) == 1
+    assert not evidence_dates[0]["note_date"], \
+        f"Fixture should have no note_date, got {evidence_dates[0]['note_date']!r}"
+    expected_date = evidence_dates[0]["created_date"]
+
+    for table in ("subject_terms_by_subject", "subject_terms_by_project_term"):
+        results = query_athena(f"""
+            SELECT first_evidence_date, last_evidence_date
+            FROM {table}
+            WHERE subject_id = '{subject_uuid}'
+            AND term_iri = '{standard_hpo_terms["disturbance_in_speech"]}'
+        """)
+        assert len(results) == 1, f"{table}: expected one row"
+        row = results[0]
+
+        assert row["first_evidence_date"] is not None, \
+            f"{table}: first_evidence_date is null - the created_date fallback is not applying"
+        assert row["last_evidence_date"] is not None, \
+            f"{table}: last_evidence_date is null - the created_date fallback is not applying"
+
+        # Only one evidence record, so both ends collapse to its created_date
+        assert row["first_evidence_date"] == expected_date, \
+            f"{table}: expected {expected_date}, got {row['first_evidence_date']}"
+        assert row["last_evidence_date"] == expected_date, \
+            f"{table}: expected {expected_date}, got {row['last_evidence_date']}"
+
+
 def test_materialize_idempotency(
     physical_resources,
     test_project_id,
