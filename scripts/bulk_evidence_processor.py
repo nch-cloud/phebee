@@ -176,16 +176,20 @@ def normalize_qualifiers(qualifiers):
 def create_termlink_hash_wrapper(subject_id, term_iri, family, hypothetical, negated):
     """Wrapper for PySpark UDF with current qualifier columns"""
     qualifiers = []
-    
+
     # Convert numerical values to booleans for cleaner hash format
     def normalize_qualifier_value(value):
-        if value in ["false", "0", 0, 0.0, False]:
+        # A missing context is the same as a false one. Spark yields None both for
+        # an explicit JSON null and for a key absent from the record, and the stored
+        # qualifiers array already writes "false" in that case - so treating None as
+        # anything else would make the hash disagree with the data it describes.
+        if value is None or value in ["false", "0", 0, 0.0, False]:
             return None  # Exclude falsey values
         elif value in ["true", "1", 1, 1.0, True]:
             return "true"
         else:
             return str(value)  # Keep other values as strings
-    
+
     # Include name:value for any non-falsey qualifier
     family_val = normalize_qualifier_value(family)
     if family_val:
@@ -212,15 +216,17 @@ def create_evidence_hash_wrapper(subject_id, clinical_note_id, encounter_id, ter
     """Wrapper for PySpark UDF to generate evidence hash"""
     # Build qualifiers list with name:value pairs
     qualifiers = []
-    
+
     def normalize_qualifier_value(value):
-        if value in ["false", "0", 0, 0.0, False]:
+        # None (explicit JSON null or key absent) is equivalent to false - see the
+        # note in create_termlink_hash_wrapper above.
+        if value is None or value in ["false", "0", 0, 0.0, False]:
             return None  # Exclude falsey values (consistent with termlink hash)
         elif value in ["true", "1", 1, 1.0, True]:
             return "true"
         else:
             return str(value)
-    
+
     # Include name:value for any non-falsey qualifier (consistent with termlink hash)
     family_val = normalize_qualifier_value(family)
     if family_val:
