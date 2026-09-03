@@ -10,9 +10,9 @@ from urllib.parse import quote
 
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
-    col, lit, explode, concat_ws, coalesce, current_timestamp, to_date, 
-    struct, array, when, to_json, sha2, input_file_name, broadcast, 
-    raise_error, concat, udf
+    col, lit, explode, concat_ws, coalesce, current_timestamp, to_date,
+    struct, array, when, to_json, sha2, input_file_name, broadcast,
+    raise_error, concat, udf, lower
 )
 from pyspark.sql.types import (
     StructType, StructField, StringType, IntegerType, ArrayType
@@ -172,23 +172,64 @@ def normalize_qualifiers(qualifiers):
     return sorted(normalized)
 
 
+def normalize_qualifier_value(value):
+    """
+    Reduce an untyped qualifier value to the canonical string used for hashing.
+
+    KEEP IN SYNC WITH canonical_qualifier_value in phebee/utils/qualifier.py!
+    This script runs standalone on EMR and cannot import the phebee layer, so the
+    two have to agree by inspection. tests/unit/test_qualifier_canonicalization.py
+    compares this function's output against the layer's for every spelling, so the
+    pair cannot drift silently.
+
+    Returns None when the qualifier is inactive and should be dropped rather than
+    hashed. A missing context is the same as a false one: Spark yields None both for
+    an explicit JSON null and for a key absent from the record, and the stored
+    qualifiers array already writes "false" in that case - so treating None as
+    anything else would make the hash disagree with the data it describes.
+
+    Boolean spellings match case-insensitively, so a producer writing "True" lands
+    on the same hash as a JSON true. Domain values keep their original case.
+    """
+    # Compare case-insensitively for strings, but return the original spelling for
+    # domain values - "Mild" should stay "Mild", not become "mild".
+    comparable = value.lower() if isinstance(value, str) else value
+
+    if comparable is None or comparable in ["false", "0", 0, 0.0, False]:
+        return None  # Exclude falsey values
+    elif comparable in ["true", "1", 1, 1.0, True]:
+        return "true"
+    else:
+        return str(value)  # Keep other values as strings
+
+
+def stored_context_flag(name):
+    """
+    Render a boolean context flag as it is written to the stored qualifiers array.
+
+    This has to agree with normalize_qualifier_value, which decides what the hash
+    sees. Otherwise a row can say qualifier_value="false" while its evidence_id was
+    computed with the flag set - an inconsistency nothing surfaces, because both
+    halves look plausible on their own.
+
+    The numeric comparison catches ints, floats and numeric strings (Spark casts the
+    string side to double), the boolean comparison catches a JSON true, and the
+    lowercased string comparison catches "true", "True" and "TRUE". Everything else,
+    including null and an absent key, reads as false.
+    """
+    flag = col(name)
+    is_set = (
+        (flag == 1.0)
+        | (flag == True)  # noqa: E712 - Spark Column, not a Python bool
+        | (lower(flag.cast(StringType())) == "true")
+    )
+    return when(is_set, "true").otherwise("false").alias("qualifier_value")
+
+
 # For PySpark, we need a wrapper that handles the specific columns
 def create_termlink_hash_wrapper(subject_id, term_iri, family, hypothetical, negated):
     """Wrapper for PySpark UDF with current qualifier columns"""
     qualifiers = []
-
-    # Convert numerical values to booleans for cleaner hash format
-    def normalize_qualifier_value(value):
-        # A missing context is the same as a false one. Spark yields None both for
-        # an explicit JSON null and for a key absent from the record, and the stored
-        # qualifiers array already writes "false" in that case - so treating None as
-        # anything else would make the hash disagree with the data it describes.
-        if value is None or value in ["false", "0", 0, 0.0, False]:
-            return None  # Exclude falsey values
-        elif value in ["true", "1", 1, 1.0, True]:
-            return "true"
-        else:
-            return str(value)  # Keep other values as strings
 
     # Include name:value for any non-falsey qualifier
     family_val = normalize_qualifier_value(family)
@@ -217,17 +258,8 @@ def create_evidence_hash_wrapper(subject_id, clinical_note_id, encounter_id, ter
     # Build qualifiers list with name:value pairs
     qualifiers = []
 
-    def normalize_qualifier_value(value):
-        # None (explicit JSON null or key absent) is equivalent to false - see the
-        # note in create_termlink_hash_wrapper above.
-        if value is None or value in ["false", "0", 0, 0.0, False]:
-            return None  # Exclude falsey values (consistent with termlink hash)
-        elif value in ["true", "1", 1, 1.0, True]:
-            return "true"
-        else:
-            return str(value)
-
-    # Include name:value for any non-falsey qualifier (consistent with termlink hash)
+    # Include name:value for any non-falsey qualifier (consistent with termlink hash,
+    # which shares the module-level normalize_qualifier_value above)
     family_val = normalize_qualifier_value(family)
     if family_val:
         qualifiers.append(f"family:{family_val}")
@@ -512,18 +544,18 @@ def main():
         # Handle optional term_source field
         select_cols = [
             col("subject_id"),
-            col("project_id"), 
+            col("project_id"),
             col("project_subject_id"),
             col("term_iri"),
             explode("evidence").alias("evidence_item")
         ]
-        
+
         # Add term_source if it exists, otherwise use null
         if "term_source" in df_with_subjects.columns:
             select_cols.insert(-1, col("term_source"))
         else:
             select_cols.insert(-1, lit(None).cast(StringType()).alias("term_source"))
-            
+
         evidence_df = df_with_subjects.select(*select_cols)
 
         # Create common timestamp for all rows in the batch
@@ -652,15 +684,15 @@ def main():
          .withColumn("qualifiers", array(
             struct(
                 lit("negated").alias("qualifier_type"),
-                when((col("negated") == 1.0) | (col("negated") == "true") | (col("negated") == True), "true").otherwise("false").alias("qualifier_value")
+                stored_context_flag("negated")
             ),
             struct(
                 lit("family").alias("qualifier_type"),
-                when((col("family") == 1.0) | (col("family") == "true") | (col("family") == True), "true").otherwise("false").alias("qualifier_value")
+                stored_context_flag("family")
             ),
             struct(
                 lit("hypothetical").alias("qualifier_type"),
-                when((col("hypothetical") == 1.0) | (col("hypothetical") == "true") | (col("hypothetical") == True), "true").otherwise("false").alias("qualifier_value")
+                stored_context_flag("hypothetical")
             )
          )) \
          .withColumn("created_timestamp", lit(run_ts).cast("timestamp")) \

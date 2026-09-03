@@ -74,35 +74,34 @@ def lambda_handler(event, context):
         # - dict: {"type": "value", ...} - preserves both type and value
         # - list: ["type:value", ...] - legacy string format
         # - list: [Qualifier(...), ...] - already Qualifier objects
-        from phebee.utils.qualifier import normalize_qualifier_type
         qualifier_list = []
         if qualifiers:
+            # Qualifier.from_raw canonicalizes type and value together and returns None
+            # for an inactive qualifier, so every input shape funnels through one truth
+            # table. It has to be the same one the bulk importer uses: a JSON boolean
+            # true reaching the hash as "True" rather than "true" gives the identical
+            # assertion a different evidence_id depending on which path loaded it.
             if isinstance(qualifiers, dict):
                 # Dict format: {"onset": "HP:0003593", "negated": "true", ...}
                 # IMPORTANT: Preserve BOTH type and value (was a bug - previously threw away values)
                 for qualifier_type, qualifier_value in qualifiers.items():
-                    if qualifier_value not in [False, "false", "0", 0, 0.0]:
-                        # Normalize qualifier type to canonical form
-                        # (internal qualifiers stored as short names, external as full IRIs)
-                        normalized_type = normalize_qualifier_type(qualifier_type)
-                        qualifier_list.append(
-                            Qualifier(type=normalized_type, value=str(qualifier_value))
-                        )
+                    qualifier = Qualifier.from_raw(qualifier_type, qualifier_value)
+                    if qualifier:
+                        qualifier_list.append(qualifier)
             elif isinstance(qualifiers, list):
                 # List format - could be strings (legacy) or Qualifier objects
                 for q in qualifiers:
                     if isinstance(q, Qualifier):
-                        # Already a Qualifier - normalize its type
-                        normalized_type = normalize_qualifier_type(q.type)
-                        qualifier_list.append(Qualifier(type=normalized_type, value=q.value))
-                    elif isinstance(q, str):
-                        # Legacy string format - parse to Qualifier, then normalize
-                        if q:  # Skip empty strings
-                            parsed = Qualifier.from_string(q)
-                            normalized_type = normalize_qualifier_type(parsed.type)
-                            qualifier_list.append(Qualifier(type=normalized_type, value=parsed.value))
+                        qualifier = Qualifier.from_raw(q.type, q.value)
+                    elif isinstance(q, str) and q:  # Skip empty strings
+                        # Legacy string format - parse, then canonicalize the parsed value
+                        parsed = Qualifier.from_string(q)
+                        qualifier = Qualifier.from_raw(parsed.type, parsed.value)
                     else:
                         logger.warning(f"Unexpected qualifier item type: {type(q)}")
+                        continue
+                    if qualifier:
+                        qualifier_list.append(qualifier)
             else:
                 logger.warning(f"Unexpected qualifiers type: {type(qualifiers)}")
                 qualifier_list = []
