@@ -9,6 +9,57 @@ from dataclasses import dataclass
 from typing import List, Optional, Dict, Any
 
 
+# Value spellings that mean "this qualifier does not apply", and those that mean it does.
+# KEEP IN SYNC with normalize_qualifier_value in scripts/bulk_evidence_processor.py.
+# The bulk importer runs standalone on EMR and cannot import this layer, so the two
+# implementations have to agree by inspection; test_qualifier_canonicalization.py pins
+# them against each other so the pair cannot drift silently.
+_INACTIVE_VALUES = [False, "false", "0", 0, 0.0]
+_ACTIVE_VALUES = [True, "true", "1", 1, 1.0]
+
+
+def canonical_qualifier_value(value: Any) -> Optional[str]:
+    """
+    Reduce an untyped qualifier value to the canonical string used for hashing.
+
+    Qualifier values arrive straight from JSON, so the same intent shows up as a
+    bool, a number or a string. Hashing str(value) directly is what let the API and
+    bulk paths disagree: str(True) is "True", which hashes differently from the
+    "true" the bulk importer derives from the same input, so the identical assertion
+    got two different evidence_ids depending on which path loaded it.
+
+    Returns None when the qualifier is inactive and should be dropped rather than
+    hashed or stored. Absent, null and false all mean the same thing.
+
+    Boolean spellings match case-insensitively, so a client building a qualifier with
+    f"negated:{flag}" from a Python bool - which yields "True" - lands on the same
+    hash as a JSON true. Domain values keep their original case.
+
+    Domain values pass through unchanged, so "mild" and "HP:0003593" survive.
+
+    Examples:
+        >>> canonical_qualifier_value(True)
+        'true'
+        >>> canonical_qualifier_value("True")
+        'true'
+        >>> canonical_qualifier_value(1.0)
+        'true'
+        >>> canonical_qualifier_value(None) is None
+        True
+        >>> canonical_qualifier_value("Mild")
+        'Mild'
+    """
+    # Compare case-insensitively for strings, but return the original spelling for
+    # domain values - "Mild" should stay "Mild", not become "mild".
+    comparable = value.lower() if isinstance(value, str) else value
+
+    if comparable is None or comparable in _INACTIVE_VALUES:
+        return None
+    if comparable in _ACTIVE_VALUES:
+        return "true"
+    return str(value)
+
+
 @dataclass(frozen=True)
 class Qualifier:
     """
@@ -82,6 +133,36 @@ class Qualifier:
             # Internal qualifier - split on first colon
             type_part, value_part = s.split(':', 1)
             return cls(type=type_part, value=value_part)
+
+    @classmethod
+    def from_raw(cls, qualifier_type: str, value: Any) -> Optional['Qualifier']:
+        """
+        Create from an untyped input value, or None if the qualifier is inactive.
+
+        Use this for values arriving from a request body or any other JSON source,
+        where the value may be a bool, number, string or null. Both the type and the
+        value are normalized, so callers do not need to carry their own falsey
+        filter - which is how the previous copies of that filter drifted apart.
+
+        Args:
+            qualifier_type: Qualifier type, short name or full IRI
+            value: Untyped value from JSON
+
+        Returns:
+            Qualifier with canonical type and value, or None if inactive
+
+        Examples:
+            >>> Qualifier.from_raw("negated", True)
+            Qualifier(type='negated', value='true')
+            >>> Qualifier.from_raw("negated", None) is None
+            True
+            >>> Qualifier.from_raw("negated", False) is None
+            True
+        """
+        canonical = canonical_qualifier_value(value)
+        if canonical is None:
+            return None
+        return cls(type=normalize_qualifier_type(qualifier_type), value=canonical)
 
     @classmethod
     def from_dict(cls, d: Dict[str, str]) -> 'Qualifier':

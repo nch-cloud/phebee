@@ -2157,8 +2157,11 @@ def materialize_project(project_id: str, batch_size: int = 100) -> Dict[str, int
                     CONCAT('http://ods.nationwidechildrens.org/phebee/subjects/', subject_id) as subject_iri,
                     term_iri,
                     COUNT(*) as evidence_count,
-                    MIN(CAST(note_context.note_date AS DATE)) as first_evidence_date,
-                    MAX(CAST(note_context.note_date AS DATE)) as last_evidence_date,
+                    -- Prefer note_date (clinical observation date), falling back to
+                    -- created_date (import date) for evidence with no note behind it,
+                    -- e.g. manually curated records where note_date is null.
+                    MIN(COALESCE(CAST(note_context.note_date AS DATE), created_date)) as first_evidence_date,
+                    MAX(COALESCE(CAST(note_context.note_date AS DATE), created_date)) as last_evidence_date,
                     termlink_id,
                     ARRAY_AGG(DISTINCT
                         CASE
@@ -2213,8 +2216,9 @@ def materialize_project(project_id: str, batch_size: int = 100) -> Dict[str, int
                     CONCAT('http://ods.nationwidechildrens.org/phebee/projects/{project_id}/', m.project_subject_id) as project_subject_iri,
                     e.term_iri,
                     COUNT(*) as evidence_count,
-                    MIN(CAST(e.note_context.note_date AS DATE)) as first_evidence_date,
-                    MAX(CAST(e.note_context.note_date AS DATE)) as last_evidence_date,
+                    -- Prefer note_date, falling back to created_date for note-less evidence.
+                    MIN(COALESCE(CAST(e.note_context.note_date AS DATE), e.created_date)) as first_evidence_date,
+                    MAX(COALESCE(CAST(e.note_context.note_date AS DATE), e.created_date)) as last_evidence_date,
                     e.termlink_id as termlink_id,
                     ARRAY_AGG(DISTINCT
                         CASE
@@ -2407,8 +2411,11 @@ def materialize_subject_terms(subject_id: str) -> Dict[str, int]:
             CONCAT('http://ods.nationwidechildrens.org/phebee/subjects/', subject_id) as subject_iri,
             term_iri,
             COUNT(*) as evidence_count,
-            MIN(CAST(note_context.note_date AS DATE)) as first_evidence_date,
-            MAX(CAST(note_context.note_date AS DATE)) as last_evidence_date,
+            -- Prefer note_date (clinical observation date), falling back to
+            -- created_date (import date) for evidence with no note behind it,
+            -- e.g. manually curated records where note_date is null.
+            MIN(COALESCE(CAST(note_context.note_date AS DATE), created_date)) as first_evidence_date,
+            MAX(COALESCE(CAST(note_context.note_date AS DATE), created_date)) as last_evidence_date,
             termlink_id,
             ARRAY_AGG(DISTINCT
                 CASE
@@ -2462,8 +2469,9 @@ def materialize_subject_terms(subject_id: str) -> Dict[str, int]:
             CONCAT('http://ods.nationwidechildrens.org/phebee/projects/', m.project_id, '/', m.project_subject_id) as project_subject_iri,
             e.term_iri,
             COUNT(*) as evidence_count,
-            MIN(CAST(e.note_context.note_date AS DATE)) as first_evidence_date,
-            MAX(CAST(e.note_context.note_date AS DATE)) as last_evidence_date,
+            -- Prefer note_date, falling back to created_date for note-less evidence.
+            MIN(COALESCE(CAST(e.note_context.note_date AS DATE), e.created_date)) as first_evidence_date,
+            MAX(COALESCE(CAST(e.note_context.note_date AS DATE), e.created_date)) as last_evidence_date,
             e.termlink_id as termlink_id,
             ARRAY_AGG(DISTINCT
                 CASE

@@ -10,9 +10,9 @@ from urllib.parse import quote
 
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
-    col, lit, explode, concat_ws, coalesce, current_timestamp, to_date, 
-    struct, array, when, to_json, sha2, input_file_name, broadcast, 
-    raise_error, concat, udf
+    col, lit, explode, concat_ws, coalesce, current_timestamp, to_date,
+    struct, array, when, to_json, sha2, input_file_name, broadcast,
+    raise_error, concat, udf, lower
 )
 from pyspark.sql.types import (
     StructType, StructField, StringType, IntegerType, ArrayType
@@ -172,20 +172,117 @@ def normalize_qualifiers(qualifiers):
     return sorted(normalized)
 
 
+def normalize_qualifier_value(value):
+    """
+    Reduce an untyped qualifier value to the canonical string used for hashing.
+
+    KEEP IN SYNC WITH canonical_qualifier_value in phebee/utils/qualifier.py!
+    This script runs standalone on EMR and cannot import the phebee layer, so the
+    two have to agree by inspection. tests/unit/test_qualifier_canonicalization.py
+    compares this function's output against the layer's for every spelling, so the
+    pair cannot drift silently.
+
+    Returns None when the qualifier is inactive and should be dropped rather than
+    hashed. A missing context is the same as a false one: Spark yields None both for
+    an explicit JSON null and for a key absent from the record, and the stored
+    qualifiers array already writes "false" in that case - so treating None as
+    anything else would make the hash disagree with the data it describes.
+
+    Boolean spellings match case-insensitively, so a producer writing "True" lands
+    on the same hash as a JSON true. Domain values keep their original case.
+    """
+    # Compare case-insensitively for strings, but return the original spelling for
+    # domain values - "Mild" should stay "Mild", not become "mild".
+    comparable = value.lower() if isinstance(value, str) else value
+
+    if comparable is None or comparable in ["false", "0", 0, 0.0, False]:
+        return None  # Exclude falsey values
+    elif comparable in ["true", "1", 1, 1.0, True]:
+        return "true"
+    else:
+        return str(value)  # Keep other values as strings
+
+
+def stored_context_flag(name):
+    """
+    Render a boolean context flag as it is written to the stored qualifiers array.
+
+    This has to agree with normalize_qualifier_value, which decides what the hash
+    sees. Otherwise a row can say qualifier_value="false" while its evidence_id was
+    computed with the flag set - an inconsistency nothing surfaces, because both
+    halves look plausible on their own.
+
+    The numeric comparison catches ints, floats and numeric strings (Spark casts the
+    string side to double), the boolean comparison catches a JSON true, and the
+    lowercased string comparison catches "true", "True" and "TRUE". Everything else,
+    including null and an absent key, reads as false.
+    """
+    flag = col(name)
+    is_set = (
+        (flag == 1.0)
+        | (flag == True)  # noqa: E712 - Spark Column, not a Python bool
+        | (lower(flag.cast(StringType())) == "true")
+    )
+    return when(is_set, "true").otherwise("false").alias("qualifier_value")
+
+
+# Mirrors the term_source column in the evidence table DDL.
+# KEEP IN SYNC with functions/create_evidence_table.py.
+# Field order matters: the struct is built in this order so the write does not depend
+# on the order the producer happened to use for its JSON keys.
+TERM_SOURCE_TYPE = StructType([
+    StructField("source", StringType(), True),
+    StructField("version", StringType(), True),
+    StructField("iri", StringType(), True),
+])
+
+
+def term_source_column(df):
+    """
+    Resolve the term_source column to the struct the target table declares.
+
+    Inference cannot be trusted to produce that struct. term_source is optional, so
+    across real batches it arrives three ways, and only one of them lines up with the
+    target on its own:
+
+    - absent from every record, so there is no column at all
+    - present but null in every record, which infers as StringType
+    - present and populated, which infers a struct of whatever subfields appear, in
+      whatever order the producer's JSON used
+
+    The first two carry nothing, so both become a null typed as the target struct.
+    The third is rebuilt field by field, by name, so a producer sending a subset still
+    lands and a producer using a different key order does not have its values shifted
+    into the wrong columns.
+
+    term_source is not an input to either hash, so nothing here can move an
+    evidence_id or a termlink_id.
+    """
+    inferred = (
+        df.schema["term_source"].dataType if "term_source" in df.columns else None
+    )
+
+    if not isinstance(inferred, StructType):
+        return lit(None).cast(TERM_SOURCE_TYPE).alias("term_source")
+
+    present = {field.name for field in inferred.fields}
+    target_names = [field.name for field in TERM_SOURCE_TYPE.fields]
+
+    return struct(*[
+        (
+            col(f"term_source.{name}")
+            if name in present
+            else lit(None).cast(StringType())
+        ).alias(name)
+        for name in target_names
+    ]).alias("term_source")
+
+
 # For PySpark, we need a wrapper that handles the specific columns
 def create_termlink_hash_wrapper(subject_id, term_iri, family, hypothetical, negated):
     """Wrapper for PySpark UDF with current qualifier columns"""
     qualifiers = []
-    
-    # Convert numerical values to booleans for cleaner hash format
-    def normalize_qualifier_value(value):
-        if value in ["false", "0", 0, 0.0, False]:
-            return None  # Exclude falsey values
-        elif value in ["true", "1", 1, 1.0, True]:
-            return "true"
-        else:
-            return str(value)  # Keep other values as strings
-    
+
     # Include name:value for any non-falsey qualifier
     family_val = normalize_qualifier_value(family)
     if family_val:
@@ -212,16 +309,9 @@ def create_evidence_hash_wrapper(subject_id, clinical_note_id, encounter_id, ter
     """Wrapper for PySpark UDF to generate evidence hash"""
     # Build qualifiers list with name:value pairs
     qualifiers = []
-    
-    def normalize_qualifier_value(value):
-        if value in ["false", "0", 0, 0.0, False]:
-            return None  # Exclude falsey values (consistent with termlink hash)
-        elif value in ["true", "1", 1, 1.0, True]:
-            return "true"
-        else:
-            return str(value)
-    
-    # Include name:value for any non-falsey qualifier (consistent with termlink hash)
+
+    # Include name:value for any non-falsey qualifier (consistent with termlink hash,
+    # which shares the module-level normalize_qualifier_value above)
     family_val = normalize_qualifier_value(family)
     if family_val:
         qualifiers.append(f"family:{family_val}")
@@ -502,26 +592,72 @@ def main():
         # Join to add subject_id to the DataFrame
         df_with_subjects = df.join(mapping_df, ["project_id", "project_subject_id"], "left")
         
-        # Explode evidence array to create one row per evidence item
-        # Handle optional term_source field
+        # Explode evidence array to create one row per evidence item.
+        # term_source is optional and inference does not reliably give the struct the
+        # target column declares, so it is resolved against the target - see
+        # term_source_column.
         select_cols = [
             col("subject_id"),
-            col("project_id"), 
+            col("project_id"),
             col("project_subject_id"),
             col("term_iri"),
+            term_source_column(df_with_subjects),
             explode("evidence").alias("evidence_item")
         ]
-        
-        # Add term_source if it exists, otherwise use null
-        if "term_source" in df_with_subjects.columns:
-            select_cols.insert(-1, col("term_source"))
-        else:
-            select_cols.insert(-1, lit(None).alias("term_source"))
-            
+
         evidence_df = df_with_subjects.select(*select_cols)
 
         # Create common timestamp for all rows in the batch
         run_ts = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+
+        # The input schema is inferred from the JSONL, so a field that is absent or
+        # null in every record of a batch does not come back with the type the
+        # Iceberg table expects: Spark infers an all-null field as string, and a
+        # field no record carries at all is simply not in the schema. A batch of
+        # purely manual assertions carries no spans, so span_start/span_end hit both
+        # cases - hence resolve optional fields by name and pin their types here
+        # rather than trusting inference.
+        evidence_struct = evidence_df.schema["evidence_item"].dataType
+        evidence_field_names = {f.name for f in evidence_struct.fields}
+
+        def evidence_field(name, cast_to=None):
+            """Read an optional field off the exploded evidence struct."""
+            column = (
+                col(f"evidence_item.{name}")
+                if name in evidence_field_names
+                else lit(None)
+            )
+            if cast_to is not None:
+                column = column.cast(cast_to)
+            return column.alias(name)
+
+        # contexts is optional as a whole, and is inferred as string (not struct)
+        # when every record leaves it null, so it can't always be traversed.
+        contexts_type = (
+            evidence_struct["contexts"].dataType
+            if "contexts" in evidence_field_names
+            else None
+        )
+        context_field_names = (
+            {f.name for f in contexts_type.fields}
+            if isinstance(contexts_type, StructType)
+            else set()
+        )
+
+        def context_field(name):
+            """Read an optional context flag. Absent means false - see the hash wrappers."""
+            if name in context_field_names:
+                # Keep whatever type the batch used (bool, string or number); both the
+                # qualifier expressions and the hash wrappers already normalize those.
+                return col(f"evidence_item.contexts.{name}").alias(name)
+            # An untyped null literal is not safe to compare or hand to a UDF, so give
+            # the absent case a concrete type. Null still normalizes to false.
+            return lit(None).cast(StringType()).alias(name)
+
+        logger.info(
+            f"Evidence fields present in batch: {sorted(evidence_field_names)}; "
+            f"context flags present: {sorted(context_field_names)}"
+        )
 
         # Flatten evidence structure to match Iceberg schema
         flattened_df = evidence_df.select(
@@ -529,20 +665,20 @@ def main():
             "term_iri",
             "term_source",  # Add term_source field
             col("evidence_item.type").alias("evidence_type"),
-            col("evidence_item.clinical_note_id").alias("clinical_note_id"),
-            col("evidence_item.encounter_id").alias("encounter_id"),
+            evidence_field("clinical_note_id", StringType()),
+            evidence_field("encounter_id", StringType()),
             col("evidence_item.evidence_creator_id").alias("evidence_creator_id"),
             col("evidence_item.evidence_creator_type").alias("evidence_creator_type"),
-            col("evidence_item.evidence_creator_name").alias("evidence_creator_name"),
-            col("evidence_item.note_timestamp").alias("note_timestamp"),
-            col("evidence_item.note_type").alias("note_type"),
-            col("evidence_item.provider_type").alias("provider_type"),
-            col("evidence_item.author_specialty").alias("author_specialty"),
-            col("evidence_item.span_start").alias("span_start"),
-            col("evidence_item.span_end").alias("span_end"),
-            col("evidence_item.contexts.negated").alias("negated"),
-            col("evidence_item.contexts.family").alias("family"),
-            col("evidence_item.contexts.hypothetical").alias("hypothetical")
+            evidence_field("evidence_creator_name", StringType()),
+            evidence_field("note_timestamp", StringType()),
+            evidence_field("note_type", StringType()),
+            evidence_field("provider_type", StringType()),
+            evidence_field("author_specialty", StringType()),
+            evidence_field("span_start", IntegerType()),
+            evidence_field("span_end", IntegerType()),
+            context_field("negated"),
+            context_field("family"),
+            context_field("hypothetical")
         ).withColumn("run_id", lit(args.run_id)) \
          .withColumn("evidence_id", generate_evidence_hash_udf(
             col("subject_id"),
@@ -597,15 +733,15 @@ def main():
          .withColumn("qualifiers", array(
             struct(
                 lit("negated").alias("qualifier_type"),
-                when((col("negated") == 1.0) | (col("negated") == "true") | (col("negated") == True), "true").otherwise("false").alias("qualifier_value")
+                stored_context_flag("negated")
             ),
             struct(
                 lit("family").alias("qualifier_type"),
-                when((col("family") == 1.0) | (col("family") == "true") | (col("family") == True), "true").otherwise("false").alias("qualifier_value")
+                stored_context_flag("family")
             ),
             struct(
                 lit("hypothetical").alias("qualifier_type"),
-                when((col("hypothetical") == 1.0) | (col("hypothetical") == "true") | (col("hypothetical") == True), "true").otherwise("false").alias("qualifier_value")
+                stored_context_flag("hypothetical")
             )
          )) \
          .withColumn("created_timestamp", lit(run_ts).cast("timestamp")) \
