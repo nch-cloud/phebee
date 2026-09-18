@@ -1240,3 +1240,113 @@ def test_monarch_backward_compatibility(invoke_get_subjects_pheno, create_subjec
     assert len(subjects) >= 1
     project_subject_ids = [s["project_subject_id"] for s in subjects]
     assert subj["project_subject_id"] in project_subject_ids
+
+
+# ============================================================================
+# PHENOPACKET OUTPUT TESTS
+#
+# The phenopacket output path had no coverage here: every test above requests
+# JSON. A shape mismatch between subjects_to_phenopackets and its producer
+# therefore went unnoticed while every exported packet came back with an empty
+# phenotypicFeatures list, so these assert on packet content, not just status.
+# ============================================================================
+
+def test_get_subjects_phenopacket_output(invoke_get_subjects_pheno, create_subject_with_evidence):
+    """
+    Phenopacket output carries the subject's phenotypes.
+
+    Setup: Create a subject with one HPO term
+    Action: Query with output_type=phenopacket
+    Verify: Packet is v2-shaped and phenotypicFeatures holds the term as a CURIE
+    """
+    term_iri = "http://purl.obolibrary.org/obo/HP_0001249"
+    subj = create_subject_with_evidence(term_iri=term_iri)
+
+    result = invoke_get_subjects_pheno(
+        project_id=subj["project_id"],
+        term_iri=term_iri,
+        include_child_terms=False,
+        output_type="phenopacket"
+    )
+
+    assert result["statusCode"] == 200
+    packets = result["decompressed_body"]["body"]
+
+    packet = next(
+        (p for p in packets if p["id"] == subj["project_subject_id"]), None
+    )
+    assert packet is not None, f"No packet for {subj['project_subject_id']}"
+
+    assert packet["subject"]["id"] == subj["project_subject_id"]
+    assert packet["metaData"]["phenopacketSchemaVersion"] == "2.0"
+
+    features = packet["phenotypicFeatures"]
+    assert features, "Exported packet carried no phenotypicFeatures"
+    assert "HP:0001249" in [f["type"]["id"] for f in features]
+
+
+def test_get_subjects_phenopacket_negated_is_excluded(invoke_get_subjects_pheno, create_subject_with_evidence):
+    """
+    A negated assertion exports as excluded rather than as a present phenotype.
+
+    Setup: Create one subject with negated evidence and one without
+    Action: Query with output_type=phenopacket and include_qualified=true
+    Verify: The negated subject's feature sets excluded, the other omits it
+    """
+    term_iri = "http://purl.obolibrary.org/obo/HP_0001249"
+    subj_negated = create_subject_with_evidence(term_iri=term_iri, qualifiers=["negated"])
+    subj_plain = create_subject_with_evidence(term_iri=term_iri, qualifiers=[])
+
+    result = invoke_get_subjects_pheno(
+        project_id=subj_negated["project_id"],
+        term_iri=term_iri,
+        include_child_terms=False,
+        include_qualified=True,
+        output_type="phenopacket"
+    )
+
+    assert result["statusCode"] == 200
+    packets = {p["id"]: p for p in result["decompressed_body"]["body"]}
+
+    negated_packet = packets.get(subj_negated["project_subject_id"])
+    plain_packet = packets.get(subj_plain["project_subject_id"])
+    assert negated_packet is not None and plain_packet is not None
+
+    negated_feature = next(
+        f for f in negated_packet["phenotypicFeatures"] if f["type"]["id"] == "HP:0001249"
+    )
+    plain_feature = next(
+        f for f in plain_packet["phenotypicFeatures"] if f["type"]["id"] == "HP:0001249"
+    )
+
+    assert negated_feature.get("excluded") is True
+    assert "excluded" not in plain_feature
+
+
+def test_get_subjects_phenopacket_records_ontology_versions(invoke_get_subjects_pheno, create_subject_with_evidence):
+    """
+    Packet metadata names the installed ontology releases.
+
+    Action: Query with output_type=phenopacket
+    Verify: metaData.resources carries non-empty HP and MONDO versions
+    """
+    term_iri = "http://purl.obolibrary.org/obo/HP_0001249"
+    subj = create_subject_with_evidence(term_iri=term_iri)
+
+    result = invoke_get_subjects_pheno(
+        project_id=subj["project_id"],
+        term_iri=term_iri,
+        include_child_terms=False,
+        output_type="phenopacket"
+    )
+
+    assert result["statusCode"] == 200
+    packets = result["decompressed_body"]["body"]
+    packet = next(p for p in packets if p["id"] == subj["project_subject_id"])
+
+    resources = {r["id"]: r for r in packet["metaData"]["resources"]}
+    assert set(resources) == {"hp", "mondo"}
+    for resource in resources.values():
+        assert resource["version"], f"{resource['id']} resource has no version"
+        assert resource["namespacePrefix"]
+        assert resource["iriPrefix"]

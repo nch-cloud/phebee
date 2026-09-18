@@ -6,11 +6,28 @@ import zipfile
 def subjects_to_phenopackets(subject_data: list[dict], project_iri: str, hpo_version: str, mondo_version: str) -> list[dict]:
     """
     Convert subject records to Phenopacket v2-compatible dictionaries.
+
+    Expects the subject shape produced by query_subjects_by_project: each subject
+    carries "project_subject_id" and a "phenotypes" list, and each phenotype carries
+    a nested "term" ("iri", "id", "label") plus "qualifiers" as "type:value" strings.
+
+    A "negated" qualifier becomes Phenopacket's "excluded": true, which is the inverse
+    of the import mapping in functions/process_phenopacket.py. Phenopacket v2 has no
+    slot for the "hypothetical" or "family" qualifiers, so features carrying only those
+    are exported without a marker; callers that must not emit them should request
+    include_qualified=False, which filters them out upstream.
+
+    No "evidence" is emitted. The producer supplies aggregates (evidence_count,
+    first/last_evidence_date) rather than individual evidence records, and Phenopacket
+    evidence is optional, so synthesizing an entry from a count would assert more than
+    is known.
     """
     metadata = _build_metadata(hpo_version, mondo_version)
     phenopackets = []
 
     for subject in subject_data:
+        phenotypes = _subject_phenotypes(subject)
+
         packet = {
             "id": subject["project_subject_id"],
             "subject": {
@@ -20,39 +37,68 @@ def subjects_to_phenopackets(subject_data: list[dict], project_iri: str, hpo_ver
             "metaData": metadata
         }
 
-        for term_link in subject.get("term_links", []):
+        for phenotype in phenotypes:
+            term = phenotype.get("term") or {}
             phenotypic_feature = {
                 "type": {
-                    "id": _compact_iri(term_link["term_iri"]),
-                    "label": term_link.get("term_label"),
+                    "id": _compact_iri(term.get("iri")),
+                    "label": term.get("label"),
                 },
             }
 
-            evidence_list = []
-            for evidence in term_link.get("evidence", []):
-                ev = {}
-                if "type" in evidence or "evidence_type" in evidence:
-                    ev["type"] = {
-                        "id": _compact_iri(evidence.get("evidence_type") or evidence.get("type"))
-                    }
-                if "created" in evidence:
-                    ev["date"] = evidence["created"]
-                if "creator" in evidence:
-                    ev["reference"] = {
-                        "id": evidence.get("creator", {}).get("creator_id") or evidence.get("creator", {}).get("name"),
-                        "label": evidence.get("creator", {}).get("title") or evidence.get("creator", {}).get("type")
-                    }
-                if ev:
-                    evidence_list.append(ev)
-
-            if evidence_list:
-                phenotypic_feature["evidence"] = evidence_list
+            if _is_negated(phenotype.get("qualifiers")):
+                phenotypic_feature["excluded"] = True
 
             packet["phenotypicFeatures"].append(phenotypic_feature)
 
         phenopackets.append(packet)
 
     return phenopackets
+
+
+# Both serializations of the negated qualifier type reach this function: the bare name
+# and the fully-qualified PheBee qualifier IRI. query_subjects_by_project's own
+# include_qualified filter matches the same pair.
+NEGATED_QUALIFIER_TYPES = (
+    "negated",
+    "http://ods.nationwidechildrens.org/phebee/qualifier/negated",
+)
+
+
+def _subject_phenotypes(subject: dict) -> list[dict]:
+    """
+    Read the phenotype list, refusing to silently export an empty packet.
+
+    This function previously read a "term_links" key that no live producer emits, and
+    because a missing key yields an empty list it returned structurally valid packets
+    with no phenotypicFeatures at all. Absent the expected key, fail loudly instead.
+    """
+    if "phenotypes" in subject:
+        return subject["phenotypes"] or []
+    if "term_links" in subject:
+        raise ValueError(
+            "Subject carries the legacy 'term_links' key. Phenopacket export expects "
+            "the 'phenotypes' shape from query_subjects_by_project."
+        )
+    raise KeyError(
+        f"Subject {subject.get('project_subject_id')!r} has no 'phenotypes' key; "
+        "cannot build phenotypicFeatures."
+    )
+
+
+def _is_negated(qualifiers) -> bool:
+    """
+    True when an active negated qualifier is present.
+
+    Qualifiers arrive as "type:value" strings already filtered to active values, and
+    the type half may itself contain colons when it is an IRI, so match on the type
+    rather than splitting.
+    """
+    for qualifier in qualifiers or []:
+        for negated_type in NEGATED_QUALIFIER_TYPES:
+            if qualifier == negated_type or qualifier.startswith(f"{negated_type}:"):
+                return True
+    return False
 
 
 def _compact_iri(iri: str | None) -> str:
