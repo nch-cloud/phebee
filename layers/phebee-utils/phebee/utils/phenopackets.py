@@ -12,10 +12,14 @@ def subjects_to_phenopackets(subject_data: list[dict], project_iri: str, hpo_ver
     a nested "term" ("iri", "id", "label") plus "qualifiers" as "type:value" strings.
 
     A "negated" qualifier becomes Phenopacket's "excluded": true, which is the inverse
-    of the import mapping in functions/process_phenopacket.py. Phenopacket v2 has no
-    slot for the "hypothetical" or "family" qualifiers, so features carrying only those
-    are exported without a marker; callers that must not emit them should request
-    include_qualified=False, which filters them out upstream.
+    of the import mapping in functions/process_phenopacket.py.
+
+    Features qualified "hypothetical" or "family" are omitted entirely. Phenopacket v2
+    has no slot for either, and a phenotypicFeature asserts something about the subject,
+    so emitting one would claim the subject has a term that was recorded as uncertain or
+    as a relative's. Nothing exportable is lost: a TermLink is identified by subject,
+    term and qualifiers, so when the subject does have the term there is a separate
+    unqualified TermLink, and that one exports on its own.
 
     No "evidence" is emitted. The producer supplies aggregates (evidence_count,
     first/last_evidence_date) rather than individual evidence records, and Phenopacket
@@ -38,6 +42,10 @@ def subjects_to_phenopackets(subject_data: list[dict], project_iri: str, hpo_ver
         }
 
         for phenotype in phenotypes:
+            qualifiers = phenotype.get("qualifiers")
+            if not _is_exportable(qualifiers):
+                continue
+
             term = phenotype.get("term") or {}
             phenotypic_feature = {
                 "type": {
@@ -46,7 +54,7 @@ def subjects_to_phenopackets(subject_data: list[dict], project_iri: str, hpo_ver
                 },
             }
 
-            if _is_negated(phenotype.get("qualifiers")):
+            if _is_negated(qualifiers):
                 phenotypic_feature["excluded"] = True
 
             packet["phenotypicFeatures"].append(phenotypic_feature)
@@ -56,12 +64,24 @@ def subjects_to_phenopackets(subject_data: list[dict], project_iri: str, hpo_ver
     return phenopackets
 
 
-# Both serializations of the negated qualifier type reach this function: the bare name
-# and the fully-qualified PheBee qualifier IRI. query_subjects_by_project's own
-# include_qualified filter matches the same pair.
+# Qualifier types arrive in either serialization, the bare name or the fully-qualified
+# PheBee qualifier IRI, so both are listed. query_subjects_by_project's own
+# include_qualified filter matches the same pairs.
+QUALIFIER_IRI_PREFIX = "http://ods.nationwidechildrens.org/phebee/qualifier/"
+
 NEGATED_QUALIFIER_TYPES = (
     "negated",
-    "http://ods.nationwidechildrens.org/phebee/qualifier/negated",
+    f"{QUALIFIER_IRI_PREFIX}negated",
+)
+
+# Qualifiers that make a term unsafe to state as a phenotypicFeature at all, because the
+# feature would read as an observation about the subject. See the docstring above: the
+# subject's own terms arrive as separate unqualified TermLinks.
+UNEXPORTABLE_QUALIFIER_TYPES = (
+    "hypothetical",
+    f"{QUALIFIER_IRI_PREFIX}hypothetical",
+    "family",
+    f"{QUALIFIER_IRI_PREFIX}family",
 )
 
 
@@ -86,19 +106,35 @@ def _subject_phenotypes(subject: dict) -> list[dict]:
     )
 
 
-def _is_negated(qualifiers) -> bool:
+def _has_qualifier_type(qualifiers, qualifier_types) -> bool:
     """
-    True when an active negated qualifier is present.
+    True when any of the given qualifier types is present.
 
-    Qualifiers arrive as "type:value" strings already filtered to active values, and
-    the type half may itself contain colons when it is an IRI, so match on the type
-    rather than splitting.
+    Qualifiers arrive as "type:value" strings already filtered to active values, and the
+    type half may itself contain colons when it is an IRI, so match the type as a whole
+    rather than splitting on the first colon.
     """
     for qualifier in qualifiers or []:
-        for negated_type in NEGATED_QUALIFIER_TYPES:
-            if qualifier == negated_type or qualifier.startswith(f"{negated_type}:"):
+        for qualifier_type in qualifier_types:
+            if qualifier == qualifier_type or qualifier.startswith(f"{qualifier_type}:"):
                 return True
     return False
+
+
+def _is_negated(qualifiers) -> bool:
+    """True when an active negated qualifier is present."""
+    return _has_qualifier_type(qualifiers, NEGATED_QUALIFIER_TYPES)
+
+
+def _is_exportable(qualifiers) -> bool:
+    """
+    False when the term must not be stated as a phenotypicFeature.
+
+    Checked before negation, so a negated family-history term is omitted rather than
+    exported as excluded: "the relative does not have X" is not "the subject does not
+    have X".
+    """
+    return not _has_qualifier_type(qualifiers, UNEXPORTABLE_QUALIFIER_TYPES)
 
 
 def _compact_iri(iri: str | None) -> str:

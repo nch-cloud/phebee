@@ -164,17 +164,94 @@ class TestNegation:
     def test_is_negated(self, qualifiers, expected):
         assert phenopackets_module._is_negated(qualifiers) is expected
 
-    def test_hypothetical_and_family_are_unmarked(self):
+
+class TestUnexportableQualifiers:
+    """
+    hypothetical and family terms must not appear as phenotypicFeatures at all: a
+    feature asserts something about the subject, and Phenopacket v2 has no slot for
+    either qualifier. When the subject does have the term, PheBee holds a separate
+    unqualified TermLink, which exports on its own.
+    """
+
+    @pytest.mark.parametrize("qualifier", [
+        "family:true",
+        "hypothetical:true",
+        "http://ods.nationwidechildrens.org/phebee/qualifier/family:true",
+        "http://ods.nationwidechildrens.org/phebee/qualifier/hypothetical:true",
+    ])
+    def test_qualified_feature_is_omitted(self, qualifier):
+        subject = make_subject(phenotypes=[
+            make_phenotype(SEIZURE_IRI, "HP:0001250", "Seizure", [qualifier])
+        ])
+        assert export([subject])[0]["phenotypicFeatures"] == []
+
+    def test_negated_family_is_omitted_not_excluded(self):
+        """"The relative does not have X" is not "the subject does not have X"."""
+        subject = make_subject(phenotypes=[
+            make_phenotype(SEIZURE_IRI, "HP:0001250", "Seizure",
+                           ["negated:true", "family:true"])
+        ])
+        assert export([subject])[0]["phenotypicFeatures"] == []
+
+    def test_unqualified_termlink_for_same_term_still_exports(self):
         """
-        Documented limitation: Phenopacket v2 has no slot for these, so they export
-        without a marker. Callers that must not emit them pass include_qualified=False.
+        The case the omission relies on: the subject genuinely has the term, recorded
+        as its own unqualified TermLink alongside the family-history one. Exactly one
+        feature, and it is not marked excluded.
         """
         subject = make_subject(phenotypes=[
-            make_phenotype(SEIZURE_IRI, "HP:0001250", "Seizure", ["family:true"])
+            make_phenotype(SEIZURE_IRI, "HP:0001250", "Seizure", ["family:true"]),
+            make_phenotype(SEIZURE_IRI, "HP:0001250", "Seizure", []),
         ])
-        feature = export([subject])[0]["phenotypicFeatures"][0]
-        assert "excluded" not in feature
-        assert feature["type"]["id"] == "HP:0001250"
+        features = export([subject])[0]["phenotypicFeatures"]
+        assert len(features) == 1
+        assert features[0]["type"]["id"] == "HP:0001250"
+        assert "excluded" not in features[0]
+
+    def test_other_features_survive_the_omission(self):
+        subject = make_subject(phenotypes=[
+            make_phenotype(SEIZURE_IRI, "HP:0001250", "Seizure", ["family:true"]),
+            make_phenotype(DIABETES_IRI, "MONDO:0005148", "type 2 diabetes mellitus"),
+        ])
+        features = export([subject])[0]["phenotypicFeatures"]
+        assert [f["type"]["id"] for f in features] == ["MONDO:0005148"]
+
+    def test_subject_with_only_unexportable_terms_yields_empty_packet(self):
+        """
+        A valid outcome, not the old bug: we have nothing to say about this subject's
+        own phenotypes. The packet is still emitted so subject counts and pagination
+        stay consistent with the JSON output.
+        """
+        subject = make_subject("S9", phenotypes=[
+            make_phenotype(SEIZURE_IRI, "HP:0001250", "Seizure", ["family:true"]),
+            make_phenotype(DIABETES_IRI, "MONDO:0005148", "diabetes", ["hypothetical:true"]),
+        ])
+        packet = export([subject])[0]
+        assert packet["id"] == "S9"
+        assert packet["phenotypicFeatures"] == []
+
+    def test_onset_qualifier_is_still_exported(self):
+        """Only the modality qualifiers are unexportable; others describe the subject."""
+        subject = make_subject(phenotypes=[
+            make_phenotype(SEIZURE_IRI, "HP:0001250", "Seizure", ["onset:HP:0003593"])
+        ])
+        features = export([subject])[0]["phenotypicFeatures"]
+        assert len(features) == 1
+        assert "excluded" not in features[0]
+
+    @pytest.mark.parametrize("qualifiers,expected", [
+        (None, True),
+        ([], True),
+        (["negated:true"], True),
+        (["onset:HP:0003593"], True),
+        (["family:true"], False),
+        (["family"], False),
+        (["hypothetical:true"], False),
+        (["familyhistory:true"], True),
+        (["hypothetically:true"], True),
+    ])
+    def test_is_exportable(self, qualifiers, expected):
+        assert phenopackets_module._is_exportable(qualifiers) is expected
 
 
 class TestOptionalAndMissingFields:
@@ -333,6 +410,18 @@ class TestRoundTrip:
         """
         records = self.reimport(export([make_subject()])[0])
         assert records[0]["evidence_type"] == "http://purl.obolibrary.org/obo/ECO_0000311"
+
+    def test_family_qualified_term_does_not_reimport_as_subject_evidence(self):
+        """
+        The omission is what makes the round trip safe: a family-history term must not
+        come back as evidence that the subject has the term.
+        """
+        subject = make_subject(phenotypes=[
+            make_phenotype(SEIZURE_IRI, "HP:0001250", "Seizure", ["family:true"]),
+            make_phenotype(DIABETES_IRI, "MONDO:0005148", "type 2 diabetes mellitus"),
+        ])
+        records = self.reimport(export([subject])[0])
+        assert [r["term_iri"] for r in records] == [DIABETES_IRI]
 
     def test_labels_are_not_round_tripped(self):
         """Import keeps IRIs only; labels are resolved from the ontology, not the packet."""

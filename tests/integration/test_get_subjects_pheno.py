@@ -1350,3 +1350,39 @@ def test_get_subjects_phenopacket_records_ontology_versions(invoke_get_subjects_
         assert resource["version"], f"{resource['id']} resource has no version"
         assert resource["namespacePrefix"]
         assert resource["iriPrefix"]
+
+
+def test_get_subjects_phenopacket_omits_family_qualified(invoke_get_subjects_pheno, create_subject_with_evidence):
+    """
+    Family-history terms are not exported as the subject's own phenotypes.
+
+    Setup: One subject with family-qualified evidence, one with unqualified evidence
+    Action: Query with output_type=phenopacket and include_qualified=true
+    Verify: The family-qualified subject exports no feature for that term; the
+            unqualified subject does
+    """
+    term_iri = "http://purl.obolibrary.org/obo/HP_0001249"
+    subj_family = create_subject_with_evidence(term_iri=term_iri, qualifiers=["family"])
+    subj_plain = create_subject_with_evidence(term_iri=term_iri, qualifiers=[])
+
+    result = invoke_get_subjects_pheno(
+        project_id=subj_family["project_id"],
+        term_iri=term_iri,
+        include_child_terms=False,
+        include_qualified=True,
+        output_type="phenopacket"
+    )
+
+    assert result["statusCode"] == 200
+    packets = {p["id"]: p for p in result["decompressed_body"]["body"]}
+
+    family_packet = packets.get(subj_family["project_subject_id"])
+    plain_packet = packets.get(subj_plain["project_subject_id"])
+    assert family_packet is not None, "Subject should still appear in the export"
+    assert plain_packet is not None
+
+    family_ids = [f["type"]["id"] for f in family_packet["phenotypicFeatures"]]
+    plain_ids = [f["type"]["id"] for f in plain_packet["phenotypicFeatures"]]
+
+    assert "HP:0001249" not in family_ids
+    assert "HP:0001249" in plain_ids
