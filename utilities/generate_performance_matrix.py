@@ -6,7 +6,11 @@ Creates a full set of supplementary figures showing:
 - Concurrency scaling at each dataset size (1K, 5K, 10K, 50K)
 - Dataset scaling at each concurrency level (c=1, c=10, c=25)
 
-Outputs manuscript-compatible formats: PNG (300 DPI), PDF, EPS, and SVG (text-to-paths).
+Each panel is written at single-column print size and composed into the
+supplementary figure artboard in Illustrator, so it must not be resized there.
+Output follows manuscript/revision/scientific-figures-guide.md: vector PDF with
+text that stays editable, plus PNG and SVG and the plotted values as CSV. See
+figure_style.py for the rules.
 
 Usage:
     python generate_performance_matrix.py results_dir/ -o output_dir/
@@ -15,17 +19,45 @@ Usage:
 
 import argparse
 import json
-import matplotlib.pyplot as plt
-import numpy as np
 from pathlib import Path
 from typing import List, Dict, Any
 from collections import defaultdict
+
+import numpy as np
+
+from figure_style import (HATCHES, OKABE_ITO, SINGLE_COLUMN_MM, apply_style,
+                          figure_size, lighten, panel_label, save_figure)
+import matplotlib.pyplot as plt  # noqa: E402  (figure_style selects the Agg backend)
+
+from workflow_names import display_name, workload_number
+
+apply_style()
+
+# Final print sizes. The bar panels carry seven rotated workflow names along the
+# x-axis and need the extra height for them.
+BAR_PANEL_SIZE_MM = (SINGLE_COLUMN_MM, 75.0)
+LINE_PANEL_SIZE_MM = (SINGLE_COLUMN_MM, 65.0)
 
 
 def load_results(file_path: str) -> Dict[str, Any]:
     """Load performance results from JSON file."""
     with open(file_path, 'r') as f:
         return json.load(f)
+
+
+def metric_value(endpoint_data: Dict[str, Any], key: str) -> float:
+    """Read one latency metric, failing loudly if the artifact lacks it.
+
+    Missing keys used to default to 0. That is how the avg_ms/mean_ms mismatch
+    went unnoticed: the harness writes avg_ms, this script asked for mean_ms,
+    and every mean silently rendered as 0 instead of raising.
+    """
+    if key not in endpoint_data:
+        raise KeyError(
+            f"{endpoint_data.get('endpoint', '<unknown endpoint>')}: artifact has no "
+            f"{key!r} (present: {sorted(endpoint_data)})"
+        )
+    return float(endpoint_data[key])
 
 
 def aggregate_replicates(results_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -51,12 +83,12 @@ def aggregate_replicates(results_list: List[Dict[str, Any]]) -> List[Dict[str, A
             key = (dataset_size, concurrency, endpoint)
 
             # Collect all metric values for this combination
-            groups[key]['p50'].append(endpoint_data.get('p50_ms', 0))
-            groups[key]['p95'].append(endpoint_data.get('p95_ms', 0))
-            groups[key]['p99'].append(endpoint_data.get('p99_ms', 0))
-            groups[key]['mean'].append(endpoint_data.get('mean_ms', 0))
-            groups[key]['min'].append(endpoint_data.get('min_ms', 0))
-            groups[key]['max'].append(endpoint_data.get('max_ms', 0))
+            groups[key]['p50'].append(metric_value(endpoint_data, 'p50_ms'))
+            groups[key]['p95'].append(metric_value(endpoint_data, 'p95_ms'))
+            groups[key]['p99'].append(metric_value(endpoint_data, 'p99_ms'))
+            groups[key]['avg'].append(metric_value(endpoint_data, 'avg_ms'))
+            groups[key]['min'].append(metric_value(endpoint_data, 'min_ms'))
+            groups[key]['max'].append(metric_value(endpoint_data, 'max_ms'))
 
     # Compute median for each group and reconstruct result structure
     aggregated = defaultdict(lambda: {
@@ -79,7 +111,7 @@ def aggregate_replicates(results_list: List[Dict[str, Any]]) -> List[Dict[str, A
             'p50_ms': float(np.median(metrics['p50'])),
             'p95_ms': float(np.median(metrics['p95'])),
             'p99_ms': float(np.median(metrics['p99'])),
-            'mean_ms': float(np.median(metrics['mean'])),
+            'avg_ms': float(np.median(metrics['avg'])),
             'min_ms': float(np.median(metrics['min'])),
             'max_ms': float(np.median(metrics['max'])),
         })
@@ -96,14 +128,16 @@ def plot_concurrency_scaling(ax, results_list: List[Dict[str, Any]],
 
     Args:
         max_y: Optional maximum y-axis value for consistent scaling across plots
+
+    Returns: the plotted values as rows for the figure's CSV sidecar.
     """
     # Filter to specific dataset size
     size_results = [r for r in results_list if r['dataset']['n_subjects'] == dataset_size]
 
     if not size_results or len(size_results) < 2:
         ax.text(0.5, 0.5, f'Insufficient data for N={dataset_size//1000}K',
-                ha='center', va='center', transform=ax.transAxes, fontsize=11)
-        return
+                ha='center', va='center', transform=ax.transAxes)
+        return []
 
     # Sort by concurrency
     size_results = sorted(size_results, key=lambda x: x['load_testing']['concurrency'])
@@ -113,10 +147,8 @@ def plot_concurrency_scaling(ax, results_list: List[Dict[str, Any]],
     endpoints = [e['endpoint'] for e in size_results[0]['latency']
                  if e['endpoint'] != 'version_specific_query']
 
-    # Okabe-Ito colorblind-safe palette (scientifically designed for accessibility)
-    colors = ['#E69F00', '#56B4E9', '#009E73', '#F0E442', '#0072B2', '#D55E00', '#CC79A7', '#000000']
-    # Hatching patterns for bar charts (helps with grayscale printing and colorblindness)
-    hatches = ['', '///', '\\\\\\', 'xxx', '+++', '...', '|||', '---']
+    colors, hatches = OKABE_ITO, HATCHES
+    plotted = []
 
     n_endpoints = len(endpoints)
     n_concurrency = len(concurrency_levels)
@@ -149,6 +181,14 @@ def plot_concurrency_scaling(ax, results_list: List[Dict[str, Any]],
                 p50_values.append(0)
                 p95_values.append(0)
 
+        for endpoint, p50, p95 in zip(endpoints, p50_values, p95_values):
+            plotted.append({'workload': workload_number(endpoint), 'workflow': endpoint,
+                            'subjects': dataset_size, 'concurrency': conc,
+                            'metric': 'p50', 'latency_s': f'{p50:.3f}'})
+            plotted.append({'workload': workload_number(endpoint), 'workflow': endpoint,
+                            'subjects': dataset_size, 'concurrency': conc,
+                            'metric': 'p95', 'latency_s': f'{p95:.3f}'})
+
         offset = (conc_idx - n_concurrency/2 + 0.5) * bar_width
         x_positions = cluster_positions + offset
 
@@ -159,35 +199,37 @@ def plot_concurrency_scaling(ax, results_list: List[Dict[str, Any]],
         # Stacked bars: P50 (darker) + P95-P50 (lighter)
         p95_minus_p50 = [p95 - p50 for p50, p95 in zip(p50_values, p95_values)]
 
-        ax.bar(x_positions, p50_values, bar_width, label=label, color=color,
-               hatch=hatch, edgecolor='black', linewidth=0.5, alpha=0.85)
+        ax.bar(x_positions, p50_values, bar_width, label=label,
+               color=lighten(color, 0.85), hatch=hatch, edgecolor='black', linewidth=0.5)
         ax.bar(x_positions, p95_minus_p50, bar_width, bottom=p50_values,
-               color=color, hatch=hatch, edgecolor='black', linewidth=0.5, alpha=0.3)
+               color=lighten(color, 0.3), hatch=hatch, edgecolor='black', linewidth=0.5)
 
-    ax.set_xlabel('Workflow', fontsize=11, fontweight='bold')
-    ax.set_ylabel('Latency (seconds)', fontsize=11, fontweight='bold')
-    ax.set_title(f'Concurrency Scaling (N={dataset_size//1000}K subjects)',
-                 fontsize=12, fontweight='bold')
+    ax.set_xlabel('Workflow')
+    ax.set_ylabel('Latency (seconds)')
+    ax.set_title(f'Concurrency scaling (N = {dataset_size:,} subjects)')
     ax.set_xticks(cluster_positions)
-    ax.set_xticklabels([e.replace('_', ' ').title() for e in endpoints], rotation=45, ha='right')
+    ax.set_xticklabels([display_name(e) for e in endpoints], rotation=45, ha='right')
 
     # Add proxy artists to legend to explain P50/P95 stacking
     from matplotlib.patches import Patch
     handles, labels = ax.get_legend_handles_labels()
     # Add separator and P50/P95 explanation
     handles.extend([
-        Patch(facecolor='gray', alpha=0.85, edgecolor='black', linewidth=0.5),
-        Patch(facecolor='gray', alpha=0.3, edgecolor='black', linewidth=0.5)
+        Patch(facecolor=lighten('gray', 0.85), edgecolor='black', linewidth=0.5),
+        Patch(facecolor=lighten('gray', 0.3), edgecolor='black', linewidth=0.5)
     ])
     labels.extend(['P50 (darker)', 'P95 (lighter)'])
 
-    ax.legend(handles, labels, fontsize=10, loc='upper left', framealpha=0.9, ncol=1)
-    ax.grid(axis='y', alpha=0.3, linestyle='--')
-    ax.set_axisbelow(True)
+    # `loc='best'` rather than a fixed corner: the style file turns the legend
+    # frame off, so an overlapping legend is now unreadable rather than merely
+    # ugly, and which corner is free depends on the dataset size being plotted.
+    ax.legend(handles, labels, loc='best', ncol=1)
 
     # Set consistent y-axis limit if provided
     if max_y is not None:
         ax.set_ylim(0, max_y * 1.1)
+
+    return plotted
 
 
 def plot_dataset_scaling(ax, results_list: List[Dict[str, Any]],
@@ -197,6 +239,8 @@ def plot_dataset_scaling(ax, results_list: List[Dict[str, Any]],
 
     Args:
         max_y: Optional maximum y-axis value for consistent scaling across plots
+
+    Returns: the plotted values as rows for the figure's CSV sidecar.
     """
     # Filter to specific concurrency level
     conc_results = [r for r in results_list
@@ -204,8 +248,8 @@ def plot_dataset_scaling(ax, results_list: List[Dict[str, Any]],
 
     if not conc_results or len(conc_results) < 2:
         ax.text(0.5, 0.5, f'Insufficient data for c={concurrency}',
-                ha='center', va='center', transform=ax.transAxes, fontsize=11)
-        return
+                ha='center', va='center', transform=ax.transAxes)
+        return []
 
     # Sort by dataset size
     conc_results = sorted(conc_results, key=lambda x: x['dataset']['n_subjects'])
@@ -215,9 +259,9 @@ def plot_dataset_scaling(ax, results_list: List[Dict[str, Any]],
     endpoints = [e['endpoint'] for e in conc_results[0]['latency']
                  if e['endpoint'] != 'version_specific_query']
 
-    # Okabe-Ito colorblind-safe palette
-    colors = ['#E69F00', '#56B4E9', '#009E73', '#F0E442', '#0072B2', '#D55E00', '#CC79A7', '#000000']
+    colors = OKABE_ITO
     markers = ['o', 's', '^', 'D', 'v', '<', '>']
+    plotted = []
 
     # Plot each endpoint
     for idx, endpoint in enumerate(endpoints):
@@ -229,18 +273,22 @@ def plot_dataset_scaling(ax, results_list: List[Dict[str, Any]],
             else:
                 values.append(None)
 
-        label = endpoint.replace('_', ' ').title()
+        for result, value in zip(conc_results, values):
+            if value is not None:
+                plotted.append({'workload': workload_number(endpoint), 'workflow': endpoint,
+                                'subjects': result['dataset']['n_subjects'],
+                                'concurrency': concurrency, 'metric': metric,
+                                'latency_s': f'{value:.3f}'})
+
+        label = display_name(endpoint)
 
         ax.plot(sizes, values, marker=markers[idx % len(markers)],
-                label=label, color=colors[idx % len(colors)],
-                linewidth=2, markersize=7, alpha=0.85)
+                label=label, color=colors[idx % len(colors)])
 
-    ax.set_xlabel('Dataset Size (subjects)', fontsize=11, fontweight='bold')
-    ax.set_ylabel(f'Latency (seconds, {metric.upper()})', fontsize=11, fontweight='bold')
-    ax.set_title(f'Dataset Scaling (c={concurrency}, {metric.upper()})', fontsize=12, fontweight='bold')
-    ax.legend(fontsize=10, loc='upper left', framealpha=0.9, ncol=1)
-    ax.grid(alpha=0.3, linestyle='--')
-    ax.set_axisbelow(True)
+    ax.set_xlabel('Dataset size (subjects)')
+    ax.set_ylabel(f'Latency (seconds, {metric.upper()})')
+    ax.set_title(f'Dataset scaling (c = {concurrency}, {metric.upper()})')
+    ax.legend(loc='best', ncol=1)
 
     # Set x-axis to log scale if spanning multiple orders of magnitude
     if max(sizes) / min(sizes) > 10:
@@ -251,6 +299,8 @@ def plot_dataset_scaling(ax, results_list: List[Dict[str, Any]],
     # Set consistent y-axis limit if provided
     if max_y is not None:
         ax.set_ylim(0, max_y * 1.1)
+
+    return plotted
 
 
 def calculate_global_max_y(results_list: List[Dict[str, Any]], metric: str = 'p95') -> float:
@@ -266,42 +316,17 @@ def calculate_global_max_y(results_list: List[Dict[str, Any]], metric: str = 'p9
                 continue  # Skip deprecated endpoint
 
             # Check p95 for concurrency scaling plots
-            p95_val = endpoint_data.get('p95_ms', 0) / 1000
-            max_y = max(max_y, p95_val)
+            max_y = max(max_y, metric_value(endpoint_data, 'p95_ms') / 1000)
 
             # Check the selected metric for dataset scaling plots
-            metric_val = endpoint_data.get(f'{metric}_ms', 0) / 1000
-            max_y = max(max_y, metric_val)
+            max_y = max(max_y, metric_value(endpoint_data, f'{metric}_ms') / 1000)
 
     return max_y
 
 
-def save_figure_all_formats(output_file: Path):
-    """
-    Save current matplotlib figure in all manuscript-compatible formats.
-
-    Saves as: PNG (300 DPI), PDF, EPS, and SVG (with text-to-paths).
-    """
-    plt.rcParams['svg.fonttype'] = 'path'  # Convert text to paths for SVG
-
-    # PNG for preview (high resolution)
-    plt.savefig(output_file, dpi=300, bbox_inches='tight')
-
-    # PDF with embedded fonts
-    pdf_path = output_file.with_suffix('.pdf')
-    plt.savefig(pdf_path, format='pdf', bbox_inches='tight')
-
-    # EPS with embedded fonts
-    eps_path = output_file.with_suffix('.eps')
-    plt.savefig(eps_path, format='eps', bbox_inches='tight')
-
-    # SVG with text converted to paths
-    svg_path = output_file.with_suffix('.svg')
-    plt.savefig(svg_path, format='svg', bbox_inches='tight')
-
-
 def generate_tiled_figure(results_list: List[Dict[str, Any]], output_file: Path,
-                         metric: str = 'p95', caption: str = None):
+                         metric: str = 'p95', caption: str = None,
+                         formats=('pdf', 'png', 'svg')):
     """
     Generate a single comprehensive tiled figure with all performance plots.
 
@@ -317,8 +342,14 @@ def generate_tiled_figure(results_list: List[Dict[str, Any]], output_file: Path,
         output_file: Path for output files
         metric: Metric to use (default: p95)
         caption: Optional figure caption text to display below the plots
+        formats: Output formats; add 'eps' only if a journal insists on it
 
     Note: Expects results_list to already be aggregated (median across replicates).
+
+    This is a working overview, not a submission figure: it is taller than the
+    170 mm the figures guide allows, and a caption set inside the figure file is
+    exactly what the guide's naming rule tells you not to ship. The per-panel
+    files are what gets composed into Supplementary Figures S1 and S2.
     """
     dataset_sizes = sorted(set(r['dataset']['n_subjects'] for r in results_list))
     concurrency_levels = sorted(set(r['load_testing']['concurrency'] for r in results_list))
@@ -332,60 +363,61 @@ def generate_tiled_figure(results_list: List[Dict[str, Any]], output_file: Path,
     max_y = max(calculate_global_max_y(results_list, 'p95'),
                 calculate_global_max_y(results_list, 'p50'))
 
-    # Create 3-row grid with enough columns
-    # Larger plots with legends inside, less horizontal spacing needed
-    fig = plt.figure(figsize=(10 * n_cols, 26))
-    gs = fig.add_gridspec(3, n_cols, hspace=0.60, wspace=0.25)
+    # One single-column panel per grid cell, so the panels are the same physical
+    # size here as in the per-panel files. Constrained layout owns the spacing;
+    # gridspec hspace/wspace would be ignored.
+    fig = plt.figure(figsize=figure_size(SINGLE_COLUMN_MM * n_cols,
+                                        BAR_PANEL_SIZE_MM[1] + 2 * LINE_PANEL_SIZE_MM[1],
+                                        allow_tall=True))
+    gs = fig.add_gridspec(3, n_cols)
 
     plot_idx = 0
+    plotted = []
 
     # Row 1: All concurrency scaling plots
     for i, size in enumerate(dataset_sizes):
         ax = fig.add_subplot(gs[0, i])
-        plot_concurrency_scaling(ax, results_list, size, metric, max_y)
+        rows = plot_concurrency_scaling(ax, results_list, size, metric, max_y)
         # Add panel label
-        ax.text(-0.1, 1.1, chr(65 + plot_idx), transform=ax.transAxes,
-                fontsize=16, fontweight='bold', va='top')
+        panel_label(ax, chr(65 + plot_idx))
+        plotted += [{'panel': chr(65 + plot_idx), **row} for row in rows]
         plot_idx += 1
 
     # Row 2: All dataset scaling plots (P50)
     for i, conc in enumerate(concurrency_levels):
         ax = fig.add_subplot(gs[1, i])
-        plot_dataset_scaling(ax, results_list, conc, 'p50', max_y)
-        ax.text(-0.1, 1.1, chr(65 + plot_idx), transform=ax.transAxes,
-                fontsize=16, fontweight='bold', va='top')
+        rows = plot_dataset_scaling(ax, results_list, conc, 'p50', max_y)
+        panel_label(ax, chr(65 + plot_idx))
+        plotted += [{'panel': chr(65 + plot_idx), **row} for row in rows]
         plot_idx += 1
 
     # Row 3: All dataset scaling plots (P95)
     for i, conc in enumerate(concurrency_levels):
         ax = fig.add_subplot(gs[2, i])
-        plot_dataset_scaling(ax, results_list, conc, 'p95', max_y)
-        ax.text(-0.1, 1.1, chr(65 + plot_idx), transform=ax.transAxes,
-                fontsize=16, fontweight='bold', va='top')
+        rows = plot_dataset_scaling(ax, results_list, conc, 'p95', max_y)
+        panel_label(ax, chr(65 + plot_idx))
+        plotted += [{'panel': chr(65 + plot_idx), **row} for row in rows]
         plot_idx += 1
 
     # Add optional caption at the bottom of the figure
     if caption:
-        # Increased font size for better readability (14pt vs previous 11pt)
-        # Note: Matplotlib doesn't support inline bold/italic mixing easily.
-        # For manuscript submission, format "Figure X." prefix as bold in your document.
-        fig.text(0.5, 0.01, caption, ha='center', va='bottom',
-                fontsize=14, transform=fig.transFigure)
+        # The figures guide asks for no caption inside the figure file: captions
+        # belong in the document, where they can carry bold and italic and be
+        # copyedited with the rest of the prose. Kept for the working overview.
+        print('  NOTE: --caption sets the caption inside the figure file, which the '
+              'figures guide advises against for anything submitted.')
+        fig.supxlabel(caption)
 
     # Save figure in multiple formats for manuscript submission
-    save_figure_all_formats(output_file)
-
-    print(f"\nTiled figure saved:")
-    print(f"  PNG: {output_file}")
-    print(f"  PDF: {output_file.with_suffix('.pdf')}")
-    print(f"  EPS: {output_file.with_suffix('.eps')}")
-    print(f"  SVG: {output_file.with_suffix('.svg')}")
+    print('\nTiled figure saved:')
+    save_figure(fig, output_file, formats=formats, data=plotted)
     print(f"  Layout: 3 rows × {n_cols} columns ({n_conc_plots} concurrency + {n_dataset_plots} P50 + {n_dataset_plots} P95)")
-    plt.close()
+    plt.close(fig)
 
 
 def generate_matrix(results_list: List[Dict[str, Any]], output_dir: Path,
-                   metric: str = 'p95', tiled: bool = False, caption: str = None):
+                   metric: str = 'p95', tiled: bool = False, caption: str = None,
+                   formats=('pdf', 'png', 'svg')):
     """
     Generate full matrix of performance figures.
 
@@ -425,46 +457,48 @@ def generate_matrix(results_list: List[Dict[str, Any]], output_dir: Path,
     if tiled:
         # Generate single comprehensive tiled figure
         output_file = output_dir / 'performance_matrix_comprehensive.png'
-        generate_tiled_figure(results_list, output_file, metric, caption)
+        generate_tiled_figure(results_list, output_file, metric, caption, formats)
         return
 
     # Generate concurrency scaling figures (one per dataset size)
     print("Generating concurrency scaling figures:")
     for size in dataset_sizes:
-        fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-        plot_concurrency_scaling(ax, results_list, size, metric)
+        fig, ax = plt.subplots(1, 1, figsize=figure_size(*BAR_PANEL_SIZE_MM))
+        rows = plot_concurrency_scaling(ax, results_list, size, metric)
 
         output_file = output_dir / f'concurrency_scaling_{size//1000}k.png'
-        plt.tight_layout()
-        save_figure_all_formats(output_file)
-        plt.close()
-        print(f"  Created: {output_file} (+ PDF, EPS, SVG)")
+        save_figure(fig, output_file, formats=formats,
+                    data=[{'panel': output_file.stem, **row} for row in rows])
+        plt.close(fig)
 
     # Generate dataset scaling figures (one per concurrency level)
     print("\nGenerating dataset scaling figures:")
     for conc in concurrency_levels:
-        fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-        plot_dataset_scaling(ax, results_list, conc, metric)
+        fig, ax = plt.subplots(1, 1, figsize=figure_size(*LINE_PANEL_SIZE_MM))
+        rows = plot_dataset_scaling(ax, results_list, conc, metric)
 
         output_file = output_dir / f'dataset_scaling_c{conc}.png'
-        plt.tight_layout()
-        save_figure_all_formats(output_file)
-        plt.close()
-        print(f"  Created: {output_file} (+ PDF, EPS, SVG)")
+        save_figure(fig, output_file, formats=formats,
+                    data=[{'panel': output_file.stem, **row} for row in rows])
+        plt.close(fig)
 
     # Create index/summary file
     index_file = output_dir / 'README.md'
     with index_file.open('w') as f:
         f.write("# PheBee Performance Test Results - Supplementary Figures\n\n")
+        f.write("Each panel is a vector PDF at single-column print size "
+                f"({SINGLE_COLUMN_MM:.0f} mm wide) with editable text, listed below; "
+                "the PNG and SVG beside it are for preview, and the `_data.csv` holds "
+                "the plotted values. Place the PDFs in Illustrator, do not resize them.\n\n")
         f.write("## Concurrency Scaling\n\n")
         f.write("Shows how each endpoint scales with concurrent requests at different dataset sizes.\n\n")
         for size in dataset_sizes:
-            f.write(f"- [{size//1000}K subjects](concurrency_scaling_{size//1000}k.png)\n")
+            f.write(f"- [{size//1000}K subjects](concurrency_scaling_{size//1000}k.pdf)\n")
 
         f.write("\n## Dataset Size Scaling\n\n")
         f.write("Shows how each endpoint scales with dataset size at different concurrency levels.\n\n")
         for conc in concurrency_levels:
-            f.write(f"- [Concurrency {conc}](dataset_scaling_c{conc}.png)\n")
+            f.write(f"- [Concurrency {conc}](dataset_scaling_c{conc}.pdf)\n")
 
     print(f"\nIndex created: {index_file}")
     print(f"\nGenerated {len(dataset_sizes) + len(concurrency_levels)} supplementary figures")
@@ -493,14 +527,17 @@ Examples:
     )
     parser.add_argument('results', nargs='+', help='JSON result files from performance tests')
     parser.add_argument('-o', '--output', required=True, help='Output directory for figures')
-    parser.add_argument('-m', '--metric', default='p95', choices=['p50', 'p95', 'p99'],
+    parser.add_argument('-m', '--metric', default='p95', choices=['p50', 'p95', 'p99', 'avg'],
                        help='Metric to use (default: p95)')
     parser.add_argument('--tiled', action='store_true',
                        help='Generate single comprehensive tiled figure instead of separate files')
     parser.add_argument('--caption', type=str, default=None,
                        help='Optional caption text for tiled figure (displayed below plots)')
+    parser.add_argument('--eps', action='store_true',
+                       help='Also write EPS (only if a journal insists; PDF is the deliverable)')
 
     args = parser.parse_args()
+    formats = ('pdf', 'png', 'svg') + (('eps',) if args.eps else ())
 
     # Load all results
     results_list = []
@@ -521,7 +558,7 @@ Examples:
 
     # Generate matrix
     output_dir = Path(args.output)
-    generate_matrix(results_list, output_dir, args.metric, args.tiled, args.caption)
+    generate_matrix(results_list, output_dir, args.metric, args.tiled, args.caption, formats)
 
     return 0
 
