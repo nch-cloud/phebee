@@ -26,6 +26,10 @@ import boto3
 import pytest
 import requests
 
+# The instrumented Athena helper lives in tests/integration so the performance suite can
+# share this implementation; it resolves via pytest.ini's pythonpath.
+from athena_metrics import AthenaQueryResult, run_query as _run_athena_query
+
 
 pytestmark = [pytest.mark.integration, pytest.mark.api, pytest.mark.evaluation]
 
@@ -116,46 +120,28 @@ def _athena_query(
     workgroup: Optional[str] = None,
     timeout_s: int = 300,
     poll_s: int = 2,
-) -> Tuple[List[str], List[List[str]], float]:
+) -> AthenaQueryResult:
     """
-    Returns: (column_names, rows (as strings), elapsed_seconds)
+    Run a query and return its results together with the service's own metrics.
+
+    Returns an AthenaQueryResult rather than the (cols, rows, elapsed_seconds) tuple this
+    previously returned. The wall-clock figure is still available as .elapsed_seconds but is
+    not a query time: it includes up to one poll interval plus the result fetch, so with
+    poll_s=2 a query with a 3 s engine time can measure 5 s. Report .engine_execution_ms.
+
+    Metrics from this module's tests are not publishable regardless of accuracy: they run
+    against the 15-record golden_evaluation_import fixture, where DataScannedInBytes falls
+    under Athena's 10 MB billing floor. Scale measurements live in
+    tests/integration/performance/test_athena_metrics.py.
     """
-    athena = boto3.client("athena")
-    kwargs: Dict[str, Any] = {
-        "QueryString": query,
-        "QueryExecutionContext": {"Database": database},
-        "ResultConfiguration": {"OutputLocation": output_location},
-    }
-    if workgroup:
-        kwargs["WorkGroup"] = workgroup
-
-    t0 = time.time()
-    start = athena.start_query_execution(**kwargs)
-    qid = start["QueryExecutionId"]
-
-    while True:
-        q = athena.get_query_execution(QueryExecutionId=qid)
-        state = q["QueryExecution"]["Status"]["State"]
-        if state in ("SUCCEEDED", "FAILED", "CANCELLED"):
-            break
-        if (time.time() - t0) > timeout_s:
-            athena.stop_query_execution(QueryExecutionId=qid)
-            raise TimeoutError(f"Athena query timed out after {timeout_s}s: {qid}")
-        time.sleep(poll_s)
-
-    if state != "SUCCEEDED":
-        reason = q["QueryExecution"]["Status"].get("StateChangeReason", "")
-        raise RuntimeError(f"Athena query failed: state={state} reason={reason} qid={qid}")
-
-    results = athena.get_query_results(QueryExecutionId=qid, MaxResults=1000)
-    cols = [c["Name"] for c in results["ResultSet"]["ResultSetMetadata"]["ColumnInfo"]]
-    rows: List[List[str]] = []
-    # First row is header
-    for r in results["ResultSet"]["Rows"][1:]:
-        rows.append([(d.get("VarCharValue") if d else None) for d in r.get("Data", [])])
-
-    elapsed = time.time() - t0
-    return cols, rows, elapsed
+    return _run_athena_query(
+        query,
+        database=database,
+        output_location=output_location,
+        workgroup=workgroup,
+        timeout_s=timeout_s,
+        poll_s=poll_s,
+    )
 
 
 # -----------------------------
@@ -731,7 +717,8 @@ def test_eval_ingest_and_core_api_behaviors(
       AND termlink_id = '{termlink_id}'
     ORDER BY created_timestamp
     """
-    cols, rows, elapsed = _athena_query(q_evidence, database=db, output_location=out, workgroup=wg)
+    result = _athena_query(q_evidence, database=db, output_location=out, workgroup=wg)
+    cols, rows = result.columns, result.rows
     assert rows, f"No evidence found for termlink"
 
     # R4: provenance-ish fields exist (best-effort; API may evolve)
@@ -815,7 +802,8 @@ def test_r5_multi_source_evidence_within_single_termlink(
       AND term_iri = '{child_term}'
       AND termlink_id = '{termlink_id}'
     """
-    cols, rows, elapsed = _athena_query(q_evidence, database=db, output_location=out, workgroup=wg)
+    result = _athena_query(q_evidence, database=db, output_location=out, workgroup=wg)
+    cols, rows = result.columns, result.rows
 
     creator_types = set()
     if "creator_type" in cols:
@@ -1021,8 +1009,9 @@ def test_r10_batch_access_via_athena_queries(
     ORDER BY n DESC
     LIMIT 10
     """
-    cols1, rows1, t1 = _athena_query(q1, database=db, output_location=out, workgroup=wg)
-    print(f"[EVAL] athena term_distribution seconds={t1:.2f} cols={cols1} rows_sample={rows1[:5]}")
+    r1 = _athena_query(q1, database=db, output_location=out, workgroup=wg)
+    cols1, rows1 = r1.columns, r1.rows
+    print(f"[EVAL] athena term_distribution {r1.summary()} cols={cols1} rows_sample={rows1[:5]}")
 
     # 2) Feature-ish query: per-subject distinct term counts
     q2 = f"""
@@ -1033,8 +1022,9 @@ def test_r10_batch_access_via_athena_queries(
     ORDER BY n_terms DESC
     LIMIT 10
     """
-    cols2, rows2, t2 = _athena_query(q2, database=db, output_location=out, workgroup=wg)
-    print(f"[EVAL] athena per_subject_terms seconds={t2:.2f} cols={cols2} rows_sample={rows2[:5]}")
+    r2 = _athena_query(q2, database=db, output_location=out, workgroup=wg)
+    cols2, rows2 = r2.columns, r2.rows
+    print(f"[EVAL] athena per_subject_terms {r2.summary()} cols={cols2} rows_sample={rows2[:5]}")
 
 
 def test_r1_term_source_struct_exposed_in_evidence(
@@ -1086,7 +1076,8 @@ def test_r1_term_source_struct_exposed_in_evidence(
       AND termlink_id = '{termlink_id}'
     LIMIT 1
     """
-    cols, rows, elapsed = _athena_query(q_evidence, database=db, output_location=out, workgroup=wg)
+    result = _athena_query(q_evidence, database=db, output_location=out, workgroup=wg)
+    cols, rows = result.columns, result.rows
     assert rows, "No evidence found"
 
     # Verify term_source fields
