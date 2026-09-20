@@ -5,7 +5,10 @@ Generate two-panel performance figure from PheBee API performance test results.
 Panel A: Concurrency scaling (how endpoints scale with concurrent requests)
 Panel B: Dataset size scaling (how endpoints scale with data volume)
 
-Outputs manuscript-compatible formats: PNG (300 DPI), PDF, EPS, and SVG (text-to-paths).
+Output follows manuscript/revision/scientific-figures-guide.md: a vector PDF at
+final print size whose text stays editable in Illustrator, with PNG and SVG
+alongside and the plotted values as CSV. See figure_style.py for the rules; EPS
+is opt-in because the deliverable is the PDF.
 
 Usage:
     python plot_performance_results.py results*.json -o figure.png
@@ -15,17 +18,47 @@ Results JSON files should be output from test_evaluation_perf_scale.py.
 
 import argparse
 import json
-import matplotlib.pyplot as plt
-import numpy as np
 from pathlib import Path
 from typing import List, Dict, Any
 from collections import defaultdict
+
+import numpy as np
+
+from figure_style import (DOUBLE_COLUMN_MM, HATCHES, OKABE_ITO,
+                          ONE_AND_HALF_COLUMN_MM, apply_style, figure_size,
+                          lighten, panel_label, save_figure)
+import matplotlib.pyplot as plt  # noqa: E402  (figure_style selects the Agg backend)
+
+from workflow_names import display_name, workload_number
+
+apply_style()
+
+# Final print sizes, set here and never changed by resizing the placed figure.
+COMBINED_SIZE_MM = (DOUBLE_COLUMN_MM, 75.0)
+# The standalone panels keep the legend outside the axes, which needs the extra
+# width; 1.5 column is the narrowest of the guide's placements that fits it.
+STANDALONE_SIZE_MM = (ONE_AND_HALF_COLUMN_MM, 80.0)
 
 
 def load_results(file_path: str) -> Dict[str, Any]:
     """Load performance results from JSON file."""
     with open(file_path, 'r') as f:
         return json.load(f)
+
+
+def metric_value(endpoint_data: Dict[str, Any], key: str) -> float:
+    """Read one latency metric, failing loudly if the artifact lacks it.
+
+    Missing keys used to default to 0. That is how the avg_ms/mean_ms mismatch
+    went unnoticed: the harness writes avg_ms, this script asked for mean_ms,
+    and every mean silently rendered as 0 instead of raising.
+    """
+    if key not in endpoint_data:
+        raise KeyError(
+            f"{endpoint_data.get('endpoint', '<unknown endpoint>')}: artifact has no "
+            f"{key!r} (present: {sorted(endpoint_data)})"
+        )
+    return float(endpoint_data[key])
 
 
 def aggregate_replicates(results_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -49,12 +82,12 @@ def aggregate_replicates(results_list: List[Dict[str, Any]]) -> List[Dict[str, A
             key = (dataset_size, concurrency, endpoint)
 
             # Collect all metric values for this combination
-            groups[key]['p50'].append(endpoint_data.get('p50_ms', 0))
-            groups[key]['p95'].append(endpoint_data.get('p95_ms', 0))
-            groups[key]['p99'].append(endpoint_data.get('p99_ms', 0))
-            groups[key]['mean'].append(endpoint_data.get('mean_ms', 0))
-            groups[key]['min'].append(endpoint_data.get('min_ms', 0))
-            groups[key]['max'].append(endpoint_data.get('max_ms', 0))
+            groups[key]['p50'].append(metric_value(endpoint_data, 'p50_ms'))
+            groups[key]['p95'].append(metric_value(endpoint_data, 'p95_ms'))
+            groups[key]['p99'].append(metric_value(endpoint_data, 'p99_ms'))
+            groups[key]['avg'].append(metric_value(endpoint_data, 'avg_ms'))
+            groups[key]['min'].append(metric_value(endpoint_data, 'min_ms'))
+            groups[key]['max'].append(metric_value(endpoint_data, 'max_ms'))
 
     # Compute median for each group and reconstruct result structure
     aggregated = defaultdict(lambda: {
@@ -77,7 +110,7 @@ def aggregate_replicates(results_list: List[Dict[str, Any]]) -> List[Dict[str, A
             'p50_ms': float(np.median(metrics['p50'])),
             'p95_ms': float(np.median(metrics['p95'])),
             'p99_ms': float(np.median(metrics['p99'])),
-            'mean_ms': float(np.median(metrics['mean'])),
+            'avg_ms': float(np.median(metrics['avg'])),
             'min_ms': float(np.median(metrics['min'])),
             'max_ms': float(np.median(metrics['max'])),
         })
@@ -188,6 +221,8 @@ def plot_concurrency_scaling(ax, results_list: List[Dict[str, Any]],
         metric: Which metric to plot (ignored when show_p95_bars=True)
         show_p95_bars: If True, show stacked bars with P50+P95 (default: True)
         max_y: Optional maximum y-axis value for consistent scaling across plots
+
+    Returns: the plotted values as rows for the figure's CSV sidecar.
     """
     # Filter to specific dataset size
     if dataset_size is None:
@@ -197,8 +232,8 @@ def plot_concurrency_scaling(ax, results_list: List[Dict[str, Any]],
 
     if not size_results or len(size_results) < 2:
         ax.text(0.5, 0.5, 'Insufficient concurrency data\n(need c=1, c=10, c=25)',
-                ha='center', va='center', transform=ax.transAxes, fontsize=11)
-        return
+                ha='center', va='center', transform=ax.transAxes)
+        return []
 
     # Sort by concurrency
     size_results = sorted(size_results, key=lambda x: x['load_testing']['concurrency'])
@@ -210,10 +245,8 @@ def plot_concurrency_scaling(ax, results_list: List[Dict[str, Any]],
     endpoints = [e['endpoint'] for e in size_results[0]['latency']
                  if e['endpoint'] != 'version_specific_query']
 
-    # Okabe-Ito colorblind-safe palette (scientifically designed for accessibility)
-    colors = ['#E69F00', '#56B4E9', '#009E73', '#F0E442', '#0072B2', '#D55E00', '#CC79A7', '#000000']
-    # Hatching patterns for bar charts (helps with grayscale printing and colorblindness)
-    hatches = ['', '///', '\\\\\\', 'xxx', '+++', '...', '|||', '---']
+    colors, hatches = OKABE_ITO, HATCHES
+    plotted = []
 
     # If showing stacked P50+P95 bars (default behavior)
     if show_p95_bars:
@@ -252,6 +285,14 @@ def plot_concurrency_scaling(ax, results_list: List[Dict[str, Any]],
             offset = (conc_idx - n_concurrency/2 + 0.5) * bar_width
             x_positions = cluster_positions + offset
 
+            for endpoint, p50, p95 in zip(endpoints, p50_values, p95_values):
+                plotted.append({'workload': workload_number(endpoint), 'workflow': endpoint,
+                                'subjects': dataset_size, 'concurrency': conc,
+                                'metric': 'p50', 'latency_s': f'{p50:.3f}'})
+                plotted.append({'workload': workload_number(endpoint), 'workflow': endpoint,
+                                'subjects': dataset_size, 'concurrency': conc,
+                                'metric': 'p95', 'latency_s': f'{p95:.3f}'})
+
             # Use a color that represents concurrency level
             color = colors[conc_idx % len(colors)]
             hatch = hatches[conc_idx % len(hatches)]
@@ -261,33 +302,30 @@ def plot_concurrency_scaling(ax, results_list: List[Dict[str, Any]],
             p95_minus_p50 = [p95 - p50 for p50, p95 in zip(p50_values, p95_values)]
 
             # Bottom portion (P50) - solid color with hatch pattern
-            ax.bar(x_positions, p50_values, bar_width, label=label, color=color,
-                   hatch=hatch, edgecolor='black', linewidth=0.5, alpha=0.85)
+            ax.bar(x_positions, p50_values, bar_width, label=label,
+                   color=lighten(color, 0.85), hatch=hatch, edgecolor='black', linewidth=0.5)
 
             # Top portion (P95-P50) - lighter color with same hatch
             ax.bar(x_positions, p95_minus_p50, bar_width, bottom=p50_values,
-                   color=color, hatch=hatch, edgecolor='black', linewidth=0.5, alpha=0.3)
+                   color=lighten(color, 0.3), hatch=hatch, edgecolor='black', linewidth=0.5)
 
-        ax.set_xlabel('Workflow', fontsize=11, fontweight='bold')
-        ax.set_ylabel('Latency (seconds)', fontsize=11, fontweight='bold')
-        ax.set_title(f'Concurrency Scaling (N={dataset_size//1000}K subjects)',
-                     fontsize=12, fontweight='bold')
+        ax.set_xlabel('Workflow')
+        ax.set_ylabel('Latency (seconds)')
+        ax.set_title(f'Concurrency scaling (N = {dataset_size:,} subjects)')
         ax.set_xticks(cluster_positions)
-        ax.set_xticklabels([e.replace('_', ' ').title() for e in endpoints], rotation=45, ha='right')
+        ax.set_xticklabels([display_name(e) for e in endpoints], rotation=45, ha='right')
 
         # Add proxy artists to legend to explain P50/P95 stacking
         from matplotlib.patches import Patch
         handles, labels = ax.get_legend_handles_labels()
         # Add separator and P50/P95 explanation
         handles.extend([
-            Patch(facecolor='gray', alpha=0.85, edgecolor='black', linewidth=0.5),
-            Patch(facecolor='gray', alpha=0.3, edgecolor='black', linewidth=0.5)
+            Patch(facecolor=lighten('gray', 0.85), edgecolor='black', linewidth=0.5),
+            Patch(facecolor=lighten('gray', 0.3), edgecolor='black', linewidth=0.5)
         ])
         labels.extend(['P50 (darker)', 'P95 (lighter)'])
 
-        ax.legend(handles, labels, fontsize=10, loc='upper left', bbox_to_anchor=(1.02, 1), ncol=1)
-        ax.grid(axis='y', alpha=0.3, linestyle='--')
-        ax.set_axisbelow(True)
+        ax.legend(handles, labels, loc='upper left', bbox_to_anchor=(1.02, 1), ncol=1)
 
         # Set consistent y-axis limit if provided
         if max_y is not None:
@@ -306,23 +344,26 @@ def plot_concurrency_scaling(ax, results_list: List[Dict[str, Any]],
                 else:
                     metric_values.append(None)
 
-            # Clean endpoint name for legend
-            label = endpoint.replace('_', ' ').title()
+            for conc, value in zip(concurrency_levels, metric_values):
+                if value is not None:
+                    plotted.append({'workload': workload_number(endpoint), 'workflow': endpoint,
+                                    'subjects': dataset_size, 'concurrency': conc,
+                                    'metric': metric, 'latency_s': f'{value:.3f}'})
+
+            label = display_name(endpoint)
             color = colors[idx % len(colors)]
             marker = markers[idx % len(markers)]
 
-            ax.plot(concurrency_levels, metric_values, marker=marker, label=label, color=color,
-                    linewidth=2, markersize=7, alpha=0.85)
+            ax.plot(concurrency_levels, metric_values, marker=marker, label=label, color=color)
 
-        ax.set_xlabel('Concurrent Requests', fontsize=11, fontweight='bold')
-        ax.set_ylabel(f'Latency (seconds, {metric.upper()})', fontsize=11, fontweight='bold')
-        ax.set_title(f'Concurrency Scaling (N={dataset_size//1000}K subjects)',
-                     fontsize=12, fontweight='bold')
-        ax.legend(fontsize=10, loc='upper left', bbox_to_anchor=(1.02, 1), ncol=1)
-        ax.grid(alpha=0.3, linestyle='--')
-        ax.set_axisbelow(True)
+        ax.set_xlabel('Concurrent requests')
+        ax.set_ylabel(f'Latency (seconds, {metric.upper()})')
+        ax.set_title(f'Concurrency scaling (N = {dataset_size:,} subjects)')
+        ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1), ncol=1)
         ax.set_xticks(concurrency_levels)
         ax.set_xticklabels([f'c={c}' for c in concurrency_levels])
+
+    return plotted
 
 
 def plot_dataset_scaling(ax, results_list: List[Dict[str, Any]],
@@ -336,6 +377,8 @@ def plot_dataset_scaling(ax, results_list: List[Dict[str, Any]],
         concurrency: Target concurrency level (default: 1)
         metric: Which metric to plot ('p50', 'p95', or 'p99')
         max_y: Optional maximum y-axis value for consistent scaling across plots
+
+    Returns: the plotted values as rows for the figure's CSV sidecar.
     """
     # Filter to specific concurrency level
     conc_results = [r for r in results_list
@@ -343,8 +386,8 @@ def plot_dataset_scaling(ax, results_list: List[Dict[str, Any]],
 
     if not conc_results or len(conc_results) < 2:
         ax.text(0.5, 0.5, f'Insufficient data for dataset scaling\n(need multiple sizes at c={concurrency})',
-                ha='center', va='center', transform=ax.transAxes, fontsize=11)
-        return
+                ha='center', va='center', transform=ax.transAxes)
+        return []
 
     # Sort by dataset size
     conc_results = sorted(conc_results, key=lambda x: x['dataset']['n_subjects'])
@@ -356,9 +399,9 @@ def plot_dataset_scaling(ax, results_list: List[Dict[str, Any]],
     endpoints = [e['endpoint'] for e in conc_results[0]['latency']
                  if e['endpoint'] != 'version_specific_query']
 
-    # Okabe-Ito colorblind-safe palette
-    colors = ['#E69F00', '#56B4E9', '#009E73', '#F0E442', '#0072B2', '#D55E00', '#CC79A7', '#000000']
+    colors = OKABE_ITO
     markers = ['o', 's', '^', 'D', 'v', '<', '>']
+    plotted = []
 
     # Plot each endpoint
     for idx, endpoint in enumerate(endpoints):
@@ -370,19 +413,22 @@ def plot_dataset_scaling(ax, results_list: List[Dict[str, Any]],
             else:
                 values.append(None)
 
-        # Clean endpoint name for legend
-        label = endpoint.replace('_', ' ').title()
+        for result, value in zip(conc_results, values):
+            if value is not None:
+                plotted.append({'workload': workload_number(endpoint), 'workflow': endpoint,
+                                'subjects': result['dataset']['n_subjects'],
+                                'concurrency': concurrency, 'metric': metric,
+                                'latency_s': f'{value:.3f}'})
+
+        label = display_name(endpoint)
 
         ax.plot(sizes, values, marker=markers[idx % len(markers)],
-                label=label, color=colors[idx % len(colors)],
-                linewidth=2, markersize=7, alpha=0.85)
+                label=label, color=colors[idx % len(colors)])
 
-    ax.set_xlabel('Dataset Size (subjects)', fontsize=11, fontweight='bold')
-    ax.set_ylabel(f'Latency (seconds, {metric.upper()})', fontsize=11, fontweight='bold')
-    ax.set_title(f'Dataset Scaling (c={concurrency}, {metric.upper()})', fontsize=12, fontweight='bold')
-    ax.legend(fontsize=10, loc='upper left', bbox_to_anchor=(1.02, 1), ncol=1)
-    ax.grid(alpha=0.3, linestyle='--')
-    ax.set_axisbelow(True)
+    ax.set_xlabel('Dataset size (subjects)')
+    ax.set_ylabel(f'Latency (seconds, {metric.upper()})')
+    ax.set_title(f'Dataset scaling (c = {concurrency}, {metric.upper()})')
+    ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1), ncol=1)
 
     # Set x-axis to log scale if spanning multiple orders of magnitude
     if max(sizes) / min(sizes) > 10:
@@ -394,37 +440,7 @@ def plot_dataset_scaling(ax, results_list: List[Dict[str, Any]],
     if max_y is not None:
         ax.set_ylim(0, max_y * 1.1)
 
-
-def save_figure_all_formats(fig, base_path: Path, description: str):
-    """
-    Save figure in all manuscript formats (PNG, PDF, EPS, SVG).
-
-    Args:
-        fig: Matplotlib figure object
-        base_path: Base path (with extension) for output files
-        description: Description of what's being saved (for console output)
-    """
-    output_path = Path(base_path)
-
-    # PNG for preview (high resolution)
-    fig.savefig(output_path, dpi=300, bbox_inches='tight')
-    print(f"  {description} PNG: {output_path}")
-
-    # PDF with embedded fonts
-    pdf_path = output_path.with_suffix('.pdf')
-    fig.savefig(pdf_path, format='pdf', bbox_inches='tight')
-    print(f"  {description} PDF: {pdf_path}")
-
-    # EPS with embedded fonts
-    eps_path = output_path.with_suffix('.eps')
-    fig.savefig(eps_path, format='eps', bbox_inches='tight')
-    print(f"  {description} EPS: {eps_path}")
-
-    # SVG with text converted to paths
-    svg_path = output_path.with_suffix('.svg')
-    plt.rcParams['svg.fonttype'] = 'path'
-    fig.savefig(svg_path, format='svg', bbox_inches='tight')
-    print(f"  {description} SVG: {svg_path}")
+    return plotted
 
 
 def create_performance_figure(results_list: List[Dict[str, Any]],
@@ -432,18 +448,17 @@ def create_performance_figure(results_list: List[Dict[str, Any]],
                               metric: str = 'p95',
                               panel_a_size: int = None,
                               panel_b_conc: int = 1,
-                              show_p95_bars: bool = True):
+                              show_p95_bars: bool = True,
+                              formats=('pdf', 'png', 'svg')):
     """
     Create two-panel figure AND individual standalone panels:
     - Combined: Panel A + Panel B side-by-side
     - Panel A: Concurrency scaling with stacked P50+P95 bars (c=1, c=10, c=25) for a specific dataset size
     - Panel B: Dataset size scaling (1K, 5K, 10K, ...) at a specific concurrency
 
-    Saves figures in multiple formats for manuscript submission:
-    - PNG (300 DPI) for preview
-    - PDF with embedded fonts (high-quality vector graphics)
-    - EPS with embedded fonts
-    - SVG with text converted to paths (for consistent browser display)
+    Each figure is written at its final print size as a vector PDF with editable
+    text, plus PNG and SVG, plus the plotted values as CSV, and every PDF is
+    verified with pdffonts / pdfimages / pdfinfo before the function returns.
 
     Args:
         results_list: List of result dictionaries
@@ -452,6 +467,7 @@ def create_performance_figure(results_list: List[Dict[str, Any]],
         panel_a_size: Dataset size for Panel A (if None, uses largest)
         panel_b_conc: Concurrency level for Panel B (default: 1)
         show_p95_bars: If True, Panel A shows stacked P50+P95 bars (default: True)
+        formats: Output formats; add 'eps' only if a journal insists on it
 
     If multiple replicates exist for the same (dataset_size, concurrency, endpoint),
     the median value across replicates is used.
@@ -478,8 +494,7 @@ def create_performance_figure(results_list: List[Dict[str, Any]],
             for endpoint_data in result.get('latency', []):
                 if endpoint_data['endpoint'] == 'version_specific_query':
                     continue
-                p95_val = endpoint_data.get('p95_ms', 0) / 1000
-                max_y = max(max_y, p95_val)
+                max_y = max(max_y, metric_value(endpoint_data, 'p95_ms') / 1000)
 
     # Panel B: Check data at panel_b_conc (all dataset sizes, selected metric)
     for result in results_list:
@@ -487,52 +502,53 @@ def create_performance_figure(results_list: List[Dict[str, Any]],
             for endpoint_data in result.get('latency', []):
                 if endpoint_data['endpoint'] == 'version_specific_query':
                     continue
-                metric_val = endpoint_data.get(f'{metric}_ms', 0) / 1000
-                max_y = max(max_y, metric_val)
+                max_y = max(max_y, metric_value(endpoint_data, f'{metric}_ms') / 1000)
 
-    # Create figure with two panels
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+    # Create figure with two panels, at final print size. Constrained layout
+    # (set in publication.mplstyle) keeps that size exact, so the figure is
+    # placed in Illustrator and never scaled.
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figure_size(*COMBINED_SIZE_MM))
 
     # Panel A: Concurrency scaling
-    plot_concurrency_scaling(ax1, results_list, panel_a_size, metric, show_p95_bars, max_y)
+    rows_a = plot_concurrency_scaling(ax1, results_list, panel_a_size, metric, show_p95_bars, max_y)
 
     # Panel B: Dataset size scaling
-    plot_dataset_scaling(ax2, results_list, panel_b_conc, metric, max_y)
+    rows_b = plot_dataset_scaling(ax2, results_list, panel_b_conc, metric, max_y)
 
     # Add panel labels
-    ax1.text(-0.15, 1.05, 'A', transform=ax1.transAxes, fontsize=16, fontweight='bold')
-    ax2.text(-0.15, 1.05, 'B', transform=ax2.transAxes, fontsize=16, fontweight='bold')
-
-    plt.tight_layout()
+    panel_label(ax1, 'A')
+    panel_label(ax2, 'B')
 
     # Save combined figure in all formats
     output_path = Path(output_file)
     print("\nSaving combined figure:")
-    save_figure_all_formats(fig, output_path, "Combined")
+    save_figure(fig, output_path, formats=formats, label='Combined',
+                data=[{'panel': 'A', **row} for row in rows_a]
+                     + [{'panel': 'B', **row} for row in rows_b])
     plt.close(fig)
 
-    # Generate and save Panel A as standalone figure (larger for better clarity)
+    # Generate and save Panel A as standalone figure
     print("\nGenerating Panel A (concurrency scaling) as standalone figure:")
-    fig_a = plt.figure(figsize=(10, 6))
+    fig_a = plt.figure(figsize=figure_size(*STANDALONE_SIZE_MM))
     ax_a = fig_a.add_subplot(111)
-    plot_concurrency_scaling(ax_a, results_list, panel_a_size, metric, show_p95_bars, max_y)
-    ax_a.text(-0.1, 1.05, 'A', transform=ax_a.transAxes, fontsize=16, fontweight='bold')
-    plt.tight_layout()
+    rows_a = plot_concurrency_scaling(ax_a, results_list, panel_a_size, metric, show_p95_bars, max_y)
+    panel_label(ax_a, 'A')
 
     panel_a_path = output_path.with_name(output_path.stem + '_panel_a' + output_path.suffix)
-    save_figure_all_formats(fig_a, panel_a_path, "Panel A")
+    save_figure(fig_a, panel_a_path, formats=formats, label='Panel A',
+                data=[{'panel': 'A', **row} for row in rows_a])
     plt.close(fig_a)
 
-    # Generate and save Panel B as standalone figure (larger for better clarity)
+    # Generate and save Panel B as standalone figure
     print("\nGenerating Panel B (dataset scaling) as standalone figure:")
-    fig_b = plt.figure(figsize=(10, 6))
+    fig_b = plt.figure(figsize=figure_size(*STANDALONE_SIZE_MM))
     ax_b = fig_b.add_subplot(111)
-    plot_dataset_scaling(ax_b, results_list, panel_b_conc, metric, max_y)
-    ax_b.text(-0.1, 1.05, 'B', transform=ax_b.transAxes, fontsize=16, fontweight='bold')
-    plt.tight_layout()
+    rows_b = plot_dataset_scaling(ax_b, results_list, panel_b_conc, metric, max_y)
+    panel_label(ax_b, 'B')
 
     panel_b_path = output_path.with_name(output_path.stem + '_panel_b' + output_path.suffix)
-    save_figure_all_formats(fig_b, panel_b_path, "Panel B")
+    save_figure(fig_b, panel_b_path, formats=formats, label='Panel B',
+                data=[{'panel': 'B', **row} for row in rows_b])
     plt.close(fig_b)
 
 
@@ -546,7 +562,10 @@ Generates THREE figures automatically:
   2. Panel A standalone (concurrency scaling: c=1, c=10, c=25)
   3. Panel B standalone (dataset size scaling: 1K, 5K, 10K, ...)
 
-Each figure saved in 4 formats: PNG (300 DPI), PDF, EPS, SVG
+Each figure is saved as a vector PDF at final print size (the deliverable, with
+text editable in Illustrator), plus PNG and SVG, plus the plotted values as CSV
+and a pdffonts/pdfimages/pdfinfo check of every PDF. Add --eps only if a journal
+insists; the guide's advice is to export EPS from Illustrator instead.
 
 Examples:
   # Basic usage with all results
@@ -565,7 +584,7 @@ Examples:
     parser.add_argument('results', nargs='+', help='JSON result files from performance tests')
     parser.add_argument('-o', '--output', default='performance_figure.png',
                        help='Output file path (default: performance_figure.png)')
-    parser.add_argument('-m', '--metric', default='p95', choices=['p50', 'p95', 'p99'],
+    parser.add_argument('-m', '--metric', default='p95', choices=['p50', 'p95', 'p99', 'avg'],
                        help='Metric to use for Panel B dataset scaling (default: p95)')
     parser.add_argument('--panel-a-size', type=int, default=None,
                        help='Dataset size for Panel A concurrency plot (default: largest)')
@@ -573,8 +592,11 @@ Examples:
                        help='Concurrency level for Panel B dataset scaling (default: 1)')
     parser.add_argument('--no-stacked-bars', dest='show_p95_bars', action='store_false',
                        help='Use line plots for Panel A instead of default stacked P50+P95 bars')
+    parser.add_argument('--eps', action='store_true',
+                       help='Also write EPS (only if a journal insists; PDF is the deliverable)')
 
     args = parser.parse_args()
+    formats = ('pdf', 'png', 'svg') + (('eps',) if args.eps else ())
 
     # Load all results
     results_list = []
@@ -595,16 +617,22 @@ Examples:
 
     # Create figures
     create_performance_figure(results_list, args.output, args.metric,
-                             args.panel_a_size, args.panel_b_conc, args.show_p95_bars)
+                             args.panel_a_size, args.panel_b_conc, args.show_p95_bars,
+                             formats)
 
     print("\n" + "="*80)
     print("GENERATION COMPLETE")
     print("="*80)
-    print(f"\nGenerated 3 figures × 4 formats = 12 files total:")
+    suffixes = '|'.join(formats)
+    print(f"\nGenerated 3 figures × {len(formats)} formats "
+          f"= {3 * len(formats)} files, plus one CSV each:")
     output_path = Path(args.output)
-    print(f"  Combined: {output_path.stem}.[png|pdf|eps|svg]")
-    print(f"  Panel A:  {output_path.stem}_panel_a.[png|pdf|eps|svg]")
-    print(f"  Panel B:  {output_path.stem}_panel_b.[png|pdf|eps|svg]")
+    print(f"  Combined: {output_path.stem}.[{suffixes}]  ({COMBINED_SIZE_MM[0]:.0f} × "
+          f"{COMBINED_SIZE_MM[1]:.0f} mm)")
+    print(f"  Panel A:  {output_path.stem}_panel_a.[{suffixes}]  ({STANDALONE_SIZE_MM[0]:.0f} × "
+          f"{STANDALONE_SIZE_MM[1]:.0f} mm)")
+    print(f"  Panel B:  {output_path.stem}_panel_b.[{suffixes}]  ({STANDALONE_SIZE_MM[0]:.0f} × "
+          f"{STANDALONE_SIZE_MM[1]:.0f} mm)")
     print()
 
     return 0

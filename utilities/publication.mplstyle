@@ -1,0 +1,41 @@
+# publication.mplstyle -- Illustrator-editable vector figures.
+#
+# Transcribed from manuscript/revision/scientific-figures-guide.md section 4.1
+# so the two files can be diffed against each other. Load it through
+# figure_style.apply_style(), which also asserts the settings that matter
+# survived (a later rcParams write, or seaborn, can silently undo them).
+#
+# The single most important line is pdf.fonttype. matplotlib's default is 3,
+# and Type 3 fonts are glyph-drawing procedures that Illustrator opens as
+# outlined paths -- which is why the plot text in the originally submitted
+# Supplementary Figures S1 and S2 cannot be selected or edited.
+
+pdf.fonttype: 42          # TrueType (Type 42), NOT the default 3 -> editable text in Illustrator
+ps.fonttype: 42
+svg.fonttype: none        # keep SVG text as <text>, not <path>
+font.family: sans-serif
+font.sans-serif: Arial, Helvetica, Liberation Sans, DejaVu Sans
+font.size: 7
+axes.titlesize: 8
+axes.labelsize: 7
+xtick.labelsize: 6
+ytick.labelsize: 6
+legend.fontsize: 6
+legend.frameon: False
+axes.linewidth: 0.6
+xtick.major.width: 0.6
+ytick.major.width: 0.6
+xtick.major.size: 2.5
+ytick.major.size: 2.5
+lines.linewidth: 1.0
+lines.markersize: 3
+axes.spines.top: False
+axes.spines.right: False
+figure.constrained_layout.use: True   # replaces tight_layout(); keeps the exact figsize
+savefig.dpi: 600                      # only affects rasterised layers
+savefig.transparent: True
+mathtext.fontset: custom              # otherwise mathtext is set in DejaVu Sans even with fonttype 42
+mathtext.rm: Arial
+mathtext.it: Arial:italic
+mathtext.bf: Arial:bold
+axes.prop_cycle: cycler('color', ['E69F00','56B4E9','009E73','F0E442','0072B2','D55E00','CC79A7','000000'])
