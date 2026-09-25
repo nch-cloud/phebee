@@ -9,6 +9,7 @@ tests/
 ├── unit/                          # Unit tests (fast, no infrastructure)
 ├── integration/                   # Integration tests (require deployed stack)
 │   ├── api/                       # API Gateway smoke tests
+│   ├── evaluation/                # End-to-end functional evaluation (manuscript requirements)
 │   ├── performance/               # Performance evaluation suite
 │   └── *.py                       # Lambda and service integration tests
 ```
@@ -23,16 +24,19 @@ Unit tests validate individual functions and modules without requiring AWS infra
 
 **What they test**:
 - Athena query result parsing (`test_athena_struct_parsing.py`)
+- Athena query metrics and cost estimates (`test_athena_metrics.py`)
 - AWS utility functions (`test_aws_utilities.py`)
 - Hash consistency for data integrity (`test_hash_consistency.py`)
+- Hash agreement between the API, bulk import and rebuild paths (`test_bulk_hash_consistency.py`, `test_bulk_context_null_handling.py`, `test_rehash_hash_consistency.py`)
+- Qualifier model, normalization and value canonicalization (`test_qualifier.py`, `test_qualifier_normalization.py`, `test_qualifier_canonicalization.py`)
 - Monarch API utilities (`test_monarch_utilities.py`)
 - OBO ontology file parsing (`test_obo_parsing.py`)
-- Phenopacket data processing (`test_phenopacket_processing.py`, `test_phenopacket_utilities.py`)
+- Phenopacket data processing and export (`test_phenopacket_processing.py`, `test_phenopacket_utilities.py`, `test_phenopacket_export.py`)
 - Evidence payload preparation (`test_prepare_evidence_payload.py`)
 - SPARQL query utilities (`test_sparql_utilities.py`)
 - String manipulation utilities (`test_string_utilities.py`)
 
-**Running unit tests**:
+**Running unit tests** (from the project root, so the `pythonpath` in `pytest.ini` applies):
 ```bash
 # Run all unit tests
 pytest tests/unit -v
@@ -40,9 +44,11 @@ pytest tests/unit -v
 # Run specific test file
 pytest tests/unit/test_obo_parsing.py -v
 
-# Run with coverage
-pytest tests/unit --cov=src --cov-report=html
+# Run with coverage (requires pytest-cov)
+pytest tests/unit --cov=layers/phebee-utils/phebee --cov=functions --cov=scripts --cov-report=html
 ```
+
+Unit tests are not marked, and `pytest.ini` sets `testpaths = tests/integration`, so select them by path rather than with `-m`.
 
 ---
 
@@ -59,11 +65,17 @@ Core integration tests for individual Lambda functions and orchestration workflo
 - **Project Management**: `test_create_project.py`, `test_remove_project.py`
 - **Subject Operations**: `test_create_subject.py`, `test_get_subject.py`, `test_remove_subject.py`
 - **Evidence Operations**: `test_create_evidence.py`, `test_get_evidence.py`, `test_remove_evidence.py`, `test_query_evidence.py`
-- **Query Operations**: `test_get_subjects_pheno.py`, `test_get_subject_term_info.py`, `test_query_evidence_by_run.py`
+- **Query Operations**: `test_get_subjects_pheno.py`, `test_get_subject_term_info.py`, `test_get_subject_qualifiers.py`, `test_query_evidence_by_run.py`
 - **Ontology Updates**: `test_update_hpo_sfn.py`, `test_update_mondo_sfn.py`, `test_update_eco_sfn.py`
 - **Bulk Operations**: `test_bulk_import_statemachine.py`, `test_import_phenopackets_statemachine.py`, `test_validate_bulk_import.py`
-- **Materialization**: `test_materialize_project_subject_terms.py`
-- **Utilities**: `test_get_source_info.py`, `test_reset_database.py`
+- **Materialization and Rebuild**: `test_materialize_project_subject_terms.py`, `test_rebuild_state_machine.py`
+- **Utilities**: `test_get_source_info.py`, `test_reset_database.py` (erases all data in the target stack; see [Using Existing Stack](#using-existing-stack))
+
+### Functional Evaluation
+
+End-to-end run of the manuscript's functional workflows against a small synthetic cohort: descendant expansion, qualifier filtering, re-ingestion of identical evidence, subjects shared across projects, and term source metadata in the evidence table.
+
+**Location**: `tests/integration/evaluation/test_evaluation_end_to_end.py`
 
 ### API Gateway Tests
 
@@ -107,13 +119,14 @@ Comprehensive performance evaluation infrastructure for measuring bulk import th
 
 Integration tests require:
 1. AWS credentials configured (`aws configure`)
-2. Python dependencies: `pytest`, `boto3`, `requests`, `aws-requests-auth`
+2. Python dependencies: `pytest`, `boto3`, `requests`, `requests-aws4auth`
 
 ### Basic Usage
 
 ```bash
-# Deploy the stack first
-sam build && sam deploy --config-env integration-test
+# Deploy the stack first, then upload the EMR scripts it runs from S3
+sam build && sam deploy --config-env integration-test --resolve-s3
+./utilities/deploy-scripts.sh phebee-integration-test
 
 # Run all integration tests
 pytest tests/integration -v
@@ -130,26 +143,25 @@ Tests are marked for selective execution:
 
 | Marker | Description | Example |
 |--------|-------------|---------|
-| `unit` | Fast unit tests, no infrastructure | `pytest -m unit` |
 | `integration` | Requires deployed stack | `pytest -m integration` |
 | `api` | API Gateway tests | `pytest -m api` |
-| `perf` | Performance evaluation tests (slow) | `pytest -m perf` |
+| `perf` | Performance evaluation tests (slow; also require `PHEBEE_EVAL_SCALE=1`) | `pytest -m perf` |
 
-**Note**: API tests have both the `api` and `integration` markers, so running `pytest -m integration` will include API tests.
+**Note**: Only some integration modules carry the `integration` marker (API tests have both `api` and `integration`), so `pytest -m integration` runs a subset of the integration suite. Select by path to run all of it.
 
 **Common patterns**:
 ```bash
 # Fast development cycle (unit tests only)
-pytest -m unit -v
+pytest tests/unit -v
 
-# All integration tests (including API tests)
-pytest -m integration -v
+# All integration tests
+pytest tests/integration -v
 
-# Skip performance tests (faster feedback)
+# Integration modules marked `integration`, excluding performance tests
 pytest -m "integration and not perf" -v
 
 # Performance evaluation only
-pytest -m perf -v -s
+PHEBEE_EVAL_SCALE=1 pytest -m perf -v -s
 ```
 
 ### Using Existing Stack
@@ -190,6 +202,8 @@ pytest tests/integration -v
 - This file is already in `.gitignore` and won't be committed
 - Performance tests **must** be run from the project root so the file can be found
 
+> **Data safety**: `test_reset_database.py` invokes the stack's `ResetDatabaseFunction`, which erases the DynamoDB table, the Neptune database and the Iceberg tables. It is deployed in every stack. When the suite targets an existing stack (by flag or file), these tests are skipped unless `PHEBEE_ALLOW_DATABASE_RESET=1` is set. Never set it for a stack holding data you need.
+
 ---
 
 ## Test Configuration
@@ -210,8 +224,8 @@ pytest tests/integration -v
 ### Fixtures
 
 Shared fixtures are defined in `conftest.py` files:
-- `tests/conftest.py` - Root fixtures (stack deployment, AWS clients)
-- `tests/integration/conftest.py` - Integration test fixtures (resources, auth)
+- `tests/conftest.py` - Command-line options (`--existing-stack`, `--profile`, `--config-env`)
+- `tests/integration/conftest.py` - Stack deployment/resolution, AWS clients, SigV4 auth and shared resources
 - `tests/integration/performance/conftest.py` - Performance test fixtures (data generation)
 
 ---
@@ -234,9 +248,9 @@ echo "phebee-integration-test" > .phebee-test-stack
 pytest tests/integration -v
 ```
 
-### "No module named 'src'"
+### "No module named 'phebee'" (or a Lambda module such as `create_subject`)
 
-**Cause**: Python path doesn't include the project root.
+**Cause**: pytest was not started from the project root, so the `pythonpath` entries in `pytest.ini` (`functions`, `layers/phebee-utils`, `tests/integration`) were not applied.
 
 **Solution**: Run pytest from the project root directory:
 ```bash

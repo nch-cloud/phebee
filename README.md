@@ -14,7 +14,7 @@ PheBee leverages ontologies like HPO (Human Phenotype Ontology), MONDO (Monarch 
 - RESTful API with OpenAPI spec and AWS Signature V4 authentication
 - Serverless architecture powered by AWS SAM and Lambda
 - Iceberg tables registered in AWS Glue Data Catalog, enabling integration with Lake Formation and other analytics tools
-- Automated deployment and testing workflows
+- Scripted deployment (AWS SAM) and a pytest integration suite that can deploy and tear down a test stack
 
 ---
 
@@ -32,10 +32,10 @@ PheBee uses a hybrid architecture combining knowledge graphs with data lake tech
 - Stores subject-term associations and clinical evidence as columnar data
 - Queryable via AWS Athena for analytical workloads
 
-**DynamoDB (Caching Layer)**
-- Caches frequently accessed ontology metadata (term descendants, versions)
-- Dramatically reduces load for common traversal patterns
-- Handles versioning for ontology updates
+**DynamoDB (Mappings, Version Registry and Cache)**
+- Maps each project-scoped subject identifier to its shared internal subject ID
+- Records installed ontology versions and their install timestamps
+- Caches term-descendant lists per ontology version, populated on first query
 
 **S3 (Object Storage)**
 - Raw data staging for bulk imports (Phenopackets, NDJSON)
@@ -44,12 +44,13 @@ PheBee uses a hybrid architecture combining knowledge graphs with data lake tech
 
 ### Data Flow
 
-1. **Ontology Loading**: OWL/OBO files → Neptune graph + DynamoDB cache
-2. **Bulk Import**: S3 NDJSON batches → Step Functions orchestration → Iceberg tables → Neptune graph
+1. **Ontology Loading**: OWL files → version-scoped Neptune named graph (e.g. `hpo~<version>`); for HPO and Mondo, OBO files → Iceberg ontology hierarchy table (ancestor closure per term); installed version recorded in DynamoDB
+2. **Bulk Import**: S3 NDJSON batches → Step Functions orchestration → Iceberg evidence table → Neptune graph
 3. **Materialization**: Evidence data is aggregated into dual-partitioned analytical tables for optimized query patterns
 4. **Query Path**:
-   - API Gateway → Lambda → Neptune (ontology traversal) + Athena (data queries)
-   - Results combined and returned via RESTful API
+   - API Gateway → Lambda → Athena queries over the Iceberg subject-term and evidence tables
+   - Descendant expansion reads the Iceberg ontology hierarchy table, cached per term and ontology version in DynamoDB
+   - The HTTP API read operations do not query Neptune; the graph is written during ingestion and can be queried with SPARQL through the read-only SPARQL function (direct Lambda invocation only, not exposed through the HTTP API)
 
 ### Why This Architecture?
 
@@ -108,7 +109,7 @@ Before building or deploying PheBee, make sure you have:
 
 - [AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/install-cliv2.html) installed and configured
 - [AWS SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html)
-- Python 3.9+
+- Python 3.11 (the Lambda runtime; the shared layer does not import on Python 3.9)
 - `pip` and `virtualenv` (recommended)
 - AWS credentials with appropriate IAM permissions for deploying a SAM app
 
@@ -158,7 +159,15 @@ To check deployment status:
 aws cloudformation describe-stacks --stack-name <your-stack-name>
 ```
 
-### 3. Clean Up Resources
+### 3. Upload the EMR Scripts
+
+The bulk import and rebuild state machines run their Spark jobs from `s3://<PheBeeBucketName>/scripts/`, which `sam deploy` does not populate. Upload them once after each deployment that changes `scripts/`, from the project root:
+
+```bash
+./utilities/deploy-scripts.sh <your-stack-name>
+```
+
+### 4. Clean Up Resources
 
 ```bash
 sam delete --stack-name <your-stack-name> --no-prompts
@@ -175,16 +184,22 @@ Integration tests validate the infrastructure and APIs by deploying the stack an
 Install dependencies:
 
 ```bash
-pip install pytest boto3
+pip install pytest boto3 requests requests-aws4auth
 ```
 
 Ensure your AWS credentials are configured (`aws configure`).
 
+When no existing stack is given, the suite builds and deploys a new stack using the parameter overrides in `tests/integration/conftest.py`; review those for your account before relying on that path.
+
+`tests/integration/test_reset_database.py` erases all data in the target stack. It runs against stacks the suite deploys for itself, and is skipped against an existing stack unless `PHEBEE_ALLOW_DATABASE_RESET=1` is set.
+
 ### Run All Integration Tests
 
 ```bash
-pytest -m integration -v
+pytest tests/integration -v
 ```
+
+`pytest -m integration` selects only the modules that carry the `integration` marker, which is a subset of the suite.
 
 With profile or environment:
 
@@ -208,7 +223,7 @@ See [Testing Guide](tests/README.md#using-existing-stack) for details.
 Run a specific test:
 
 ```bash
-pytest tests/integration/test_cloudformation_stack.py::test_cloudformation_stack -m integration -v
+pytest tests/integration/test_create_project.py -v
 ```
 
 ---
