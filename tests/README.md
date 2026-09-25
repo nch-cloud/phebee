@@ -202,7 +202,7 @@ pytest tests/integration -v
 - This file is already in `.gitignore` and won't be committed
 - Performance tests **must** be run from the project root so the file can be found
 
-> **Data safety**: `test_reset_database.py` invokes the stack's `ResetDatabaseFunction`, which erases the DynamoDB table, the Neptune database and the Iceberg tables. It is deployed in every stack. When the suite targets an existing stack (by flag or file), these tests are skipped unless `PHEBEE_ALLOW_DATABASE_RESET=1` is set. Never set it for a stack holding data you need.
+> **Data safety**: `test_reset_database.py` invokes the stack's `ResetDatabaseFunction`, which erases the DynamoDB table, the Neptune database and the Iceberg tables, including the installed ontologies and their materialized hierarchies. It is deployed in every stack. A stack that has been reset needs `UpdateHPOSFN` run again before hierarchy expansion or term-label lookup will work. When the suite targets an existing stack (by flag or file), these tests are skipped unless `PHEBEE_ALLOW_DATABASE_RESET=1` is set. Never set it for a stack holding data you need.
 
 ---
 

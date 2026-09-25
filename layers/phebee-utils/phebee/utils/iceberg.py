@@ -3009,8 +3009,18 @@ def _get_query_results(query_execution_id: str) -> List[Dict[str, Any]]:
 
 def reset_iceberg_tables() -> bool:
     """
-    Delete all data from all Iceberg tables (evidence, subject_terms_by_subject, subject_terms_by_project_term).
+    Delete all data from all Iceberg tables (evidence, subject_terms_by_subject,
+    subject_terms_by_project_term, ontology_hierarchy).
     Used by reset_database to completely wipe Iceberg data.
+
+    The ontology hierarchy table is included so that a reset leaves no
+    ontology state behind. reset_dynamodb_table already removes the SOURCE~*
+    install records that get_current_term_source_version reads, so leaving the
+    hierarchy rows in place produced a database whose materialized ancestor
+    closures referred to versions the deployment no longer knew were
+    installed, and which accumulated one dead partition per reinstall. A
+    reset must therefore be followed by an ontology reinstall (UpdateHPOSFN /
+    UpdateMondoSFN) before any query that expands child terms.
 
     Returns:
         bool: True if all tables cleared successfully, False otherwise
@@ -3022,14 +3032,17 @@ def reset_iceberg_tables() -> bool:
     evidence_table = os.environ.get('ICEBERG_EVIDENCE_TABLE')
     by_subject_table = os.environ.get('ICEBERG_SUBJECT_TERMS_BY_SUBJECT_TABLE')
     by_project_term_table = os.environ.get('ICEBERG_SUBJECT_TERMS_BY_PROJECT_TERM_TABLE')
+    ontology_hierarchy_table = os.environ.get('ICEBERG_ONTOLOGY_HIERARCHY_TABLE')
 
-    if not all([evidence_table, by_subject_table, by_project_term_table]):
+    if not all([evidence_table, by_subject_table, by_project_term_table,
+                ontology_hierarchy_table]):
         raise ValueError("All Iceberg table environment variables must be set")
 
     tables = [
         (evidence_table, "evidence"),
         (by_subject_table, "subject_terms_by_subject"),
-        (by_project_term_table, "subject_terms_by_project_term")
+        (by_project_term_table, "subject_terms_by_project_term"),
+        (ontology_hierarchy_table, "ontology_hierarchy")
     ]
 
     athena_client = boto3.client('athena')

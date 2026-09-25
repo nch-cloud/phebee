@@ -19,6 +19,7 @@ Performance testing infrastructure consists of:
 - [Quick Start](#quick-start)
 - [Environment Variables](#environment-variables)
 - [Benchmark Datasets](#benchmark-datasets)
+- [Running a Full Campaign](#running-a-full-campaign)
 - [Troubleshooting](#troubleshooting)
 
 ---
@@ -175,7 +176,9 @@ The API latency test executes 7 comprehensive query patterns representing realis
 | 6 | **paginated_large_cohort** | Unfiltered project query, `limit` 50; only the first page is requested | Broad cohort queries |
 | 7 | **subject_term_info** | Detailed subject-term evidence, rotating over one term link per subject returned for the project | Curator: evidence review |
 
-Before timing, the test makes one warm-up call to each of the first three patterns. Random terms for patterns 4 and 5 are drawn from the distinct terms in the dataset's records; when a `PHEBEE_EVAL_BENCHMARK_DIR` dataset has more than 500,000 records it is loaded lazily and the terms come from the first 10,000 records of its first batch file. This sampling is not seeded.
+Before timing, the test makes one warm-up call to each of the first three patterns. Terms for patterns 4 and 5 are drawn from the distinct terms in the dataset's records; when a `PHEBEE_EVAL_BENCHMARK_DIR` dataset has more than 500,000 records it is loaded lazily and the terms come from the first 10,000 records of its first batch file.
+
+That sampling is seeded by `PHEBEE_EVAL_QUERY_SEED`, and the full sequence of terms each pattern will query is drawn once before timing starts rather than per request. Both details matter: drawing inside the request function made the term mix depend on thread interleaving, so the same seed did not reproduce the same measurement, and the term list itself was built from an unsorted `set`, whose iteration order over strings varies between processes. **Runs before 2026-09-25 were not seeded at all** — `PHEBEE_EVAL_SEED` was recorded in `api_run.json` but never applied — so their term mix is not recoverable. `PHEBEE_EVAL_QUERY_SEED` is separate from `PHEBEE_EVAL_SEED` on purpose: the query seed is meant to vary between replicates of one dataset, and the dataset seed is not.
 
 Pattern 7 cannot sample a subject and a term independently: `/subject/term-info` filters on `termlink_id`, which hashes the subject IRI, the term IRI and the qualifier set together, so a request only resolves when all three match a stored term link. Its targets are therefore taken from the `phenotypes` entries of the `/subjects/query` response that seeds the other patterns — one term link per subject, carrying that link's own qualifiers — and the workload asserts HTTP 200 rather than tolerating 404. Before timing, the test probes `PHEBEE_EVAL_TERM_INFO_PROBE_N` (default 5) of those targets and fails the run if any does not resolve.
 
@@ -231,6 +234,7 @@ pytest -v -s tests/integration/performance/test_import_performance.py \
 | `PHEBEE_EVAL_LATENCY_N` | 100 | Number of requests per API endpoint pattern (100 provides stable p50/p95 estimates) |
 | `PHEBEE_EVAL_CONCURRENCY` | 25 | Number of concurrent workers for load testing |
 | `PHEBEE_EVAL_TERM_INFO_PROBE_N` | 5 | Subject term detail targets probed before timing; the run fails if any does not resolve |
+| `PHEBEE_EVAL_QUERY_SEED` | `PHEBEE_EVAL_SEED`, else 42 | Seeds which terms and term links the latency patterns query. Vary it between replicates; do not confuse it with `PHEBEE_EVAL_SEED`, which seeds dataset generation |
 | `PHEBEE_EVAL_STRICT_LATENCY` | 0 | Enforce p95 ≤ 5000ms performance gates (1=enabled, 0=disabled) |
 | `PHEBEE_EVAL_WRITE_ARTIFACTS` | 1 | Write CSV/JSON artifacts to /tmp/phebee-eval-artifacts/ |
 | `PHEBEE_EVAL_METRICS_PATH` | None | Local file path to write performance metrics JSON |
@@ -242,7 +246,7 @@ pytest -v -s tests/integration/performance/test_import_performance.py \
 |----------|---------|-------------|
 | `PHEBEE_EVAL_BENCHMARK_DIR` | None | Path to pre-generated benchmark dataset directory (if set, loads from disk instead of generating) |
 | `PHEBEE_EVAL_PREVALENCE_CSV_PATH` | None | Term prevalence CSV (`term_iri,frequency`) that defines the common/rare term pools; required to reproduce the manuscript datasets |
-| `PHEBEE_EVAL_SEED` | 42 in `generate_benchmark_dataset.py`; unset in pytest | Random seed. When unset, data generated inside a pytest run is seeded from the clock and is not reproducible, so set it explicitly |
+| `PHEBEE_EVAL_SEED` | 42 in `generate_benchmark_dataset.py`; unset in pytest | Seed for **dataset generation**. When unset, data generated inside a pytest run is seeded from the clock and is not reproducible, so set it explicitly. It does not govern which terms the latency patterns query — see `PHEBEE_EVAL_QUERY_SEED` |
 | `PHEBEE_EVAL_HPO_VERSION` | `unknown` | Version written to each record's `term_source` when the terms index metadata has no `release`/`version` key (the committed index has neither) |
 | `PHEBEE_EVAL_HPO_VERSION_IRI` | `http://purl.obolibrary.org/obo/hp/releases/{version}/hp.owl` | IRI written to each record's `term_source` |
 | `PHEBEE_EVAL_SCALE_SUBJECTS` | 10,000 | Number of subjects |
@@ -344,6 +348,49 @@ pytest -v -s tests/integration/performance/test_import_performance.py \
 ```
 
 **Note:** When `PHEBEE_EVAL_BENCHMARK_DIR` is set, the tests will load pre-generated data from that directory instead of generating fresh synthetic data. This ensures exact reproducibility across test runs and is recommended for manuscript performance evaluations.
+
+---
+
+## Running a Full Campaign
+
+A published campaign is a grid of dataset size × concurrency × replicate. Each dataset size needs the deployment returned to a known state first, because the previous size's subjects would otherwise still be in the tables:
+
+1. **Reset** — invoke `ResetDatabaseFunction`, which clears the DynamoDB table, resets Neptune and deletes from all four Iceberg tables, including the ontology hierarchy. Nothing survives it.
+2. **Reinstall HPO** — run `UpdateHPOSFN`. This is mandatory, not optional: the reset removed the `hpo~<version>` Neptune graph that term-label lookup needs, the installed-version record that `get_current_term_source_version` reads, and the materialized ancestor closures that hierarchy expansion queries.
+3. **Import** — run `test_import_performance.py` once, letting it create the project.
+4. **Time the API** — run `test_evaluation_perf_scale.py` once per concurrency and replicate with `PHEBEE_EVAL_PROJECT_ID` set to the project the import created.
+
+`utilities/run_perf_campaign.py` drives all four steps and files each run's artifacts under `<out>/<n>/c<concurrency>/r<replicate>/artifacts/`, alongside a `campaign_run.json` recording the environment, the git commit and the resolved HPO version. Each cell's `campaign_run.json` is written last and makes a resumed campaign skip that cell, so an interrupted run continues rather than restarting:
+
+```bash
+python utilities/run_perf_campaign.py \
+  --benchmark-root tests/data/benchmark \
+  --out perf-campaign-2026-09-25
+
+# then, from the archived artifacts
+python utilities/generate_performance_matrix.py \
+  perf-campaign-2026-09-25/*/c*/r*/artifacts/api_run.json -o figs/
+```
+
+Verify the dataset MD5s (see [Verifying a Regenerated Dataset](#verifying-a-regenerated-dataset)) before starting; the driver does not re-check them.
+
+### The installed HPO version is not pinned
+
+`UpdateHPOSFN` installs whatever GitHub currently calls the newest HPO release — `download_github_release.find_newest_release` accepts no tag or version argument — and because the reset wipes the `SOURCE~hpo` record, the download is never skipped as already cached. Workload 3 (hierarchical term expansion) sends no `term_source_version`, so `HP:0001626` is expanded against whichever version was installed most recently.
+
+**Two campaigns run months apart are therefore not latency-comparable for workload 3**, even on byte-identical datasets: a different HPO release gives a different descendant set, so a different number of matching subjects. Workloads 1, 2 and 4–7 do not expand the hierarchy and are unaffected.
+
+To reproduce an earlier campaign's ontology, install that version's archived assets directly rather than running the state machine. The reset clears the hierarchy table and the DynamoDB record, but the downloaded `hp.owl` and `hp.obo` assets remain in the PheBee bucket under the source/version prefix, so the state machine's own sequence can be replayed against them for the version you want:
+
+`InstallRDFXMLSFN` (source = the archived `hp.owl`, graph_name = `hpo~<version>`) → `UpdateInstallTimestampFunction` → `MaterializeOntologyHierarchyFunction` (the archived `hp.obo`) → `InsertOntologyHierarchyBatchFunction` for each prepared batch.
+
+Then pass `--skip-hpo` to the driver. A fresh install timestamp makes that version current again, so hierarchy expansion resolves to it. Failing that, `run_perf_campaign.py` records the resolved version per run, so the comparison can at least be stated accurately.
+
+### Cold caches after a reset
+
+The reset empties the DynamoDB table that also holds the term-descendants cache (`get_term_descendants_from_cache`), so every dataset size begins with a cold descendant cache and a cold `_TERM_SOURCE_VERSION_CACHE` in each Lambda. The harness warms three functions before timing and probes the subject term detail targets, which covers the first-call penalty for those paths but not every workload's first cache fill. Keep the warm-up identical across a campaign so the residual effect is at least constant.
+
+---
 
 ### Important: Running Tests from Project Root
 
