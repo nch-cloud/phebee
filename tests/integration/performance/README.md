@@ -308,8 +308,8 @@ Generation is deterministic given the seed, terms index and prevalence CSV. `met
 | 1,000 | 329,240 | 1,214,327 | `83559f78a791d711924bff3fb61358b6` |
 | 5,000 | 1,624,945 | 5,994,039 | `ad7883bcc506d2f8de7fce844044092e` |
 | 10,000 | 3,251,666 | 11,993,639 | `b3bd441d72b04c4c3d767d24b80f538d` |
-| 50,000 | 16,232,032 | 59,878,126 | |
-| 100,000 | 32,516,163 | 119,945,659 | |
+| 50,000 | 16,232,032 | 59,878,126 | `860575a9f26aae43e09adaa796f0cff3` |
+| 100,000 | 32,516,163 | 119,945,659 | `ee2bc48a20543ec89aec3d77a40838e0` |
 
 ```bash
 cd tests/data/benchmark/1000-subjects-seed42/batches && cat $(ls batch-*.json | sort) | md5sum
