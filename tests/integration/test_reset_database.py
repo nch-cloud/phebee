@@ -1,14 +1,41 @@
 """
 Integration tests for reset_database Lambda function.
 
-This function wipes all data from Neptune and DynamoDB tables.
+This function wipes all data from the DynamoDB table, the Neptune database and the
+Iceberg tables of the stack under test.
+
+Because of that, these tests only run against a stack the test session deployed for
+itself. When the suite is pointed at an existing stack (--existing-stack or a
+.phebee-test-stack file), they are skipped unless PHEBEE_ALLOW_DATABASE_RESET=1 is set,
+so a run against a shared or production stack cannot erase its data by accident.
 """
 import json
+import os
 import pytest
 from phebee.utils.aws import get_client
 
-# Mark all tests in this module to run last since they reset the database
-pytestmark = pytest.mark.run_last
+
+def _targets_existing_stack(config) -> bool:
+    """Mirror the stack resolution in conftest.cloudformation_stack: flag first, then file."""
+    if config.getoption("--existing-stack"):
+        return True
+    config_file_path = os.path.join(os.getcwd(), ".phebee-test-stack")
+    if os.path.exists(config_file_path):
+        with open(config_file_path, "r") as f:
+            return bool(f.read().strip())
+    return False
+
+
+# Mark all tests in this module to run last since they reset the database.
+# The skip condition is a string so pytest evaluates it before any fixture resolves the stack.
+pytestmark = [
+    pytest.mark.run_last,
+    pytest.mark.skipif(
+        "_targets_existing_stack(config) and os.environ.get('PHEBEE_ALLOW_DATABASE_RESET') != '1'",
+        reason="reset_database erases all data in the target stack; set PHEBEE_ALLOW_DATABASE_RESET=1 "
+               "to run it against an existing stack",
+    ),
+]
 
 
 def test_reset_database_basic_success(app_name):

@@ -40,13 +40,16 @@ Subjects are assigned phenotypes that co-occur in real clinical practice, rather
 - **Oncology**: Neoplasm with associated complications
 - **Rare Dysmorphic**: Multiple congenital anomalies
 
+A clustered subject receives 3–5 terms from one cluster. Independently, every subject (clustered or not) includes one of two anchor terms, HP:0001627 (Abnormal heart morphology) or HP:0000707 (Abnormality of the nervous system), with probability 0.60 (`PHEBEE_EVAL_ANCHOR_TERM_PCT`). The remaining terms are drawn as described below. A subject never carries the same term twice.
+
 #### 2. Term Frequency Weighting
 
-When a prevalence CSV is provided (`PHEBEE_EVAL_PREVALENCE_CSV_PATH`), terms are sampled approximating real-world clinical frequencies:
-- **Common phenotypes** (70% of assignments): Frequently documented findings
-- **Rare phenotypes** (30% of assignments): Less common but clinically important findings
+Remaining terms are drawn from two pools: 70% of draws from the common pool, 30% from the rare pool (`PHEBEE_EVAL_COMMON_TERM_PCT`).
 
-This ensures synthetic data is similar to real clinical data distributions.
+- **With a prevalence CSV** (`PHEBEE_EVAL_PREVALENCE_CSV_PATH`): the common pool is the 2,000 terms with the highest prevalence, and the rare pool is the 5,000 terms with the lowest non-zero prevalence. Terms absent from the CSV, or between the two pools, are never drawn (apart from cluster and anchor terms), so a dataset uses at most 7,000 distinct pool terms.
+- **Without a CSV**: the common pool is the first 2,000 internal (non-leaf) terms and the rare pool the first 5,000 leaf terms of the terms index.
+
+Pool membership is set by prevalence rank; within a pool, terms are drawn uniformly.
 
 #### 3. Qualifier Distributions
 
@@ -56,47 +59,65 @@ Realistic context qualifiers based on clinical documentation patterns:
 - **Hypothetical** (5%): Suspected or rule-out diagnoses
 - **Unqualified** (72%): Present/observed findings
 
+Each TermLink carries at most one qualifier, applied to all of its evidence items.
+
 #### 4. Evidence Importance Weighting
 
-Documentation frequency varies by clinical importance:
-- **Chief complaints** (5-12 evidence items): Primary presenting symptoms
-- **Active problems** (2-6 evidence items): Current issues under management
-- **Past history** (1-3 evidence items): Historical findings
-- **Incidental** (1-2 evidence items): Noted but not primary concern
+Each TermLink draws a base evidence count uniformly from `[PHEBEE_EVAL_SCALE_MIN_EVIDENCE, PHEBEE_EVAL_SCALE_MAX_EVIDENCE]` (default 1–50). The count is then scaled by an importance multiplier: an integer drawn from the importance tier's range, divided by the mean of the configured bounds (25.5 by default). The result is floored, with a minimum of 1.
+- **Chief complaints** (tier range 5–12): the first three terms of each subject
+- **Active problems** (tier range 2–6): all other terms
+
+The generator also defines past-history (1–3) and incidental (1–2) tiers, but it does not currently assign them. With the defaults, the realized maximum is 23 evidence items per TermLink (⌊50 × 12 / 25.5⌋), below the configured maximum of 50.
 
 #### 5. Specialty Attribution
 
-Phenotypes are documented by appropriate medical specialties:
+With disease clustering enabled, the evidence creator encodes a specialty chosen from the term, e.g. `evidence_creator_id: ods/phebee-cardiology:v1`:
 - Cardiac phenotypes → Cardiology
 - Neurological phenotypes → Neurology
 - Metabolic phenotypes → Endocrinology
+- Neoplasm → Oncology
 - Rare dysmorphic features → Genetics
+- All other terms → Internal Medicine
+
+The evidence item's `author_specialty` field is `pediatrics` for every item.
 
 ---
 
 ## Quick Start
 
-**Step 1: Download HPO ontology**
+**Step 1: Choose the HPO terms index**
+
+To reproduce the manuscript datasets, use the committed index for HPO v2026-01-08, `tests/integration/performance/data/hpo_terms_v2026-01-08.json`, and skip to Step 3.
+
+To build an index from the current HPO release instead (this produces different datasets):
 ```bash
 cd tests/integration/performance
 curl -L http://purl.obolibrary.org/obo/hp.obo -o data/hp.obo
 ```
 
-**Step 2: Generate HPO terms index**
+**Step 2: Generate HPO terms index** (only if you downloaded `hp.obo` above)
 ```bash
 python generate_hpo_terms_json.py --obo data/hp.obo --out data/hpo_terms.json
 ```
 
-**Step 3: Configure environment**
+**Step 3: Configure environment** (run from the project root)
 ```bash
 # Required
 export PHEBEE_EVAL_SCALE=1
-export PHEBEE_EVAL_TERMS_JSON_PATH="tests/integration/performance/data/hpo_terms.json"
+export PHEBEE_EVAL_TERMS_JSON_PATH="tests/integration/performance/data/hpo_terms_v2026-01-08.json"
 
-# Manuscript parameters (recommended for Table 3 & 4)
+# Set explicitly: without it, data generated inside the test run is seeded from the clock
+export PHEBEE_EVAL_SEED=42
+
+# Required to reproduce the manuscript datasets (defines the common/rare term pools)
+export PHEBEE_EVAL_PREVALENCE_CSV_PATH="tests/integration/performance/data/term_frequencies.csv"
+
+# Manuscript parameters (Table 3, Figure 2, Supplementary Table S1)
 export PHEBEE_EVAL_SCALE_SUBJECTS=10000      # Dataset size (default: 10000)
 export PHEBEE_EVAL_CONCURRENCY=25            # Concurrent workers (default: 25)
 ```
+
+Alternatively, point `PHEBEE_EVAL_BENCHMARK_DIR` at a downloaded benchmark dataset (see [Benchmark Datasets](#benchmark-datasets)); the terms index is still required.
 
 **Step 4a: Run import performance test**
 ```bash
@@ -146,13 +167,15 @@ The API latency test executes 7 comprehensive query patterns representing realis
 
 | # | Pattern | Description | Use Case |
 |---|---------|-------------|----------|
-| 1 | **basic_subjects_query** | Simple project query with limit | Most common access pattern |
-| 2 | **individual_subject** | Single subject detail lookup | Patient detail views |
-| 3 | **hierarchy_expansion** | Descendant term expansion with ontology traversal | Research: "all cardiovascular conditions" |
-| 4 | **qualified_filtering** | Exclude negated/family/hypothetical | Clinical: confirmed findings only |
-| 5 | **specific_phenotype** | Direct term query without hierarchy | Research: exact term matching |
-| 6 | **paginated_large_cohort** | Large result set with pagination | Broad cohort queries with cursor |
+| 1 | **basic_subjects_query** | Unfiltered project query, `limit` 10 | Most common access pattern |
+| 2 | **individual_subject** | Single subject detail lookup, rotating over the first (up to 100) subjects returned for the project | Patient detail views |
+| 3 | **hierarchy_expansion** | HP:0001626 with `include_child_terms=true`, `limit` 20; descendants come from the Iceberg ontology hierarchy table, cached in DynamoDB | Research: "all cardiovascular conditions" |
+| 4 | **qualified_filtering** | Random dataset term with `include_qualified=false`, `limit` 15 | Clinical: confirmed findings only |
+| 5 | **specific_phenotype** | Random dataset term, `limit` 25; the server default `include_child_terms=true` also matches descendants | Research: single-phenotype cohort |
+| 6 | **paginated_large_cohort** | Unfiltered project query, `limit` 50; only the first page is requested | Broad cohort queries |
 | 7 | **subject_term_info** | Detailed subject-term evidence | Curator: evidence review |
+
+Before timing, the test makes one warm-up call to each of the first three patterns. Random terms for patterns 4, 5 and 7 are drawn from the distinct terms in the dataset's records; when a `PHEBEE_EVAL_BENCHMARK_DIR` dataset has more than 500,000 records it is loaded lazily and the terms come from the first 10,000 records of its first batch file. This sampling is not seeded.
 
 **Step 5: Run additional evaluations (optional)**
 
@@ -169,7 +192,7 @@ pytest -v -s tests/integration/performance/test_evaluation_perf_scale.py
 
 **Optional:** Generate static benchmark dataset for manuscript reproducibility:
 ```bash
-python tests/integration/performance/generate_benchmark_dataset.py  # Creates data/benchmark/{n_subjects}-subjects-seed{seed}/
+python tests/integration/performance/generate_benchmark_dataset.py  # Creates tests/data/benchmark/{n_subjects}-subjects-seed{seed}/ (or --output-dir)
 ```
 
 Each dataset is isolated in its own subdirectory based on parameters (subjects, seed). Non-default configurations (e.g., `--no-disease-clustering`) add a suffix.
@@ -193,7 +216,7 @@ pytest -v -s tests/integration/performance/test_import_performance.py \
 | Variable | Description | Example |
 |----------|-------------|---------|
 | `PHEBEE_EVAL_SCALE` | Enable performance tests (set to `1`) | `1` |
-| `PHEBEE_EVAL_TERMS_JSON_PATH` | Path to HPO terms JSON | `./data/hpo_terms.json` |
+| `PHEBEE_EVAL_TERMS_JSON_PATH` | Path to HPO terms JSON | `tests/integration/performance/data/hpo_terms_v2026-01-08.json` |
 
 ### Optional - Test Execution
 
@@ -213,8 +236,10 @@ pytest -v -s tests/integration/performance/test_import_performance.py \
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PHEBEE_EVAL_BENCHMARK_DIR` | None | Path to pre-generated benchmark dataset directory (if set, loads from disk instead of generating) |
-| `PHEBEE_EVAL_PREVALENCE_CSV_PATH` | None | Term frequency CSV for realistic distributions |
-| `PHEBEE_EVAL_SEED` | 42 | Random seed for reproducibility |
+| `PHEBEE_EVAL_PREVALENCE_CSV_PATH` | None | Term prevalence CSV (`term_iri,frequency`) that defines the common/rare term pools; required to reproduce the manuscript datasets |
+| `PHEBEE_EVAL_SEED` | 42 in `generate_benchmark_dataset.py`; unset in pytest | Random seed. When unset, data generated inside a pytest run is seeded from the clock and is not reproducible, so set it explicitly |
+| `PHEBEE_EVAL_HPO_VERSION` | `unknown` | Version written to each record's `term_source` when the terms index metadata has no `release`/`version` key (the committed index has neither) |
+| `PHEBEE_EVAL_HPO_VERSION_IRI` | `http://purl.obolibrary.org/obo/hp/releases/{version}/hp.owl` | IRI written to each record's `term_source` |
 | `PHEBEE_EVAL_SCALE_SUBJECTS` | 10,000 | Number of subjects |
 | `PHEBEE_EVAL_SCALE_MIN_TERMS` | 150 | Min HPO terms per subject (calibrated to production p75) |
 | `PHEBEE_EVAL_SCALE_MAX_TERMS` | 500 | Max HPO terms per subject (calibrated to production p90) |
@@ -235,6 +260,17 @@ pytest -v -s tests/integration/performance/test_import_performance.py \
 | `PHEBEE_EVAL_NOTE_DATE_START` | 2023-01-01 | Clinical note date range start |
 | `PHEBEE_EVAL_NOTE_DATE_END` | 2024-12-31 | Clinical note date range end |
 
+### Optional - Athena Metrics (`test_athena_metrics.py`)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PHEBEE_EVAL_ATHENA_RUN_ID` | newest `import_run.json` | Import run to measure |
+| `PHEBEE_EVAL_ATHENA_METRICS_DIR` | `/tmp/phebee-eval-artifacts/<run_id>` | Artifact output directory |
+| `PHEBEE_EVAL_ATHENA_EXPECTED_EVIDENCE` | from `PHEBEE_EVAL_BENCHMARK_DIR` metadata | Override the expected evidence count |
+| `PHEBEE_EVAL_ATHENA_EXPECTED_RECORDS` | from `PHEBEE_EVAL_BENCHMARK_DIR` metadata | Override the expected TermLink count |
+
+See the `test_athena_metrics.py` module docstring for the measurement procedure.
+
 ---
 
 ## Benchmark Datasets
@@ -252,9 +288,9 @@ export PHEBEE_EVAL_SEED=42
 python tests/integration/performance/generate_benchmark_dataset.py
 ```
 
-**Output Structure:**
+**Output Structure** (default `--output-dir`; the generator holds the whole dataset in memory, about 4.7 GB peak at 10,000 subjects):
 ```
-data/benchmark/
+tests/data/benchmark/1000-subjects-seed42/
 ├── metadata.json           # Generation parameters and statistics
 ├── README.md              # Human-readable documentation
 └── batches/
@@ -263,15 +299,34 @@ data/benchmark/
     └── ...
 ```
 
-### Using Pre-Generated Benchmarks
+### Verifying a Regenerated Dataset
 
-To use a previously generated benchmark dataset instead of generating fresh data:
+Generation is deterministic given the seed, terms index and prevalence CSV. `metadata.json` and `README.md` contain generation timestamps, so compare the batch files. With the committed index and CSV and seed 42:
+
+| Subjects | TermLinks (records) | Evidence items | MD5 of concatenated batches |
+|---|---|---|---|
+| 1,000 | 329,240 | 1,214,327 | `83559f78a791d711924bff3fb61358b6` |
+| 5,000 | 1,624,945 | 5,994,039 | `ad7883bcc506d2f8de7fce844044092e` |
+| 10,000 | 3,251,666 | 11,993,639 | `b3bd441d72b04c4c3d767d24b80f538d` |
+| 50,000 | 16,232,032 | 59,878,126 | `860575a9f26aae43e09adaa796f0cff3` |
+| 100,000 | 32,516,163 | 119,945,659 | `ee2bc48a20543ec89aec3d77a40838e0` |
 
 ```bash
-# Download from Zenodo and extract to project directory
-cd /path/to/phebee
-wget https://zenodo.org/record/YOUR_RECORD_ID/files/benchmark_dataset.tar.gz
-tar -xzf benchmark_dataset.tar.gz -C tests/integration/performance/data/benchmark/
+cd tests/data/benchmark/1000-subjects-seed42/batches && cat $(ls batch-*.json | sort) | md5sum
+```
+
+The checksums are those of the batch files in the Zenodo deposit below. Omitting `PHEBEE_EVAL_PREVALENCE_CSV_PATH`, or building the index from a different HPO release, produces a different dataset.
+
+### Using Pre-Generated Benchmarks
+
+The benchmark datasets used in the manuscript are deposited at [doi:10.5281/zenodo.19698733](https://doi.org/10.5281/zenodo.19698733), one archive per scale (`phebee-benchmark-<n>-subjects.tar.gz` for n = 1000, 5000, 10000, 50000, 100000), each extracting to `<n>-subjects-seed42/`:
+
+```bash
+# Download from Zenodo and extract (from the project root)
+curl -L -o phebee-benchmark-10000-subjects.tar.gz \
+  "https://zenodo.org/records/19698733/files/phebee-benchmark-10000-subjects.tar.gz?download=1"
+mkdir -p tests/data/benchmark
+tar -xzf phebee-benchmark-10000-subjects.tar.gz -C tests/data/benchmark/
 
 # Point tests to the pre-generated dataset
 export PHEBEE_EVAL_SCALE=1
@@ -305,9 +360,11 @@ If you see errors about SAM CLI failing during test setup, ensure you're running
 | `generate_hpo_terms_json.py` | Convert HPO OBO to searchable JSON index |
 | `generate_benchmark_dataset.py` | Create reproducible benchmark datasets |
 | `test_import_performance.py` | Bulk import throughput test (Manuscript Table 3) |
-| `test_evaluation_perf_scale.py` | Comprehensive API latency test (Manuscript Table 4) |
-| `data/hpo_terms_v*.json` | HPO term indexes (can be checked in or gitignored) |
-| `data/benchmark/` | Generated benchmark datasets (gitignored) |
+| `test_evaluation_perf_scale.py` | Comprehensive API latency test (Manuscript Figure 2, Supplementary Table S1 client-side values) |
+| `test_athena_metrics.py` | Athena time, bytes scanned and cost over the evidence table (Supplementary Table S2) |
+| `data/hpo_terms_v2026-01-08.json` | HPO v2026-01-08 term index used for the manuscript datasets |
+| `data/term_frequencies.csv` | Term prevalence (`term_iri,frequency`) used to define the common/rare term pools |
+| `tests/data/benchmark/` (repo root) | Generated or downloaded benchmark datasets (gitignored) |
 
 ---
 
@@ -362,4 +419,4 @@ The artifacts are still written to `/tmp/phebee-eval-artifacts/` even without `-
 
 ---
 
-**Last Updated:** 2026-03-02
+**Last Updated:** 2026-09-25
