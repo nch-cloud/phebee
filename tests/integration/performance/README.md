@@ -173,9 +173,13 @@ The API latency test executes 7 comprehensive query patterns representing realis
 | 4 | **qualified_filtering** | Random dataset term with `include_qualified=false`, `limit` 15 | Clinical: confirmed findings only |
 | 5 | **specific_phenotype** | Random dataset term, `limit` 25; the server default `include_child_terms=true` also matches descendants | Research: single-phenotype cohort |
 | 6 | **paginated_large_cohort** | Unfiltered project query, `limit` 50; only the first page is requested | Broad cohort queries |
-| 7 | **subject_term_info** | Detailed subject-term evidence | Curator: evidence review |
+| 7 | **subject_term_info** | Detailed subject-term evidence, rotating over one term link per subject returned for the project | Curator: evidence review |
 
-Before timing, the test makes one warm-up call to each of the first three patterns. Random terms for patterns 4, 5 and 7 are drawn from the distinct terms in the dataset's records; when a `PHEBEE_EVAL_BENCHMARK_DIR` dataset has more than 500,000 records it is loaded lazily and the terms come from the first 10,000 records of its first batch file. This sampling is not seeded.
+Before timing, the test makes one warm-up call to each of the first three patterns. Random terms for patterns 4 and 5 are drawn from the distinct terms in the dataset's records; when a `PHEBEE_EVAL_BENCHMARK_DIR` dataset has more than 500,000 records it is loaded lazily and the terms come from the first 10,000 records of its first batch file. This sampling is not seeded.
+
+Pattern 7 cannot sample a subject and a term independently: `/subject/term-info` filters on `termlink_id`, which hashes the subject IRI, the term IRI and the qualifier set together, so a request only resolves when all three match a stored term link. Its targets are therefore taken from the `phenotypes` entries of the `/subjects/query` response that seeds the other patterns — one term link per subject, carrying that link's own qualifiers — and the workload asserts HTTP 200 rather than tolerating 404. Before timing, the test probes `PHEBEE_EVAL_TERM_INFO_PROBE_N` (default 5) of those targets and fails the run if any does not resolve.
+
+> **Measurements before 2026-09-25 are not comparable for pattern 7.** The workload sent the project's own subject identifier where the API expects the PheBee subject UUID, and paired it with a term drawn at random from the whole dataset, so every request returned 404 and the recorded latencies describe the not-found path. Because the workload accepted 404, those runs report no errors. Discard pattern 7 from any `api_run.json` or `table4_latency.csv` produced before this date; patterns 1-6 are unaffected.
 
 **Step 5: Run additional evaluations (optional)**
 
@@ -226,6 +230,7 @@ pytest -v -s tests/integration/performance/test_import_performance.py \
 | `PHEBEE_EVAL_INGEST_TIMEOUT_S` | 21,600 | Timeout in seconds for bulk import Step Function (6 hours) |
 | `PHEBEE_EVAL_LATENCY_N` | 100 | Number of requests per API endpoint pattern (100 provides stable p50/p95 estimates) |
 | `PHEBEE_EVAL_CONCURRENCY` | 25 | Number of concurrent workers for load testing |
+| `PHEBEE_EVAL_TERM_INFO_PROBE_N` | 5 | Subject term detail targets probed before timing; the run fails if any does not resolve |
 | `PHEBEE_EVAL_STRICT_LATENCY` | 0 | Enforce p95 ≤ 5000ms performance gates (1=enabled, 0=disabled) |
 | `PHEBEE_EVAL_WRITE_ARTIFACTS` | 1 | Write CSV/JSON artifacts to /tmp/phebee-eval-artifacts/ |
 | `PHEBEE_EVAL_METRICS_PATH` | None | Local file path to write performance metrics JSON |

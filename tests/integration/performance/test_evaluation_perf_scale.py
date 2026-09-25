@@ -1,7 +1,7 @@
 """
 PheBee API Performance Test (Manuscript Table 4)
 
-Comprehensive API latency testing with 8 realistic query patterns. Uses synthetic datasets
+Comprehensive API latency testing with 7 realistic query patterns. Uses synthetic datasets
 generated with realistic disease clustering patterns for accurate performance evaluation.
 
 How to run:
@@ -18,6 +18,7 @@ Optional:
   PHEBEE_EVAL_METRICS_PATH=/tmp/phebee_api_metrics.json # Write metrics JSON locally
   PHEBEE_EVAL_STRICT_LATENCY=1                         # Enforce p95<=5s gates
   PHEBEE_EVAL_WRITE_ARTIFACTS=0                        # Disable artifact writing (default: 1)
+  PHEBEE_EVAL_TERM_INFO_PROBE_N=5                      # Subject term detail targets probed before timing
 
 Output Artifacts:
   - /tmp/phebee-eval-artifacts/{run_id}/table4_latency.csv
@@ -398,11 +399,61 @@ def maybe_write_metrics(metrics: Dict[str, Any]) -> None:
 # Comprehensive API testing functions
 # ---------------------------------------------------------------------
 
+def build_term_info_targets(subjects: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Build subject/term/qualifier triples that are known to resolve.
+
+    The subject term detail workload measures the evidence view a curator opens
+    for one subject-term pair, so every request has to name a term link that
+    exists. Two things make that easy to get wrong, and the harness got both
+    wrong from its first commit until 2026-09-25:
+
+    - `/subject/term-info` keys on the PheBee subject UUID, which is the last
+      segment of `subject_iri`. The last segment of `project_subject_iri` is the
+      project's own identifier (`perf-subj-000123` for this dataset), which
+      appears nowhere in the evidence table, so every lookup missed.
+    - The lookup filters on `termlink_id`, and that hash covers the qualifier
+      set. A term the subject genuinely has still misses if the request omits
+      the qualifiers the stored link carries.
+
+    `/subjects/query` already returns everything needed: `subject_iri` for the
+    UUID, and one `phenotypes` entry per materialized term link carrying its
+    term IRI and qualifiers. Taking the triple from there means a miss indicates
+    a broken lookup path rather than a badly built request.
+
+    One target per subject, so the workload still rotates across subjects rather
+    than hammering a single row.
+    """
+    targets: List[Dict[str, Any]] = []
+
+    for subject in subjects:
+        subject_iri = subject.get("subject_iri")
+        phenotypes = subject.get("phenotypes") or []
+        if not subject_iri or not phenotypes:
+            continue
+
+        phenotype = random.choice(phenotypes)
+        term_iri = (phenotype.get("term") or {}).get("iri")
+        if not term_iri:
+            continue
+
+        targets.append({
+            "subject_id": subject_iri.rstrip("/").split("/")[-1],
+            "term_iri": term_iri,
+            # Qualifier strings round-trip: /subjects/query formats them with
+            # Qualifier.to_string(), and get_evidence_for_termlink parses them
+            # back with Qualifier.from_string() before hashing the term link.
+            "qualifiers": list(phenotype.get("qualifiers") or []),
+        })
+
+    return targets
+
+
 def create_api_test_functions(api_base_url: str, sigv4_auth, project_id: str,
                             project_subject_iris: List[str],
                             dataset_terms: List[str],
+                            term_info_targets: List[Dict[str, Any]],
                             session: requests.Session = None) -> Dict[str, callable]:
-    """Create 8 comprehensive API test functions covering realistic query patterns."""
+    """Create the seven API test functions covering realistic query patterns."""
 
     # Rotation index for subject queries
     idx = {"i": 0}
@@ -474,22 +525,32 @@ def create_api_test_functions(api_base_url: str, sigv4_auth, project_id: str,
             }, sigv4_auth, session)
             assert r2.status_code == 200
 
+    # The subject term detail workload rotates over its own targets, so it keeps
+    # its own cursor. Sharing `idx` with call_individual_subject coupled two
+    # workloads' subject selection for no reason.
+    term_info_idx = {"i": 0}
+
     def call_subject_term_info():
         """Subject term info - detailed phenotype view."""
-        i = idx["i"]
-        idx["i"] = (i + 1) % len(project_subject_iris)
-        term = random.choice(dataset_terms) if dataset_terms else CARDIAC_TERMS[0]
+        i = term_info_idx["i"]
+        term_info_idx["i"] = (i + 1) % len(term_info_targets)
+        target = term_info_targets[i]
 
-        # Extract subject_id from project_subject_iri
-        subject_iri = project_subject_iris[i]
-        subject_id = subject_iri.split("/")[-1]  # Get UUID from IRI
-
-        r = api_post(api_base_url, "/subject/term-info", {
-            "subject_id": subject_id,  # Use subject_id instead of project_subject_iri
-            "term_iri": term
-        }, sigv4_auth, session)
-        # Note: May return 404 if subject doesn't have this term - that's OK for perf testing
-        assert r.status_code in [200, 404]
+        payload = {
+            "subject_id": target["subject_id"],
+            "term_iri": target["term_iri"],
+            "qualifiers": target["qualifiers"],
+        }
+        r = api_post(api_base_url, "/subject/term-info", payload, sigv4_auth, session)
+        # Every target came from a term link /subjects/query reported, so a 404
+        # means the lookup path is broken, not that the workload picked a pair
+        # the subject lacks. Tolerating 404 here is what let this workload
+        # measure the not-found path for a whole benchmark campaign without
+        # showing up as an error in api_run.json.
+        assert r.status_code == 200, (
+            f"/subject/term-info returned {r.status_code} for a term link that "
+            f"/subjects/query reported: {payload}"
+        )
 
     return {
         "basic_subjects_query": call_basic_subjects_query,
@@ -537,6 +598,7 @@ def test_r11_enhanced_api_latency_at_scale(
         "PHEBEE_EVAL_INGEST_TIMEOUT_S": os.environ.get("PHEBEE_EVAL_INGEST_TIMEOUT_S", "21600 (default)"),
         "PHEBEE_EVAL_LATENCY_N": os.environ.get("PHEBEE_EVAL_LATENCY_N", "100 (default)"),
         "PHEBEE_EVAL_CONCURRENCY": os.environ.get("PHEBEE_EVAL_CONCURRENCY", "25 (default)"),
+        "PHEBEE_EVAL_TERM_INFO_PROBE_N": os.environ.get("PHEBEE_EVAL_TERM_INFO_PROBE_N", "5 (default)"),
         "PHEBEE_EVAL_SEED": os.environ.get("PHEBEE_EVAL_SEED", "not set"),
         "PHEBEE_EVAL_WRITE_ARTIFACTS": os.environ.get("PHEBEE_EVAL_WRITE_ARTIFACTS", "1 (default)"),
         "PHEBEE_EVAL_METRICS_PATH": os.environ.get("PHEBEE_EVAL_METRICS_PATH", "not set"),
@@ -692,6 +754,16 @@ def test_r11_enhanced_api_latency_at_scale(
 
     print(f"[API_TEST_PREP] {len(project_subject_iris)} subjects available for testing")
 
+    # Targets for the subject term detail workload, taken from the term links
+    # this same response reports. See build_term_info_targets for why the
+    # workload cannot pick a subject and a term independently.
+    term_info_targets = build_term_info_targets(body)
+    assert term_info_targets, (
+        "No subject-term links available for the subject term detail workload; "
+        "/subjects/query returned subjects without phenotypes."
+    )
+    print(f"[API_TEST_PREP] {len(term_info_targets)} subject-term targets for subject term detail")
+
     # Extract unique terms from dataset for query patterns
     if is_lazy:
         # Sample terms from first batch file instead of loading all records
@@ -717,7 +789,7 @@ def test_r11_enhanced_api_latency_at_scale(
     session = create_http_session()
 
     # Create comprehensive API test functions
-    api_functions = create_api_test_functions(api_base_url, sigv4_auth, project_id, project_subject_iris, dataset_terms, session)
+    api_functions = create_api_test_functions(api_base_url, sigv4_auth, project_id, project_subject_iris, dataset_terms, term_info_targets, session)
 
     # Warm-up to reduce cold-start skew
     print("[WARMUP_START]")
@@ -726,6 +798,21 @@ def test_r11_enhanced_api_latency_at_scale(
             func()
         except Exception as e:
             print(f"[WARMUP_WARNING] {name} failed: {e}")
+
+    # Probe the subject term detail workload before timing anything. It is the
+    # only workload whose request has to name data that exists, so a malformed
+    # request there produces plausible-looking latencies for the not-found path
+    # instead of a visible failure. Fail the run here rather than publish that.
+    # Athena result reuse is not enabled on any of the query helpers, so these
+    # probes do not warm a result cache that would flatter the timed calls.
+    probe_n = min(
+        int(os.environ.get("PHEBEE_EVAL_TERM_INFO_PROBE_N", "5")),
+        len(term_info_targets),
+    )
+    print(f"[TERM_INFO_PROBE] validating {probe_n} of {len(term_info_targets)} target(s)")
+    for _ in range(probe_n):
+        api_functions["subject_term_info"]()
+    print("[TERM_INFO_PROBE] all probed targets resolved")
 
     # Test parameters
     n = int(os.environ.get("PHEBEE_EVAL_LATENCY_N", "100"))
