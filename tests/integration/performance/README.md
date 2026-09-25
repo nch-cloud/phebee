@@ -184,6 +184,14 @@ Pattern 7 cannot sample a subject and a term independently: `/subject/term-info`
 
 > **Measurements before 2026-09-25 are not comparable for pattern 7.** The workload sent the project's own subject identifier where the API expects the PheBee subject UUID, and paired it with a term drawn at random from the whole dataset, so every request returned 404 and the recorded latencies describe the not-found path. Because the workload accepted 404, those runs report no errors. Discard pattern 7 from any `api_run.json` or `table4_latency.csv` produced before this date; patterns 1-6 are unaffected.
 
+Each pattern rotates over its pre-drawn sequence with an `itertools.count` cursor, which advances in a single C call so concurrent callers each take a distinct index. A dict read-modify-write would be the obvious alternative and is very unlikely to lose an update here, since the increment sits next to the read with no I/O between them — but "unlikely" is not a property worth relying on when the consequence is a cell that silently queries fewer distinct targets than it reports.
+
+### What `api_run.json` records about itself
+
+`provenance` in `api_run.json` carries the values needed to trace a published number back to the run that produced it: `query_seed`, `dataset_seed`, `hpo_version`, and the probe and target counts for pattern 7. Before 2026-09-25 these were printed to stdout only, so a figure could not be tied to its term selection or its ontology version without the pytest log alongside it.
+
+`provenance.hpo_version` is the version *hierarchy expansion resolved to*, supplied via `PHEBEE_EVAL_HPO_VERSION`. Do not confuse it with `dataset.term_source.version`, which comes from the benchmark `metadata.json` and describes the ontology the *data* was generated against — for the shipped benchmark datasets that field reads `unknown`.
+
 **Step 5: Run additional evaluations (optional)**
 
 To test different load parameters without reimporting data:
@@ -235,6 +243,7 @@ pytest -v -s tests/integration/performance/test_import_performance.py \
 | `PHEBEE_EVAL_CONCURRENCY` | 25 | Number of concurrent workers for load testing |
 | `PHEBEE_EVAL_TERM_INFO_PROBE_N` | 5 | Subject term detail targets probed before timing; the run fails if any does not resolve |
 | `PHEBEE_EVAL_QUERY_SEED` | `PHEBEE_EVAL_SEED`, else 42 | Seeds which terms and term links the latency patterns query. Vary it between replicates; do not confuse it with `PHEBEE_EVAL_SEED`, which seeds dataset generation |
+| `PHEBEE_EVAL_HPO_VERSION` | `"not recorded"` | Recorded verbatim in `api_run.json` as `provenance.hpo_version`. The test cannot determine this itself, because `/subjects/query` sends no `term_source_version` and the deployment resolves the newest install; `run_perf_campaign.py` reads it back from DynamoDB after installing and passes it in. Set it by hand if you run the test directly and intend to publish the numbers |
 | `PHEBEE_EVAL_STRICT_LATENCY` | 0 | Enforce p95 ≤ 5000ms performance gates (1=enabled, 0=disabled) |
 | `PHEBEE_EVAL_WRITE_ARTIFACTS` | 1 | Write CSV/JSON artifacts to /tmp/phebee-eval-artifacts/ |
 | `PHEBEE_EVAL_METRICS_PATH` | None | Local file path to write performance metrics JSON |

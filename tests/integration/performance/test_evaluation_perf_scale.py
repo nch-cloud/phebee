@@ -580,13 +580,18 @@ def create_api_test_functions(api_base_url: str, sigv4_auth, project_id: str,
     # The subject term detail workload rotates over its own targets, so it keeps
     # its own cursor. Sharing `idx` with call_individual_subject coupled two
     # workloads' subject selection for no reason.
-    term_info_idx = {"i": 0}
+    #
+    # itertools.count for the same reason as the two cursors above: a dict
+    # read-modify-write loses updates under concurrency, which here would make
+    # the run reuse some targets and never visit others. Unlike the subject
+    # rotation, that changes what is measured -- targets differ in how many
+    # evidence rows they resolve -- so the set of targets a cell queries would
+    # stop being reproducible and would stop matching the c1 cells.
+    term_info_cursor = itertools.count()
 
     def call_subject_term_info():
         """Subject term info - detailed phenotype view."""
-        i = term_info_idx["i"]
-        term_info_idx["i"] = (i + 1) % len(term_info_targets)
-        target = term_info_targets[i]
+        target = term_info_targets[next(term_info_cursor) % len(term_info_targets)]
 
         payload = {
             "subject_id": target["subject_id"],
@@ -916,6 +921,26 @@ def test_r11_enhanced_api_latency_at_scale(
     metrics: Dict[str, Any] = {
         "run_id": evaluation_run_id,
         "project_id": project_id,
+        # Everything needed to say what this cell measured, in the artifact the
+        # figures and tables are generated from. These values were previously
+        # only printed to stdout, so a published number could not be traced to
+        # the term selection or the ontology version that produced it without
+        # the pytest log sitting next to it.
+        #
+        # hpo_version is the version hierarchy expansion will resolve to. The
+        # harness cannot derive it -- /subjects/query sends no
+        # term_source_version, so the deployment picks the newest install -- so
+        # the campaign driver reads it back from DynamoDB after installing and
+        # passes it in. "not recorded" means this run was launched by hand.
+        # dataset.term_source.version is unrelated: it comes from the benchmark
+        # metadata and describes the ontology the *data* was generated against.
+        "provenance": {
+            "query_seed": resolve_query_seed(),
+            "dataset_seed": os.environ.get("PHEBEE_EVAL_SEED", "not set"),
+            "hpo_version": os.environ.get("PHEBEE_EVAL_HPO_VERSION", "not recorded"),
+            "term_info_probe_n": probe_n,
+            "term_info_target_count": len(term_info_targets),
+        },
         "dataset": {
             "n_records": n_records,
             "n_subjects": total_subjects,

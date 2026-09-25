@@ -136,16 +136,36 @@ def git_head() -> Dict[str, Any]:
 
     A benchmark whose provenance is a branch name is not reproducible; record
     the sha and say plainly if there were uncommitted changes.
+
+    "Dirty" means tracked files differ from HEAD. It deliberately does not mean
+    `git status --porcelain` is non-empty: that counts untracked files, so a
+    working copy holding scratch output alongside a clean checkout reported
+    dirty=true, which invites a reader to discount a tag the run actually
+    matched. Untracked paths are counted separately instead, because they are
+    worth knowing about without being a provenance problem.
     """
     def run(*args: str) -> str:
         return subprocess.run(
             args, cwd=REPO_ROOT, capture_output=True, text=True, check=False
         ).stdout.strip()
 
+    untracked = [
+        line for line in run(
+            "git", "status", "--porcelain", "--untracked-files=normal"
+        ).splitlines() if line.startswith("??")
+    ]
+    tracked_diff = subprocess.run(
+        ["git", "diff", "--quiet", "HEAD"],
+        cwd=REPO_ROOT, capture_output=True, text=True, check=False
+    ).returncode != 0
+
     return {
         "commit": run("git", "rev-parse", "HEAD"),
         "branch": run("git", "rev-parse", "--abbrev-ref", "HEAD"),
-        "dirty": bool(run("git", "status", "--porcelain")),
+        # Empty when HEAD is not exactly at a tag; this is what to quote.
+        "tag": run("git", "describe", "--tags", "--exact-match") or None,
+        "dirty": tracked_diff,
+        "untracked_file_count": len(untracked),
     }
 
 
@@ -317,8 +337,13 @@ def collect_artifacts(before: Set[Path], dest: Path, expect: str) -> Optional[Pa
 # campaign
 # ---------------------------------------------------------------------------
 
-def base_env(args: argparse.Namespace, dataset_dir: Path, n_subjects: int) -> Dict[str, str]:
-    return {
+def base_env(
+    args: argparse.Namespace,
+    dataset_dir: Path,
+    n_subjects: int,
+    hpo_version: Optional[str],
+) -> Dict[str, str]:
+    env = {
         "PHEBEE_EVAL_SCALE": "1",
         "PHEBEE_EVAL_BENCHMARK_DIR": str(dataset_dir),
         "PHEBEE_EVAL_SCALE_SUBJECTS": str(n_subjects),
@@ -328,6 +353,13 @@ def base_env(args: argparse.Namespace, dataset_dir: Path, n_subjects: int) -> Di
         "PHEBEE_EVAL_USE_DISEASE_CLUSTERING": "1",
         "PHEBEE_EVAL_WRITE_ARTIFACTS": "1",
     }
+    # The test cannot work this out for itself: /subjects/query sends no
+    # term_source_version, so expansion resolves to whatever was installed most
+    # recently. Pass the version read back after the install so it lands in
+    # api_run.json rather than only in this script's preamble.json.
+    if hpo_version:
+        env["PHEBEE_EVAL_HPO_VERSION"] = hpo_version
+    return env
 
 
 def do_import(
@@ -337,6 +369,7 @@ def do_import(
     dataset_dir: Path,
     n_subjects: int,
     size_dir: Path,
+    hpo_version: Optional[str],
 ) -> str:
     """Import one dataset and return the project id the latency runs must use.
 
@@ -351,7 +384,7 @@ def do_import(
         log(f"import for {n_subjects} already done, project {recorded['project_id']}")
         return recorded["project_id"]
 
-    env = base_env(args, dataset_dir, n_subjects)
+    env = base_env(args, dataset_dir, n_subjects, hpo_version)
     env["PHEBEE_EVAL_INGEST_TIMEOUT_S"] = str(args.ingest_timeout)
 
     before = artifact_dirs()
@@ -407,7 +440,7 @@ def do_latency(
         log(f"skip n={n_subjects} c={concurrency} r={replicate} (already recorded)")
         return
 
-    env = base_env(args, dataset_dir, n_subjects)
+    env = base_env(args, dataset_dir, n_subjects, provenance.get("hpo_version"))
     env["PHEBEE_EVAL_PROJECT_ID"] = project_id
     env["PHEBEE_EVAL_CONCURRENCY"] = str(concurrency)
     env["PHEBEE_EVAL_LATENCY_N"] = str(args.latency_n)
@@ -616,7 +649,9 @@ def main() -> int:
             project_id = args.project_id
             log(f"using existing project {project_id}")
         else:
-            project_id = do_import(args, session, stack, dataset_dir, n, size_dir)
+            project_id = do_import(
+                args, session, stack, dataset_dir, n, size_dir, hpo_version
+            )
 
         for c in concurrencies:
             for r in replicates:
