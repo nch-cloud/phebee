@@ -8,7 +8,7 @@ authors:
 title: "PheBee"
 type: software
 version: 1.0.2
-doi: 10.5281/zenodo.22921636
+doi: 10.5281/zenodo.19769736
 date-released: 2026-09-23
 license: BSD-3-Clause
 repository-code: "https://github.com/nch-cloud/phebee"
