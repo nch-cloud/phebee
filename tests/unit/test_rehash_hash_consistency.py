@@ -142,7 +142,7 @@ def test_rehash_normalizes_legacy_prefixed_qualifier_types():
     """
     prefix = "http://ods.nationwidechildrens.org/phebee/qualifier/"
     stored = [StoredQualifier(f"{prefix}negated", "true"), StoredQualifier(f"{prefix}family", "false")]
-    normalized = normalize_qualifiers([Qualifier.from_raw("negated", True)])
+    normalized = normalize_qualifiers([Qualifier(type="negated", value="true")])
 
     assert rehash.create_termlink_hash_wrapper(SUBJECT_ID, TERM_IRI, stored) == \
         generate_termlink_hash(SUBJECT_IRI, TERM_IRI, normalized)
@@ -151,10 +151,13 @@ def test_rehash_normalizes_legacy_prefixed_qualifier_types():
 def test_rehash_reproduces_api_ids_for_domain_qualifiers():
     """Non-boolean qualifier values keep their spelling through storage and rehash."""
     qualifiers = [
-        Qualifier.from_raw("severity", "Mild"),
-        Qualifier.from_raw("http://purl.obolibrary.org/obo/HP_0012823", "present"),
-        Qualifier.from_raw("negated", True),
+        q for q in (
+            Qualifier.from_raw("severity", "Mild"),
+            Qualifier.from_raw("http://purl.obolibrary.org/obo/HP_0012823", "present"),
+            Qualifier.from_raw("negated", True),
+        ) if q is not None
     ]
+    assert len(qualifiers) == 3
     normalized = normalize_qualifiers(qualifiers)
     stored = _stored_by_api(qualifiers)
 
