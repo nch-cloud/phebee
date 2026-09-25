@@ -129,10 +129,20 @@ def test_reset_database_with_no_payload(app_name):
 def test_reset_database_clears_iceberg_tables(app_name, test_project_id, query_athena, standard_hpo_terms):
     """Test that reset_database actually deletes all data from Iceberg tables.
 
-    Verifies that reset_database clears all three Iceberg tables:
+    Verifies that reset_database clears all four Iceberg tables:
     - phebee.evidence
     - phebee.subject_terms_by_subject
     - phebee.subject_terms_by_project_term
+    - phebee.ontology_hierarchy
+
+    The ontology hierarchy assertions require HPO to be installed in the
+    target stack before this test runs, which the standard_hpo_terms fixture
+    already assumes.
+
+    This test leaves the stack with no ontology: the hierarchy table is empty
+    and the Neptune reset removed the hpo~<version> graph. Reinstall via
+    UpdateHPOSFN before running anything that expands child terms or resolves
+    term labels.
     """
     lambda_client = get_client("lambda")
 
@@ -175,14 +185,19 @@ def test_reset_database_clears_iceberg_tables(app_name, test_project_id, query_a
     evidence_body = json.loads(create_evidence_result["body"])
     termlink_id = evidence_body["termlink_id"]
 
-    # 3. Verify data exists in all three Iceberg tables before reset
+    # 3. Verify data exists in all four Iceberg tables before reset
     evidence_count_before = int(query_athena("SELECT COUNT(*) as count FROM evidence")[0]["count"])
     by_subject_count_before = int(query_athena("SELECT COUNT(*) as count FROM subject_terms_by_subject")[0]["count"])
     by_project_term_count_before = int(query_athena("SELECT COUNT(*) as count FROM subject_terms_by_project_term")[0]["count"])
+    hierarchy_count_before = int(query_athena("SELECT COUNT(*) as count FROM ontology_hierarchy")[0]["count"])
 
     assert evidence_count_before > 0, f"Expected evidence table to have data, got {evidence_count_before}"
     assert by_subject_count_before > 0, f"Expected subject_terms_by_subject table to have data, got {by_subject_count_before}"
     assert by_project_term_count_before > 0, f"Expected subject_terms_by_project_term table to have data, got {by_project_term_count_before}"
+    assert hierarchy_count_before > 0, (
+        f"Expected ontology_hierarchy table to have data, got {hierarchy_count_before}. "
+        "Install an ontology (UpdateHPOSFN) before running this test."
+    )
 
     # 4. Reset the database
     reset_response = lambda_client.invoke(
@@ -198,7 +213,9 @@ def test_reset_database_clears_iceberg_tables(app_name, test_project_id, query_a
     evidence_count_after = int(query_athena("SELECT COUNT(*) as count FROM evidence")[0]["count"])
     by_subject_count_after = int(query_athena("SELECT COUNT(*) as count FROM subject_terms_by_subject")[0]["count"])
     by_project_term_count_after = int(query_athena("SELECT COUNT(*) as count FROM subject_terms_by_project_term")[0]["count"])
+    hierarchy_count_after = int(query_athena("SELECT COUNT(*) as count FROM ontology_hierarchy")[0]["count"])
 
     assert evidence_count_after == 0, f"Expected evidence table to be empty after reset, got {evidence_count_after} rows"
     assert by_subject_count_after == 0, f"Expected subject_terms_by_subject table to be empty after reset, got {by_subject_count_after} rows"
     assert by_project_term_count_after == 0, f"Expected subject_terms_by_project_term table to be empty after reset, got {by_project_term_count_after} rows"
+    assert hierarchy_count_after == 0, f"Expected ontology_hierarchy table to be empty after reset, got {hierarchy_count_after} rows"

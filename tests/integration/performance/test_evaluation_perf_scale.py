@@ -19,6 +19,7 @@ Optional:
   PHEBEE_EVAL_STRICT_LATENCY=1                         # Enforce p95<=5s gates
   PHEBEE_EVAL_WRITE_ARTIFACTS=0                        # Disable artifact writing (default: 1)
   PHEBEE_EVAL_TERM_INFO_PROBE_N=5                      # Subject term detail targets probed before timing
+  PHEBEE_EVAL_QUERY_SEED=42                            # Seeds term/target selection (falls back to PHEBEE_EVAL_SEED, then 42)
 
 Output Artifacts:
   - /tmp/phebee-eval-artifacts/{run_id}/table4_latency.csv
@@ -31,6 +32,7 @@ same project (uses session-scoped test_project_id fixture).
 from __future__ import annotations
 
 import csv
+import itertools
 import json
 import os
 import random
@@ -74,7 +76,11 @@ def evaluation_run_id() -> str:
 # Minimal term lists for API query patterns
 # ---------------------------------------------------------------------
 
-# No static term lists needed - tests use terms from dataset
+# No static term lists needed - tests use terms from dataset. The one
+# exception is a fallback for the two term-filtered workloads when no terms
+# could be sampled from the dataset at all, which would otherwise leave them
+# with nothing to query. HP:0001627 is Abnormal heart morphology.
+FALLBACK_TERM_IRI = "http://purl.obolibrary.org/obo/HP_0001627"
 
 # ---------------------------------------------------------------------
 # Utility functions
@@ -399,7 +405,29 @@ def maybe_write_metrics(metrics: Dict[str, Any]) -> None:
 # Comprehensive API testing functions
 # ---------------------------------------------------------------------
 
-def build_term_info_targets(subjects: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def resolve_query_seed() -> int:
+    """Seed for the RNG that chooses which terms and term links get queried.
+
+    Deliberately separate from PHEBEE_EVAL_SEED, which seeds dataset
+    *generation*. Varying the query seed across replicates of one dataset is
+    the intended use; varying the dataset seed would silently change the data
+    a replicate is measured against.
+
+    Until 2026-09-25 the harness recorded PHEBEE_EVAL_SEED in api_run.json but
+    never seeded anything, so the term mix a run measured was unreproducible
+    while the artifact implied it was fixed.
+    """
+    raw = (
+        os.environ.get("PHEBEE_EVAL_QUERY_SEED")
+        or os.environ.get("PHEBEE_EVAL_SEED")
+        or "42"
+    )
+    return int(raw)
+
+
+def build_term_info_targets(
+    subjects: List[Dict[str, Any]], rng: random.Random
+) -> List[Dict[str, Any]]:
     """Build subject/term/qualifier triples that are known to resolve.
 
     The subject term detail workload measures the evidence view a curator opens
@@ -431,7 +459,7 @@ def build_term_info_targets(subjects: List[Dict[str, Any]]) -> List[Dict[str, An
         if not subject_iri or not phenotypes:
             continue
 
-        phenotype = random.choice(phenotypes)
+        phenotype = rng.choice(phenotypes)
         term_iri = (phenotype.get("term") or {}).get("iri")
         if not term_iri:
             continue
@@ -452,11 +480,35 @@ def create_api_test_functions(api_base_url: str, sigv4_auth, project_id: str,
                             project_subject_iris: List[str],
                             dataset_terms: List[str],
                             term_info_targets: List[Dict[str, Any]],
+                            rng: random.Random,
+                            n_draws: int,
                             session: requests.Session = None) -> Dict[str, callable]:
-    """Create the seven API test functions covering realistic query patterns."""
+    """Create the seven API test functions covering realistic query patterns.
+
+    `rng` seeds the term choices and `n_draws` is the number of timed calls
+    each workload will receive, so the sequence of terms a run queries is
+    fixed here rather than decided inside the request functions.
+    """
 
     # Rotation index for subject queries
     idx = {"i": 0}
+
+    # The two term-filtered workloads draw their terms once, up front. Drawing
+    # inside the request function meant the term mix a run measured depended on
+    # thread interleaving, so the same cell rerun with the same seed queried a
+    # different set of terms, and selectivity differences between terms landed
+    # in the latency spread as if they were server variance.
+    term_pool = dataset_terms or [FALLBACK_TERM_IRI]
+    qualified_terms = [rng.choice(term_pool) for _ in range(n_draws)]
+    specific_terms = [rng.choice(term_pool) for _ in range(n_draws)]
+
+    # itertools.count advances in a single C call, so concurrent callers each
+    # get a distinct index. The `idx` dict above is a read-modify-write and can
+    # lose an update under concurrency; that is pre-existing behaviour for the
+    # subject rotation, where which subject is fetched does not change what is
+    # being measured.
+    qualified_cursor = itertools.count()
+    specific_cursor = itertools.count()
 
     def call_basic_subjects_query():
         """Basic project subjects query - most common pattern."""
@@ -487,7 +539,7 @@ def create_api_test_functions(api_base_url: str, sigv4_auth, project_id: str,
 
     def call_qualified_filtering():
         """Qualifier filtering - exclude negated/family/hypothetical."""
-        term = random.choice(dataset_terms) if dataset_terms else "http://purl.obolibrary.org/obo/HP_0001627"
+        term = qualified_terms[next(qualified_cursor) % len(qualified_terms)]
         r = api_post(api_base_url, "/subjects/query", {
             "project_id": project_id,
             "term_iri": term,
@@ -498,7 +550,7 @@ def create_api_test_functions(api_base_url: str, sigv4_auth, project_id: str,
 
     def call_specific_phenotype():
         """Specific phenotype query - direct term matching without hierarchy."""
-        term = random.choice(dataset_terms) if dataset_terms else "http://purl.obolibrary.org/obo/HP_0001627"
+        term = specific_terms[next(specific_cursor) % len(specific_terms)]
         r = api_post(api_base_url, "/subjects/query", {
             "project_id": project_id,
             "term_iri": term,
@@ -599,7 +651,11 @@ def test_r11_enhanced_api_latency_at_scale(
         "PHEBEE_EVAL_LATENCY_N": os.environ.get("PHEBEE_EVAL_LATENCY_N", "100 (default)"),
         "PHEBEE_EVAL_CONCURRENCY": os.environ.get("PHEBEE_EVAL_CONCURRENCY", "25 (default)"),
         "PHEBEE_EVAL_TERM_INFO_PROBE_N": os.environ.get("PHEBEE_EVAL_TERM_INFO_PROBE_N", "5 (default)"),
+        # PHEBEE_EVAL_SEED seeds dataset generation only; the seed that governs
+        # this test's term selection is PHEBEE_EVAL_QUERY_SEED, which falls
+        # back to PHEBEE_EVAL_SEED and then to 42.
         "PHEBEE_EVAL_SEED": os.environ.get("PHEBEE_EVAL_SEED", "not set"),
+        "PHEBEE_EVAL_QUERY_SEED": str(resolve_query_seed()),
         "PHEBEE_EVAL_WRITE_ARTIFACTS": os.environ.get("PHEBEE_EVAL_WRITE_ARTIFACTS", "1 (default)"),
         "PHEBEE_EVAL_METRICS_PATH": os.environ.get("PHEBEE_EVAL_METRICS_PATH", "not set"),
         "PHEBEE_EVAL_METRICS_S3_URI": os.environ.get("PHEBEE_EVAL_METRICS_S3_URI", "not set"),
@@ -754,10 +810,16 @@ def test_r11_enhanced_api_latency_at_scale(
 
     print(f"[API_TEST_PREP] {len(project_subject_iris)} subjects available for testing")
 
+    # One RNG for every choice this run makes about what to query, so the term
+    # mix is a recorded input rather than an accident of scheduling.
+    query_seed = resolve_query_seed()
+    rng = random.Random(query_seed)
+    print(f"[QUERY_SEED] term and target selection seeded with {query_seed}")
+
     # Targets for the subject term detail workload, taken from the term links
     # this same response reports. See build_term_info_targets for why the
     # workload cannot pick a subject and a term independently.
-    term_info_targets = build_term_info_targets(body)
+    term_info_targets = build_term_info_targets(body, rng)
     assert term_info_targets, (
         "No subject-term links available for the subject term detail workload; "
         "/subjects/query returned subjects without phenotypes."
@@ -777,19 +839,27 @@ def test_r11_enhanced_api_latency_at_scale(
                 if line.strip():
                     record = json.loads(line)
                     sample_terms.add(record["term_iri"])
-        dataset_terms = list(sample_terms)
+        # Sorted, not just deduplicated: set iteration order over strings
+        # varies between processes, so an unsorted list made the seeded term
+        # draws differ from run to run even with the seed held fixed.
+        dataset_terms = sorted(sample_terms)
         print(f"[MEMORY_OPTIMIZATION] Sampled {len(dataset_terms)} unique terms from first batch")
     else:
         # Extract from in-memory records
-        dataset_terms = list(set(r["term_iri"] for r in records))
+        dataset_terms = sorted(set(r["term_iri"] for r in records))
 
     # Create HTTP session with retry logic and connection pooling
     # This prevents DNS resolution failures at high concurrency
     print("[SESSION_SETUP] Creating HTTP session with retry logic and connection pooling")
     session = create_http_session()
 
+    # Test parameters. Read before building the workloads because each
+    # term-filtered workload pre-draws exactly n terms.
+    n = int(os.environ.get("PHEBEE_EVAL_LATENCY_N", "100"))
+    conc = int(os.environ.get("PHEBEE_EVAL_CONCURRENCY", "25"))
+
     # Create comprehensive API test functions
-    api_functions = create_api_test_functions(api_base_url, sigv4_auth, project_id, project_subject_iris, dataset_terms, term_info_targets, session)
+    api_functions = create_api_test_functions(api_base_url, sigv4_auth, project_id, project_subject_iris, dataset_terms, term_info_targets, rng, n, session)
 
     # Warm-up to reduce cold-start skew
     print("[WARMUP_START]")
@@ -813,10 +883,6 @@ def test_r11_enhanced_api_latency_at_scale(
     for _ in range(probe_n):
         api_functions["subject_term_info"]()
     print("[TERM_INFO_PROBE] all probed targets resolved")
-
-    # Test parameters
-    n = int(os.environ.get("PHEBEE_EVAL_LATENCY_N", "100"))
-    conc = int(os.environ.get("PHEBEE_EVAL_CONCURRENCY", "25"))
 
     print(f"[LATENCY_TEST_START] {n} requests per endpoint, {conc} concurrent")
 

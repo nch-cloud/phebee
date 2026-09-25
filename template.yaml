@@ -1001,7 +1001,10 @@ Resources:
       CodeUri: functions
       Handler: reset_database.lambda_handler
       MemorySize: 512
-      Timeout: 300
+      # Serial work: a Neptune reset that waits for cluster and SPARQL
+      # availability, then four Athena DELETEs. A timeout here leaves the
+      # database partially cleared, so the budget is deliberately generous.
+      Timeout: 900
       Layers:
         - !Ref PheBeeUtilsLayer
       Environment:
@@ -1013,6 +1016,7 @@ Resources:
           ICEBERG_EVIDENCE_TABLE: !Ref IcebergEvidenceTable
           ICEBERG_SUBJECT_TERMS_BY_SUBJECT_TABLE: !Ref IcebergSubjectTermsBySubjectTable
           ICEBERG_SUBJECT_TERMS_BY_PROJECT_TERM_TABLE: !Ref IcebergSubjectTermsByProjectTermTable
+          ICEBERG_ONTOLOGY_HIERARCHY_TABLE: !Ref IcebergOntologyHierarchyTable
           PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
           Region: !Sub ${AWS::Region}
       VpcConfig:
