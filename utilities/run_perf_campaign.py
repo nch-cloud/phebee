@@ -302,7 +302,19 @@ def run_pytest(
             handle.write(f"# {key}={env_overrides[key]}\n")
         handle.flush()
         proc = subprocess.run(
-            cmd, cwd=REPO_ROOT, env=env, stdout=handle, stderr=subprocess.STDOUT
+            cmd,
+            cwd=REPO_ROOT,
+            env=env,
+            # stdin must not be the terminal. Redirecting only stdout/stderr left
+            # fd 0 pointing at the tty, and pytest performs a terminal ioctl on it
+            # at startup; a background process doing that takes SIGTTOU, which
+            # stops the whole process group. A campaign launched with `&` then
+            # suspends ~seconds into its first test and sits there looking slow
+            # rather than failing. DEVNULL removes the tty from the child
+            # entirely, so it cannot happen however the driver was launched.
+            stdin=subprocess.DEVNULL,
+            stdout=handle,
+            stderr=subprocess.STDOUT,
         )
     return proc.returncode
 
