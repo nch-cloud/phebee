@@ -51,6 +51,18 @@ last step. A cell whose ``campaign_run.json`` already exists is skipped, so a
 campaign interrupted after nine hours resumes where it stopped. Delete the
 directory of a cell you want to redo.
 
+Resume by re-running the same command against the same ``--out``; no extra flags
+are needed. A size whose import is recorded is not reset and does not reinstall
+the ontology, because its data is already loaded and the reset would delete the
+rows the recorded project id refers to. Each invocation appends to
+``invocations.jsonl`` in the output directory, and ``campaign.json`` keeps the
+first invocation's scope, so a campaign spread over several sessions can still
+be described as one thing.
+
+An expired SSO session is the likeliest interruption on a multi-day grid: the
+run dies with ``TokenRetrievalError`` wherever it happens to be, costing the
+cell in flight and nothing else. ``aws sso login`` and re-run the same command.
+
 Usage
 -----
     python utilities/run_perf_campaign.py \
@@ -579,17 +591,41 @@ def main() -> int:
             raise SystemExit(f"no dataset at {d} (expected metadata.json)")
         dataset_dirs[n] = d
 
-    n_latency = len(sizes) * len(concurrencies) * len(replicates)
-    n_import = 0 if args.skip_import else len(sizes)
+    # Count what is left to do, not what the grid contains, so the log line at the
+    # top of a resumed run says how much work remains rather than restating the
+    # full campaign every time.
+    n_latency = sum(
+        1
+        for n in sizes
+        for c in concurrencies
+        for r in replicates
+        if not (out_root / str(n) / f"c{c}" / f"r{r}" / "campaign_run.json").exists()
+    )
+    n_import = 0 if args.skip_import else sum(
+        1
+        for n in sizes
+        if not (out_root / str(n) / "import" / "campaign_run.json").exists()
+    )
+    total_cells = len(sizes) * len(concurrencies) * len(replicates)
     log(f"stack={stack} sizes={sizes} concurrency={concurrencies} replicates={replicates}")
-    log(f"plan: {n_import} import run(s), {n_latency} latency run(s), out={out_root}")
+    log(f"plan: {n_import} import run(s), {n_latency} latency run(s) "
+        f"({total_cells - n_latency} already recorded), out={out_root}")
     if args.dry_run:
+        # Show what the markers on disk mean for this invocation, not just what the
+        # flags say. On a resume the whole question is which sizes are about to be
+        # wiped and reimported, and reading that off the flags alone gets it wrong.
         for n in sizes:
-            print(f"  {n}: reset={not args.skip_reset} hpo={not args.skip_hpo} "
-                  f"import={not args.skip_import} dataset={dataset_dirs[n]}")
+            size_dir = out_root / str(n)
+            loaded = (size_dir / "import" / "campaign_run.json").exists() or args.skip_import
+            print(f"  {n}: reset={not args.skip_reset and not loaded} "
+                  f"hpo={not args.skip_hpo and not loaded} "
+                  f"import={not args.skip_import and not loaded} "
+                  f"dataset={dataset_dirs[n]}")
             for c in concurrencies:
                 for r in replicates:
-                    print(f"      {out_root / str(n) / f'c{c}' / f'r{r}'}")
+                    cell = size_dir / f"c{c}" / f"r{r}"
+                    done = " (recorded, will skip)" if (cell / "campaign_run.json").exists() else ""
+                    print(f"      {cell}{done}")
         return 0
 
     session = boto3.Session(profile_name=args.profile) if args.profile else boto3.Session()
@@ -614,7 +650,18 @@ def main() -> int:
         "benchmark_root": str(benchmark_root),
         "git": git_head(),
     }
-    (out_root / "campaign.json").write_text(json.dumps(campaign_meta, indent=2), encoding="utf-8")
+    # A campaign that is resumed -- after an expired SSO session, say -- runs this
+    # function more than once over the same tree, and the later invocations cover
+    # only the sizes that were left. Overwriting campaign.json each time left the
+    # published record claiming the campaign was a two-size run started on the day
+    # of the last resume. Keep the first invocation's record, and append every
+    # invocation to a log so the full history is recoverable.
+    campaign_path = out_root / "campaign.json"
+    invocations_path = out_root / "invocations.jsonl"
+    with invocations_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"event": "start", **campaign_meta}) + "\n")
+    if not campaign_path.exists():
+        campaign_path.write_text(json.dumps(campaign_meta, indent=2), encoding="utf-8")
 
     campaign_hpo_version: Optional[str] = None
     for n in sizes:
@@ -623,13 +670,28 @@ def main() -> int:
         dataset_dir = dataset_dirs[n]
         log(f"=== {n} subjects ===")
 
+        # Reset and reinstall only when there is an import to do. This size's data
+        # is already in the deployment if its import is recorded (or if the caller
+        # named an existing project), and the reset would delete the very rows that
+        # project id points at -- the latency cells would then measure an empty
+        # database and file the result as an n=10000 number. Guarding on the marker
+        # rather than on --skip-reset means re-running the original command resumes
+        # an interrupted campaign safely, which is the thing a tired operator at
+        # hour nine will actually type.
+        data_already_loaded = (
+            size_dir / "import" / "campaign_run.json"
+        ).exists() or args.skip_import
+        if data_already_loaded:
+            log(f"data for {n} already loaded; skipping reset and HPO install")
+
         preamble: Dict[str, Any] = {}
-        if not args.skip_reset:
+        if not args.skip_reset and not data_already_loaded:
             preamble["reset"] = reset_database(session, reset_arn)
-        if not args.skip_hpo:
+        if not args.skip_hpo and not data_already_loaded:
             preamble["hpo_install"] = run_state_machine(
                 session, hpo_arn, {"test": False}, args.hpo_timeout
             )
+        did_preamble_work = bool(preamble)
 
         hpo_version = (
             installed_ontology_version(session, table_name) if table_name else None
@@ -651,11 +713,24 @@ def main() -> int:
                 f"the ontology and rerun with --skip-hpo, or pass "
                 f"--allow-hpo-drift if you intend to report the split."
             )
+        preamble_path = size_dir / "preamble.json"
+        if not did_preamble_work and preamble_path.exists():
+            # Resuming this size. The file on disk records the reset and install
+            # that actually preceded the import; rewriting it with this
+            # invocation's empty preamble would erase that, and the cells run now
+            # would cite no reset at all.
+            preamble = json.loads(preamble_path.read_text(encoding="utf-8")).get(
+                "preamble", {}
+            )
+            log(f"keeping the existing preamble record for {n}")
         provenance = {"hpo_version": hpo_version, "preamble": preamble}
-        (size_dir / "preamble.json").write_text(
-            json.dumps({"n_subjects": n, "recorded_utc": utc_now(), **provenance}, indent=2),
-            encoding="utf-8",
-        )
+        if did_preamble_work or not preamble_path.exists():
+            preamble_path.write_text(
+                json.dumps(
+                    {"n_subjects": n, "recorded_utc": utc_now(), **provenance}, indent=2
+                ),
+                encoding="utf-8",
+            )
 
         if args.skip_import:
             project_id = args.project_id
@@ -671,9 +746,25 @@ def main() -> int:
                     args, stack, dataset_dir, n, c, r, project_id, size_dir, provenance
                 )
 
-    (out_root / "campaign.json").write_text(
-        json.dumps({**campaign_meta, "finished_utc": utc_now()}, indent=2), encoding="utf-8"
-    )
+    finished = utc_now()
+    with invocations_path.open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "event": "finish",
+                    "started_utc": campaign_meta["started_utc"],
+                    "finished_utc": finished,
+                    "sizes": sizes,
+                }
+            )
+            + "\n"
+        )
+    # Merge rather than replace: everything else in this file belongs to the first
+    # invocation. finished_utc therefore means "when the last invocation that ran
+    # to completion finished", which with invocations.jsonl alongside is unambiguous.
+    record = json.loads(campaign_path.read_text(encoding="utf-8"))
+    record["finished_utc"] = finished
+    campaign_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
     log(f"campaign complete: {out_root}")
     log("next: utilities/generate_performance_matrix.py "
         f"{out_root}/*/c*/r*/artifacts/api_run.json -o figs/")
