@@ -152,31 +152,37 @@ def parse_athena_row_array(row_str, field_names):
 
     rows = []
     if inner:
-        # Split by }, { to handle multiple ROWs, but respect nested structures
+        # Split into top-level ROWs on delimiter depth, not on a literal
+        # separator. An earlier version looked ahead for '}, {' at depth 0, but
+        # the branch that decrements depth on '}' consumed the separator's brace
+        # first, so the lookahead could never match: every ROW accumulated into
+        # one string and a subject with 468 terms parsed as a single term.
         row_parts = []
         current_row = ""
         depth = 0
-        i = 0
-        while i < len(inner):
-            char = inner[i]
-
+        for char in inner:
             if char in '({[':
                 depth += 1
-                current_row += char
+                if depth == 1:
+                    # Opening delimiter of a ROW, not part of its value.
+                    continue
             elif char in ')}]':
+                if depth == 0:
+                    # Stray closing delimiter between ROWs.
+                    continue
                 depth -= 1
-                current_row += char
-            elif depth == 0 and i + 3 < len(inner) and inner[i:i+4] == '}, {':
-                # Found a ROW separator at depth 0
-                row_parts.append(current_row.strip('{}').strip())
-                current_row = ""
-                i += 3  # Skip past the '}, {' separator
-            else:
-                current_row += char
+                if depth == 0:
+                    row_parts.append(current_row.strip())
+                    current_row = ""
+                    continue
+            elif depth == 0 and (char == ',' or char.isspace()):
+                # Separator between two top-level ROWs, normally ", ".
+                continue
 
-            i += 1
+            current_row += char
 
-        # Add the last row
+        # Unbalanced delimiters leave content behind. Keep it rather than
+        # silently dropping a ROW.
         if current_row.strip():
             row_parts.append(current_row.strip('{}').strip())
 
