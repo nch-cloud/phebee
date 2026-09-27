@@ -71,6 +71,102 @@ class TestParseAthenaRowArray:
         # The qualifiers field should be the complete array string
         assert result[0]['qualifiers'] == '[{qualifier_type=family, qualifier_value=true}, {qualifier_type=negated, qualifier_value=false}]'
 
+    def test_empty_input(self):
+        """Test empty and null inputs."""
+        field_names = ['term_id', 'term_iri']
+        assert parse_athena_row_array("", field_names) == []
+        assert parse_athena_row_array(None, field_names) == []
+        assert parse_athena_row_array("null", field_names) == []
+        assert parse_athena_row_array("[]", field_names) == []
+
+    def test_multiple_rows(self):
+        """Test that separate ROWs are split apart.
+
+        The test above covers one ROW, so it never exercised the separator
+        between two of them. A subject with more than one term was collapsing
+        into a single term.
+        """
+        row_str = ("[{HP:0000001, http://purl.obolibrary.org/obo/HP_0000001, All}, "
+                   "{HP:0000002, http://purl.obolibrary.org/obo/HP_0000002, Obsolete}]")
+        field_names = ['term_id', 'term_iri', 'term_label']
+        result = parse_athena_row_array(row_str, field_names)
+
+        assert [r['term_id'] for r in result] == ['HP:0000001', 'HP:0000002']
+        assert [r['term_label'] for r in result] == ['All', 'Obsolete']
+        assert result[1]['term_iri'] == 'http://purl.obolibrary.org/obo/HP_0000002'
+
+    def test_multiple_rows_each_with_nested_qualifiers(self):
+        """Test the two cases together: a nested '}, {' must not split a ROW,
+        and a top-level one must."""
+        row_str = ("[{HP:0000001, All, [{qualifier_type=negated, qualifier_value=true}, "
+                   "{qualifier_type=family, qualifier_value=false}]}, "
+                   "{HP:0000002, Obsolete, [{qualifier_type=negated, qualifier_value=false}]}]")
+        field_names = ['term_id', 'term_label', 'qualifiers']
+        result = parse_athena_row_array(row_str, field_names)
+
+        assert len(result) == 2
+        assert result[0]['qualifiers'] == (
+            '[{qualifier_type=negated, qualifier_value=true}, '
+            '{qualifier_type=family, qualifier_value=false}]'
+        )
+        assert result[1]['term_id'] == 'HP:0000002'
+        assert result[1]['qualifiers'] == '[{qualifier_type=negated, qualifier_value=false}]'
+
+    def test_full_production_row_shape(self):
+        """Test the eight-field ROW that query_subjects_by_project aggregates."""
+        field_names = ['term_id', 'term_iri', 'term_label', 'qualifiers', 'evidence_count',
+                       'termlink_id', 'first_evidence_date', 'last_evidence_date']
+        row_str = ("[{HP:0001880, http://purl.obolibrary.org/obo/HP_0001880, Eosinophilia, "
+                   "[{qualifier_type=negated, qualifier_value=true}], 3, tl-1, "
+                   "2024-01-01, 2024-06-30}, "
+                   "{HP:0001873, http://purl.obolibrary.org/obo/HP_0001873, Thrombocytopenia, "
+                   "[], 1, tl-2, 2024-02-02, 2024-02-02}]")
+        result = parse_athena_row_array(row_str, field_names)
+
+        assert len(result) == 2
+        assert result[0] == {
+            'term_id': 'HP:0001880',
+            'term_iri': 'http://purl.obolibrary.org/obo/HP_0001880',
+            'term_label': 'Eosinophilia',
+            'qualifiers': '[{qualifier_type=negated, qualifier_value=true}]',
+            'evidence_count': '3',
+            'termlink_id': 'tl-1',
+            'first_evidence_date': '2024-01-01',
+            'last_evidence_date': '2024-06-30',
+        }
+        assert result[1]['term_id'] == 'HP:0001873'
+        assert result[1]['qualifiers'] == '[]'
+        assert result[1]['evidence_count'] == '1'
+
+    def test_many_rows_at_benchmark_scale(self):
+        """Test a term count typical of the 100k benchmark project.
+
+        Subjects there carry a few hundred terms each; the collapsing bug turned
+        468 of them into 1, which no fixture-scale test would have caught.
+        """
+        field_names = ['term_id', 'term_label', 'qualifiers']
+        rows = [
+            f"{{HP:{i:07d}, label {i}, [{{qualifier_type=negated, qualifier_value=false}}]}}"
+            for i in range(468)
+        ]
+        row_str = "[" + ", ".join(rows) + "]"
+        result = parse_athena_row_array(row_str, field_names)
+
+        assert len(result) == 468
+        assert result[0]['term_id'] == 'HP:0000000'
+        assert result[467]['term_id'] == 'HP:0000467'
+        assert all(r['qualifiers'] == '[{qualifier_type=negated, qualifier_value=false}]'
+                   for r in result)
+
+    def test_row_with_null_and_missing_fields(self):
+        """Test that 'null' becomes None and short ROWs pad with None."""
+        field_names = ['term_id', 'term_label', 'qualifiers']
+        row_str = "[{HP:0000001, null}, {HP:0000002, Obsolete, []}]"
+        result = parse_athena_row_array(row_str, field_names)
+
+        assert result[0] == {'term_id': 'HP:0000001', 'term_label': None, 'qualifiers': None}
+        assert result[1]['qualifiers'] == '[]'
+
 
 class TestParseQualifiersField:
     """Test the parse_qualifiers_field function."""

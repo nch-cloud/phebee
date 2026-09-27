@@ -12,7 +12,6 @@ import random
 import re
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import List, Dict, Any, Tuple, Set, Optional
 from rdflib import Graph, URIRef, Literal as RdfLiteral, Namespace
@@ -153,31 +152,37 @@ def parse_athena_row_array(row_str, field_names):
 
     rows = []
     if inner:
-        # Split by }, { to handle multiple ROWs, but respect nested structures
+        # Split into top-level ROWs on delimiter depth, not on a literal
+        # separator. An earlier version looked ahead for '}, {' at depth 0, but
+        # the branch that decrements depth on '}' consumed the separator's brace
+        # first, so the lookahead could never match: every ROW accumulated into
+        # one string and a subject with 468 terms parsed as a single term.
         row_parts = []
         current_row = ""
         depth = 0
-        i = 0
-        while i < len(inner):
-            char = inner[i]
-
+        for char in inner:
             if char in '({[':
                 depth += 1
-                current_row += char
+                if depth == 1:
+                    # Opening delimiter of a ROW, not part of its value.
+                    continue
             elif char in ')}]':
+                if depth == 0:
+                    # Stray closing delimiter between ROWs.
+                    continue
                 depth -= 1
-                current_row += char
-            elif depth == 0 and i + 3 < len(inner) and inner[i:i+4] == '}, {':
-                # Found a ROW separator at depth 0
-                row_parts.append(current_row.strip('{}').strip())
-                current_row = ""
-                i += 3  # Skip past the '}, {' separator
-            else:
-                current_row += char
+                if depth == 0:
+                    row_parts.append(current_row.strip())
+                    current_row = ""
+                    continue
+            elif depth == 0 and (char == ',' or char.isspace()):
+                # Separator between two top-level ROWs, normally ", ".
+                continue
 
-            i += 1
+            current_row += char
 
-        # Add the last row
+        # Unbalanced delimiters leave content behind. Keep it rather than
+        # silently dropping a ROW.
         if current_row.strip():
             row_parts.append(current_row.strip('{}').strip())
 
@@ -1733,7 +1738,6 @@ def query_subjects_by_project(
 
     where_clause = " AND ".join(where_clauses)
 
-    # Query to get subjects with aggregated term data
     # In Athena with Iceberg, OFFSET must come before LIMIT
     # Only include OFFSET if > 0 to avoid potential issues with OFFSET 0
     if offset > 0:
@@ -1741,7 +1745,72 @@ def query_subjects_by_project(
     else:
         pagination_clause = f"LIMIT {limit}"
 
-    query = f"""
+    # Paginate in two passes rather than aggregating the whole project and
+    # discarding all but one page. Athena cannot push a LIMIT through
+    # GROUP BY ... ORDER BY, so a single aggregate query reads every row in the
+    # project before the limit applies -- at 100k subjects that is a 2.9 GB scan
+    # taking ~13 s to return 10 subjects. Pass one reads only subject_id to find
+    # the page (665 MB); pass two fetches full rows for those subjects by literal
+    # id. The ids must be inlined as literals: Athena's dynamic filtering does
+    # not prune partitions from a join, so joining back to the page costs more
+    # than the query it replaces.
+    #
+    # COUNT(*) OVER () is evaluated across the full distinct set before the limit
+    # applies, so total_count stays exact without the separate counting scan the
+    # previous implementation ran alongside the aggregate.
+    page_query = f"""
+    SELECT subject_id, COUNT(*) OVER () as total_count
+    FROM (
+        SELECT DISTINCT subject_id
+        FROM {database_name}.{table_name}
+        WHERE {where_clause}
+    )
+    ORDER BY subject_id
+    {pagination_clause}
+    """
+
+    # Count query, used only when the page comes back empty (see below)
+    count_query = f"""
+    SELECT COUNT(DISTINCT subject_id) as total
+    FROM {database_name}.{table_name}
+    WHERE {where_clause}
+    """
+
+    try:
+        page_results = query_iceberg_evidence(page_query)
+
+        if not page_results:
+            # No row to read the window count from, and an empty IN list is a
+            # syntax error, so the second pass is skipped. At offset 0 an empty
+            # page means nothing matched the filter; past the end of the results
+            # the total is still nonzero and has to be counted directly.
+            if offset > 0:
+                count_results = query_iceberg_evidence(count_query)
+                total_count = int(count_results[0]['total']) if count_results else 0
+            else:
+                total_count = 0
+
+            logger.info(f"Found 0 subjects for project {project_id} (total: {total_count}, offset: {offset})")
+            return {
+                "subjects": [],
+                "pagination": {
+                    "limit": limit,
+                    "cursor": str(offset) if offset > 0 else None,
+                    "next_cursor": None,
+                    "has_more": False,
+                    "total_count": total_count
+                }
+            }
+
+        total_count = int(page_results[0]['total_count'])
+        page_subject_ids = [row['subject_id'] for row in page_results]
+        subject_id_list = "', '".join(page_subject_ids)
+
+        # The full where_clause is reapplied here, not just the subject filter:
+        # under a term or qualifier filter the caller expects only the matching
+        # terms for each subject, and restricting on subject_id alone would
+        # return every term those subjects have.
+        query = f"""
     SELECT
         subject_id,
         project_subject_id,
@@ -1752,31 +1821,12 @@ def query_subjects_by_project(
         ) as terms
     FROM {database_name}.{table_name}
     WHERE {where_clause}
+        AND subject_id IN ('{subject_id_list}')
     GROUP BY subject_id, project_subject_id, subject_iri, project_subject_iri
     ORDER BY subject_id
-    {pagination_clause}
     """
 
-    # Count query for total
-    count_query = f"""
-    SELECT COUNT(DISTINCT subject_id) as total
-    FROM {database_name}.{table_name}
-    WHERE {where_clause}
-    """
-
-    try:
-        # Execute queries in parallel to reduce latency
-        # Both queries are independent and can run concurrently
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            # Submit both queries
-            data_future = executor.submit(query_iceberg_evidence, query)
-            count_future = executor.submit(query_iceberg_evidence, count_query)
-
-            # Wait for both to complete
-            results = data_future.result()
-            count_results = count_future.result()
-
-        total_count = int(count_results[0]['total']) if count_results else 0
+        results = query_iceberg_evidence(query)
 
         # Parse subjects and convert to API format
         subjects = []

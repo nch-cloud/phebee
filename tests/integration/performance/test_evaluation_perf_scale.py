@@ -482,12 +482,16 @@ def create_api_test_functions(api_base_url: str, sigv4_auth, project_id: str,
                             term_info_targets: List[Dict[str, Any]],
                             rng: random.Random,
                             n_draws: int,
+                            expected_subject_count: int,
                             session: requests.Session = None) -> Dict[str, callable]:
     """Create the seven API test functions covering realistic query patterns.
 
     `rng` seeds the term choices and `n_draws` is the number of timed calls
     each workload will receive, so the sequence of terms a run queries is
     fixed here rather than decided inside the request functions.
+
+    `expected_subject_count` is the dataset's subject count, asserted by the two
+    unfiltered cohort workloads. See assert_full_cohort for why.
     """
 
     # Rotation index for subject queries
@@ -510,6 +514,33 @@ def create_api_test_functions(api_base_url: str, sigv4_auth, project_id: str,
     qualified_cursor = itertools.count()
     specific_cursor = itertools.count()
 
+    def assert_full_cohort(r: requests.Response, workload: str) -> Dict[str, Any]:
+        """Assert an unfiltered cohort query really saw the whole project.
+
+        The two workloads that omit term_iri aggregate every subject in the
+        project, so their latency is only meaningful if the project holds the
+        subjects the dataset says it does. Checking status_code alone does not
+        establish that: the Feb 2026 campaign measured a materially incomplete
+        table at 50k and 100k and still passed, because an incomplete table
+        answers with HTTP 200. total_count comes from the query's own
+        COUNT(*) OVER () over the full distinct set, so it is the cheapest
+        available witness that the scan covered the cohort being billed for.
+
+        Only the unfiltered workloads can use this. A term or qualifier filter
+        legitimately returns a subset, and the harness has no independent count
+        of how many subjects carry a given term.
+        """
+        payload = r.json()
+        pagination = payload.get("pagination") or {}
+        total_count = pagination.get("total_count")
+        assert total_count == expected_subject_count, (
+            f"{workload}: /subjects/query reports total_count={total_count} but the "
+            f"dataset has {expected_subject_count} subjects. The project is "
+            f"incomplete, so this cell's latency does not measure the cohort it "
+            f"claims to. pagination={pagination}"
+        )
+        return payload
+
     def call_basic_subjects_query():
         """Basic project subjects query - most common pattern."""
         r = api_post(api_base_url, "/subjects/query", {
@@ -517,6 +548,7 @@ def create_api_test_functions(api_base_url: str, sigv4_auth, project_id: str,
             "limit": 10
         }, sigv4_auth, session)
         assert r.status_code == 200
+        assert_full_cohort(r, "basic_subjects_query")
 
     def call_individual_subject():
         """Individual subject lookup - common for detailed views."""
@@ -566,9 +598,17 @@ def create_api_test_functions(api_base_url: str, sigv4_auth, project_id: str,
             "limit": 50               # Force pagination
         }, sigv4_auth, session)
         assert r.status_code == 200
+        payload = assert_full_cohort(r, "paginated_large_cohort")
 
         # Follow pagination if available
-        body = r.json().get("body", {})
+        #
+        # NOTE: this block does not currently run. `body` is the list of
+        # subjects, and `pagination` is its sibling in the response, not a key
+        # inside it -- see the response_data dict in functions/get_subjects_pheno.py.
+        # So `isinstance(body, dict)` is always False and the second page is
+        # never requested. Left as-is pending a decision: repairing it changes
+        # what this workload measures, and therefore the published number.
+        body = payload.get("body", {})
         if isinstance(body, dict) and body.get("pagination", {}).get("next_cursor"):
             r2 = api_post(api_base_url, "/subjects/query", {
                 "project_id": project_id,
@@ -864,7 +904,7 @@ def test_r11_enhanced_api_latency_at_scale(
     conc = int(os.environ.get("PHEBEE_EVAL_CONCURRENCY", "25"))
 
     # Create comprehensive API test functions
-    api_functions = create_api_test_functions(api_base_url, sigv4_auth, project_id, project_subject_iris, dataset_terms, term_info_targets, rng, n, session)
+    api_functions = create_api_test_functions(api_base_url, sigv4_auth, project_id, project_subject_iris, dataset_terms, term_info_targets, rng, n, total_subjects, session)
 
     # Warm-up to reduce cold-start skew
     print("[WARMUP_START]")
