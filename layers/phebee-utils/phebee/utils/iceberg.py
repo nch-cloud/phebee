@@ -12,6 +12,7 @@ import random
 import re
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import List, Dict, Any, Tuple, Set, Optional
 from rdflib import Graph, URIRef, Literal as RdfLiteral, Namespace
@@ -1745,19 +1746,57 @@ def query_subjects_by_project(
     else:
         pagination_clause = f"LIMIT {limit}"
 
-    # Paginate in two passes rather than aggregating the whole project and
-    # discarding all but one page. Athena cannot push a LIMIT through
-    # GROUP BY ... ORDER BY, so a single aggregate query reads every row in the
-    # project before the limit applies -- at 100k subjects that is a 2.9 GB scan
-    # taking ~13 s to return 10 subjects. Pass one reads only subject_id to find
-    # the page (665 MB); pass two fetches full rows for those subjects by literal
-    # id. The ids must be inlined as literals: Athena's dynamic filtering does
-    # not prune partitions from a join, so joining back to the page costs more
-    # than the query it replaces.
+    # Two ways to read a page, chosen by whether the filter is selective.
     #
-    # COUNT(*) OVER () is evaluated across the full distinct set before the limit
-    # applies, so total_count stays exact without the separate counting scan the
-    # previous implementation ran alongside the aggregate.
+    # Unfiltered, the aggregate has to read every row in the project before the
+    # limit applies -- Athena cannot push a LIMIT through GROUP BY ... ORDER BY
+    # -- which at 100k subjects is a 2.9 GB scan taking ~13 s to return 10
+    # subjects. Two passes fix that: pass one reads only subject_id to find the
+    # page (665 MB), pass two fetches full rows for those subjects by literal id.
+    # The ids must be inlined as literals; Athena's dynamic filtering does not
+    # prune partitions from a join, so joining back to the page costs more than
+    # the query it replaces.
+    #
+    # But the two passes are necessarily sequential -- pass two's IN list is
+    # built from pass one's rows -- whereas the aggregate and its count are
+    # independent and overlap. So two passes trade an extra Athena round trip
+    # (~1.5 s, the per-query floor) for a smaller scan. That is a large win when
+    # the scan is 2.9 GB and a pure loss once the filter has already made it
+    # small. Measured at concurrency 1 on 2026-09-25, the term-filtered workloads
+    # were flat from 1k to 100k subjects -- specific_phenotype 3678 -> 3665 ms,
+    # qualified_filtering 4176 -> 3715 ms, hierarchy_expansion 2943 -> 4299 ms --
+    # while the two unfiltered ones grew 3.2-3.6x. Spending the extra round trip
+    # on those three bought nothing at any size, so it is not spent.
+    #
+    # A term filter prunes on the table's own term_id and an explicit subject
+    # list prunes on subject; either keeps the aggregate small enough that one
+    # pass wins. include_qualified is deliberately not counted as selective: it
+    # is a row predicate over the qualifiers array, so it drops rows without
+    # reducing what has to be read to find them.
+    selective = bool(term_ids) or bool(project_subject_ids)
+
+    # Selective path: one aggregate for the page, one count for the total, run
+    # concurrently. COUNT(DISTINCT subject_id) over the same where_clause is the
+    # same total the window function produces on the other path.
+    aggregate_query = f"""
+    SELECT
+        subject_id,
+        project_subject_id,
+        subject_iri,
+        project_subject_iri,
+        ARRAY_AGG(
+            ROW(term_id, term_iri, term_label, qualifiers, evidence_count, termlink_id, first_evidence_date, last_evidence_date)
+        ) as terms
+    FROM {database_name}.{table_name}
+    WHERE {where_clause}
+    GROUP BY subject_id, project_subject_id, subject_iri, project_subject_iri
+    ORDER BY subject_id
+    {pagination_clause}
+    """
+
+    # Unfiltered path, pass one. COUNT(*) OVER () is evaluated across the full
+    # distinct set before the limit applies, so total_count stays exact without a
+    # second scan to count it.
     page_query = f"""
     SELECT subject_id, COUNT(*) OVER () as total_count
     FROM (
@@ -1769,7 +1808,8 @@ def query_subjects_by_project(
     {pagination_clause}
     """
 
-    # Count query, used only when the page comes back empty (see below)
+    # Total for the selective path, and for the unfiltered path only when its
+    # page comes back empty (see below).
     count_query = f"""
     SELECT COUNT(DISTINCT subject_id) as total
     FROM {database_name}.{table_name}
@@ -1777,56 +1817,40 @@ def query_subjects_by_project(
     """
 
     try:
-        page_results = query_iceberg_evidence(page_query)
+        if selective:
+            # Independent queries, so overlap them: wall time is the slower of
+            # the two rather than their sum.
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                data_future = executor.submit(query_iceberg_evidence, aggregate_query)
+                count_future = executor.submit(query_iceberg_evidence, count_query)
+                results = data_future.result()
+                count_results = count_future.result()
 
-        if not page_results:
-            # No row to read the window count from, and an empty IN list is a
-            # syntax error, so the second pass is skipped. At offset 0 an empty
-            # page means nothing matched the filter; past the end of the results
-            # the total is still nonzero and has to be counted directly.
-            if offset > 0:
-                count_results = query_iceberg_evidence(count_query)
-                total_count = int(count_results[0]['total']) if count_results else 0
-            else:
-                total_count = 0
-
-            logger.info(f"Found 0 subjects for project {project_id} (total: {total_count}, offset: {offset})")
-            return {
-                "subjects": [],
-                "pagination": {
-                    "limit": limit,
-                    "cursor": str(offset) if offset > 0 else None,
-                    "next_cursor": None,
-                    "has_more": False,
-                    "total_count": total_count
+            total_count = int(count_results[0]['total']) if count_results else 0
+            # An empty page needs no special case here: the shared parsing below
+            # yields no subjects, and has_more compares against a total that was
+            # counted independently of the page.
+        else:
+            results, total_count = _read_page_in_two_passes(
+                page_query=page_query,
+                count_query=count_query,
+                where_clause=where_clause,
+                database_name=database_name,
+                table_name=table_name,
+                offset=offset,
+            )
+            if results is None:
+                logger.info(f"Found 0 subjects for project {project_id} (total: {total_count}, offset: {offset})")
+                return {
+                    "subjects": [],
+                    "pagination": {
+                        "limit": limit,
+                        "cursor": str(offset) if offset > 0 else None,
+                        "next_cursor": None,
+                        "has_more": False,
+                        "total_count": total_count
+                    }
                 }
-            }
-
-        total_count = int(page_results[0]['total_count'])
-        page_subject_ids = [row['subject_id'] for row in page_results]
-        subject_id_list = "', '".join(page_subject_ids)
-
-        # The full where_clause is reapplied here, not just the subject filter:
-        # under a term or qualifier filter the caller expects only the matching
-        # terms for each subject, and restricting on subject_id alone would
-        # return every term those subjects have.
-        query = f"""
-    SELECT
-        subject_id,
-        project_subject_id,
-        subject_iri,
-        project_subject_iri,
-        ARRAY_AGG(
-            ROW(term_id, term_iri, term_label, qualifiers, evidence_count, termlink_id, first_evidence_date, last_evidence_date)
-        ) as terms
-    FROM {database_name}.{table_name}
-    WHERE {where_clause}
-        AND subject_id IN ('{subject_id_list}')
-    GROUP BY subject_id, project_subject_id, subject_iri, project_subject_iri
-    ORDER BY subject_id
-    """
-
-        results = query_iceberg_evidence(query)
 
         # Parse subjects and convert to API format
         subjects = []
@@ -1896,6 +1920,61 @@ def query_subjects_by_project(
     except Exception as e:
         logger.error(f"Error querying subjects by project {project_id}: {e}")
         raise
+
+
+def _read_page_in_two_passes(
+    page_query: str,
+    count_query: str,
+    where_clause: str,
+    database_name: str,
+    table_name: str,
+    offset: int,
+) -> Tuple[Optional[List[Dict[str, Any]]], int]:
+    """Read one page of subjects without aggregating the whole project.
+
+    Returns (rows, total_count). `rows` is None when the page is empty, which the
+    caller has to treat as its own case rather than as an empty aggregate: pass
+    two builds an IN list from pass one's rows, and an empty IN list is a syntax
+    error.
+
+    Split out of query_subjects_by_project only so the two page-reading
+    strategies read as alternatives rather than as one long branch.
+    """
+    page_results = query_iceberg_evidence(page_query)
+
+    if not page_results:
+        # No row to read the window count from. At offset 0 an empty page means
+        # nothing matched the filter; past the end of the results the total is
+        # still nonzero and has to be counted directly.
+        if offset > 0:
+            count_results = query_iceberg_evidence(count_query)
+            return None, int(count_results[0]['total']) if count_results else 0
+        return None, 0
+
+    total_count = int(page_results[0]['total_count'])
+    subject_id_list = "', '".join(row['subject_id'] for row in page_results)
+
+    # The full where_clause is reapplied here, not just the subject filter:
+    # under a term or qualifier filter the caller expects only the matching
+    # terms for each subject, and restricting on subject_id alone would
+    # return every term those subjects have.
+    query = f"""
+    SELECT
+        subject_id,
+        project_subject_id,
+        subject_iri,
+        project_subject_iri,
+        ARRAY_AGG(
+            ROW(term_id, term_iri, term_label, qualifiers, evidence_count, termlink_id, first_evidence_date, last_evidence_date)
+        ) as terms
+    FROM {database_name}.{table_name}
+    WHERE {where_clause}
+        AND subject_id IN ('{subject_id_list}')
+    GROUP BY subject_id, project_subject_id, subject_iri, project_subject_iri
+    ORDER BY subject_id
+    """
+
+    return query_iceberg_evidence(query), total_count
 
 
 def query_subject_with_hierarchy(
