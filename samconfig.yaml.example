@@ -1,4 +1,9 @@
 version: 0.1
+
+# VpcId, SubnetId1 and SubnetId2 are required in every environment you deploy.
+# The integration test suite reads this file too: it deploys its own stack using
+# the parameter_overrides of the environment named by --config-env, defaulting to
+# integration-test below.
 integration-test:
   deploy:
     parameters:

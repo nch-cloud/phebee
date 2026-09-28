@@ -18,6 +18,7 @@ from botocore.config import Config
 from requests_aws4auth import AWS4Auth
 
 from phebee.utils.aws import get_client
+from samconfig_params import SamConfigError, load_parameter_overrides
 
 
 # ============================================================================
@@ -81,6 +82,21 @@ def cloudformation_stack(request, aws_session, profile_name):
     template_path = "template.yaml"
 
     if not existing_stack:
+        # --parameter-overrides replaces the config file's parameter_overrides
+        # rather than merging into it, so every parameter the stack needs has to
+        # be re-supplied here alongside the AppName override below.
+        try:
+            parameter_overrides = load_parameter_overrides(config_env)
+        except SamConfigError as e:
+            pytest.fail(str(e))
+
+        # AppName matches the stack name so each test stack gets its own database.
+        parameter_overrides["AppName"] = stack_name
+        # Test stacks never run ontology updates on a schedule and always want
+        # the evidence table, whatever the config environment asks for.
+        parameter_overrides["RunOntologyUpdatesOnSchedule"] = "false"
+        parameter_overrides["CreateEvidenceTableFlag"] = "true"
+
         try:
             # Step 1: Build the SAM application
             subprocess.run(
@@ -88,8 +104,6 @@ def cloudformation_stack(request, aws_session, profile_name):
             )
 
             # Step 2: Deploy the SAM application
-            # Override AppName to match the stack name so each test stack gets a unique database
-            # Include all other parameters from the config to avoid replacing them
             deploy_args = [
                 "sam",
                 "deploy",
@@ -104,13 +118,7 @@ def cloudformation_stack(request, aws_session, profile_name):
                 "--config-env",
                 config_env,
                 "--parameter-overrides",
-                f"AppName={stack_name}",
-                "VpcId=vpc-0fb3357255060ae8a",
-                "SubnetId1=subnet-0e8bcc643bbef00e7",
-                "SubnetId2=subnet-0a35943802948655b",
-                "S3AccessLogBucketName=nch-igm-s3-access-logs-595936048629-us-east-2",
-                "RunOntologyUpdatesOnSchedule=false",
-                "CreateEvidenceTableFlag=true",
+                *[f"{key}={value}" for key, value in parameter_overrides.items()],
             ]
             if profile_name:
                 deploy_args.extend(["--profile", profile_name])
