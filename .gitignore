@@ -268,3 +268,10 @@ tests/data
 
 # Local stack configuration for integration tests
 .phebee-test-stack
+
+# Performance campaign output. Never commit these: the run manifests, the
+# ingestion CSVs and the pytest logs all carry execution ARNs, IAM role ARNs and
+# generated bucket names, which disclose the AWS account ID and stack topology.
+perf-campaign-*/
+perf-campaign-*.log
+nohup.out

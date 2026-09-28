@@ -103,6 +103,8 @@ sam deploy --config-env prod
 
 This command will use the parameters defined in your `samconfig.yaml` without needing to specify them manually each time.
 
+The integration test suite reads the same file, so fill in the `integration-test` environment before running it. See [Running Integration Tests](#running-integration-tests).
+
 ### Prerequisites
 
 Before building or deploying PheBee, make sure you have:
@@ -184,12 +186,14 @@ Integration tests validate the infrastructure and APIs by deploying the stack an
 Install dependencies:
 
 ```bash
-pip install pytest boto3 requests requests-aws4auth
+pip install pytest boto3 requests requests-aws4auth pyyaml
 ```
 
 Ensure your AWS credentials are configured (`aws configure`).
 
-When no existing stack is given, the suite builds and deploys a new stack using the parameter overrides in `tests/integration/conftest.py`; review those for your account before relying on that path.
+When no existing stack is given, the suite builds and deploys a new stack of its own. The deploy parameters come from the `parameter_overrides` of your `samconfig.yaml` for whichever environment `--config-env` names, defaulting to `integration-test`, so fill that section in first — `VpcId`, `SubnetId1` and `SubnetId2` are required and the suite fails with a message naming any that are missing rather than deploying into the wrong network. The suite sets `AppName` itself, to give each test stack its own database, and forces `RunOntologyUpdatesOnSchedule=false` and `CreateEvidenceTableFlag=true`.
+
+On a machine with no `samconfig.yaml`, set `PHEBEE_TEST_PARAM_OVERRIDES` to a space-separated list of `Key=Value` pairs instead; it also overrides individual values from the file when both are present.
 
 `tests/integration/test_reset_database.py` erases all data in the target stack. It runs against stacks the suite deploys for itself, and is skipped against an existing stack unless `PHEBEE_ALLOW_DATABASE_RESET=1` is set.
 
