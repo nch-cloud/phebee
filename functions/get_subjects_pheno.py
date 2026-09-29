@@ -15,15 +15,22 @@ metrics = Metrics()
 
 s3_client = get_client("s3")
 
+# api.yaml documents this maximum for /subjects/query.
+MAX_LIMIT = 5000
+
 
 def lambda_handler(event, context):
     """
     Query subjects in a project with their phenotypes.
 
-    IMPORTANT: This endpoint queries the materialized subject_terms_by_project_term table,
-    which only includes subjects that have evidence/phenotypes. Subjects without any
-    evidence will NOT appear in results. This is by design for performance - the
-    materialized table enables efficient term-based queries and subject retrieval.
+    Filtered by term (term_iri or term_association_source_entity), results come
+    from the materialized subject_terms_by_project_term table: only subjects with
+    a matching phenotype, each with only its matching phenotypes.
+
+    Otherwise results list the project's members, including members with no
+    evidence (with an empty phenotype list), each with all of its phenotypes.
+    Phenotypes are shared across the projects a subject belongs to. See
+    query_subjects_by_project.
     """
     logger.info("Event: %s", event)
 
@@ -98,8 +105,16 @@ def lambda_handler(event, context):
             "Expanding terms to include descendants would incorrectly match subjects with unrelated phenotypes."
         )
 
-    # Pagination parameters
-    limit = body.get("limit", 1000)
+    # Pagination parameters. A limit over the maximum is clamped rather than
+    # rejected: pagination advances by what was returned, so a client that
+    # follows next_cursor still receives every subject.
+    try:
+        limit = int(body.get("limit", 1000))
+    except (TypeError, ValueError):
+        raise ValueError("Parameter 'limit' must be a positive integer.")
+    if limit < 1:
+        raise ValueError("Parameter 'limit' must be a positive integer.")
+    limit = min(limit, MAX_LIMIT)
     cursor = body.get("cursor")
 
     # Convert term IRI to term ID if provided, OR fetch associated terms from Monarch
@@ -168,9 +183,6 @@ def lambda_handler(event, context):
             logger.error(f"Error fetching associated terms from Monarch: {e}")
             raise ValueError(f"Failed to fetch associated terms from Monarch for entity {term_association_source_entity}: {str(e)}")
 
-    # Query Iceberg analytical tables directly
-    # Note: This queries subject_terms_by_project_term, which only includes subjects
-    # with evidence. Subjects without any phenotypes/evidence will not appear in results.
     offset = int(cursor) if cursor else 0
     result = query_subjects_by_project(
         project_id=project_id,

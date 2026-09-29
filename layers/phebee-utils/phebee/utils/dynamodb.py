@@ -1,6 +1,7 @@
 import boto3
 import uuid
 import os
+import time
 from datetime import datetime
 from typing import Dict, List, Set, Tuple, Optional
 from botocore.exceptions import ClientError
@@ -162,6 +163,108 @@ def get_all_project_subject_ids(project_id: str, region: str = 'us-east-2') -> L
         return project_subject_ids
     except ClientError:
         return []
+
+def _project_members_query(project_id: str) -> Dict:
+    return {
+        'KeyConditionExpression': 'PK = :pk AND begins_with(SK, :sk_prefix)',
+        'ExpressionAttributeValues': {
+            ':pk': f'PROJECT#{project_id}',
+            ':sk_prefix': 'SUBJECT#',
+        },
+    }
+
+
+def _member_from_item(item: Dict) -> Tuple[str, str]:
+    # SK is "SUBJECT#{project_subject_id}"; split once, since a
+    # project_subject_id may itself contain '#'.
+    return item['SK'].split('#', 1)[1], item['subject_id']
+
+
+def count_project_subjects(project_id: str) -> int:
+    """Count a project's members from its forward mapping items.
+
+    Select=COUNT returns no items, but DynamoDB still reads them, so this walks
+    about 1 MB of items per call (~7k members): ~15 calls at 100k.
+    """
+    table = _get_table()
+    kwargs = _project_members_query(project_id)
+    kwargs['Select'] = 'COUNT'
+    total = 0
+    while True:
+        response = table.query(**kwargs)
+        total += response['Count']
+        if 'LastEvaluatedKey' not in response:
+            return total
+        kwargs['ExclusiveStartKey'] = response['LastEvaluatedKey']
+
+
+def get_project_subjects_page(project_id: str, offset: int, limit: int) -> List[Tuple[str, str]]:
+    """One page of a project's members, as (project_subject_id, subject_id).
+
+    Members come back in project_subject_id order, the sort key's order.
+    DynamoDB has no offset, so the walk to it counts items with Select=COUNT
+    and Limit set to what is left to skip, then resumes from the key where
+    that stopped.
+    """
+    table = _get_table()
+    kwargs = _project_members_query(project_id)
+
+    if offset > 0:
+        skip = dict(kwargs, Select='COUNT')
+        remaining = offset
+        while remaining > 0:
+            skip['Limit'] = remaining
+            response = table.query(**skip)
+            remaining -= response['Count']
+            if 'LastEvaluatedKey' not in response:
+                # Reached the end of the project at or before the offset. Without
+                # a key to resume from, a page query would restart at the top.
+                return []
+            skip['ExclusiveStartKey'] = response['LastEvaluatedKey']
+        kwargs['ExclusiveStartKey'] = skip['ExclusiveStartKey']
+
+    members = []
+    while len(members) < limit:
+        kwargs['Limit'] = limit - len(members)
+        response = table.query(**kwargs)
+        members.extend(_member_from_item(item) for item in response.get('Items', []))
+        if 'LastEvaluatedKey' not in response:
+            break
+        kwargs['ExclusiveStartKey'] = response['LastEvaluatedKey']
+    return members
+
+
+def get_project_subjects_by_ids(project_id: str, project_subject_ids: List[str]) -> List[Tuple[str, str]]:
+    """Look up the given project_subject_ids in a project, as (project_subject_id, subject_id).
+
+    Ids that are not members of the project are left out. The result is in
+    project_subject_id order, matching get_project_subjects_page.
+    """
+    dynamodb = boto3.resource('dynamodb')
+    table_name = _get_table_name()
+    # BatchGetItem rejects a request that names the same key twice.
+    unique_ids = list(dict.fromkeys(project_subject_ids))
+
+    members = []
+    for start in range(0, len(unique_ids), 100):  # BatchGetItem's per-call key limit
+        request = {table_name: {'Keys': [
+            {'PK': f'PROJECT#{project_id}', 'SK': f'SUBJECT#{psid}'}
+            for psid in unique_ids[start:start + 100]
+        ]}}
+        attempt = 0
+        while request:
+            response = dynamodb.batch_get_item(RequestItems=request)
+            members.extend(_member_from_item(item)
+                           for item in response.get('Responses', {}).get(table_name, []))
+            # Keys can come back unprocessed under throttling; retry just those.
+            request = response.get('UnprocessedKeys') or None
+            if request:
+                attempt += 1
+                if attempt > 8:
+                    raise RuntimeError(f"DynamoDB left {len(request[table_name]['Keys'])} keys unprocessed")
+                time.sleep(min(0.05 * 2 ** attempt, 2.0))
+    return sorted(members)
+
 
 def get_subject_id(table_name: str, project_id: str, project_subject_id: str, region: str = 'us-east-2') -> Optional[str]:
     """Get subject_id for a given project_id and project_subject_id"""
