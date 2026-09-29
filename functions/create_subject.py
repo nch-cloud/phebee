@@ -12,10 +12,27 @@ from phebee.utils.neptune import execute_update
 from phebee.utils.dynamodb import _get_table_name, get_subject_id
 from phebee.utils.iceberg import materialize_subject_terms
 import boto3
+import time
 
 logger = Logger()
 tracer = Tracer()
 metrics = Metrics()
+
+
+# materialize_subject_terms is a full recompute, so a transient Athena failure
+# (a concurrent Iceberg commit, throttling) can simply be retried.
+MATERIALIZE_ATTEMPTS = 3
+
+
+def materialize_with_retry(subject_id):
+    for attempt in range(1, MATERIALIZE_ATTEMPTS + 1):
+        try:
+            return materialize_subject_terms(subject_id)
+        except Exception as e:
+            if attempt == MATERIALIZE_ATTEMPTS:
+                raise
+            logger.warning(f"Materializing subject {subject_id} failed (attempt {attempt}/{MATERIALIZE_ATTEMPTS}), retrying: {e}")
+            time.sleep(2 ** attempt)
 
 
 def create_error_response(status_code, message):
@@ -338,9 +355,29 @@ def lambda_handler(event, context):
         # This ensures subject is fully queryable in new project when event consumers are notified
         try:
             logger.info(f"Re-materializing subject {subject_id} after linking to project {project_id}")
-            materialize_subject_terms(subject_id)
+            materialize_with_retry(subject_id)
         except Exception as e:
-            logger.error(f"Failed to materialize subject after linking (non-critical): {e}")
+            # The recompute deletes the subject's rows before re-inserting them,
+            # so a failure can leave the subject missing from every project's
+            # queries, not just this one. Undo the link, so a retry of this
+            # request links afresh rather than finding the mapping and returning
+            # early, then recompute the subject for the projects it had.
+            logger.error(f"Failed to materialize subject {subject_id} after linking to project {project_id}, rolling back the link: {e}")
+            try:
+                with table.batch_writer() as batch:
+                    batch.delete_item(Key={'PK': f'PROJECT#{project_id}', 'SK': f'SUBJECT#{project_subject_id}'})
+                    batch.delete_item(Key={'PK': f'SUBJECT#{subject_id}', 'SK': f'PROJECT#{project_id}#SUBJECT#{project_subject_id}'})
+                project_subject_iri = f"http://ods.nationwidechildrens.org/phebee/projects/{project_id}/{project_subject_id}"
+                execute_update(f"DELETE WHERE {{ <{project_subject_iri}> ?p ?o . }}")
+                execute_update(f"DELETE WHERE {{ ?s ?p <{project_subject_iri}> . }}")
+            except Exception as rollback_error:
+                logger.error(f"Failed to roll back link of subject {subject_id} to project {project_id}: {rollback_error}")
+            try:
+                materialize_with_retry(subject_id)
+            except Exception as restore_error:
+                logger.error(f"Failed to restore materialized terms for subject {subject_id}; "
+                             f"its term queries are incomplete until it is re-materialized: {restore_error}")
+            return create_error_response(500, f"Error materializing subject terms; the link to project {project_id} was not made: {str(e)}")
 
         # Fire event after materialization completes
         try:

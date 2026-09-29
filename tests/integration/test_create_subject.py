@@ -1012,3 +1012,123 @@ def test_link_subject_rematerializes_evidence(
             remove_project(project_b_id, physical_resources)
         except Exception as e:
             print(f"Warning: Project B cleanup failed: {e}")
+
+
+def _materialized_totals(query_athena, subject_uuid):
+    """Rows and summed evidence_count per table (and project) for one subject."""
+    rows = query_athena(f"""
+        SELECT 'by_subject' AS source, COUNT(*) AS n_rows, SUM(evidence_count) AS evidence
+        FROM subject_terms_by_subject WHERE subject_id = '{subject_uuid}'
+        UNION ALL
+        SELECT project_id, COUNT(*), SUM(evidence_count)
+        FROM subject_terms_by_project_term WHERE subject_id = '{subject_uuid}'
+        GROUP BY project_id
+    """)
+    return {r["source"]: (int(r["n_rows"]), int(r["evidence"] or 0)) for r in rows}
+
+
+def test_link_counts_each_evidence_once_despite_qualifiers(
+    physical_resources,
+    create_evidence_helper,
+    standard_hpo_terms,
+    query_athena
+):
+    """
+    Linking re-materializes the subject; evidence_count must not multiply by qualifiers.
+
+    The recompute once counted rows after unnesting qualifiers, so each evidence
+    record counted once per qualifier. Two records with two qualifiers each
+    became an evidence_count of 4, in both tables and in every project.
+    """
+    project_a_id = f"test-count-a-{uuid.uuid4().hex[:8]}"
+    project_b_id = f"test-count-b-{uuid.uuid4().hex[:8]}"
+    create_project(project_a_id, "Test Link Count Project A", physical_resources)
+    create_project(project_b_id, "Test Link Count Project B", physical_resources)
+
+    try:
+        subj_a_id = f"subj-a-{uuid.uuid4().hex[:8]}"
+        result_a = create_subject(project_a_id, subj_a_id, physical_resources)
+        assert result_a["statusCode"] == 200
+        subject_uuid = json.loads(result_a["body"])["subject"]["subject_id"]
+
+        # Two records of the same assertion from different notes: one termlink.
+        for _ in range(2):
+            create_evidence_helper(
+                subject_id=subject_uuid,
+                term_iri=standard_hpo_terms["seizure"],
+                qualifiers=["negated", "family"],
+            )
+
+        result_b = create_subject(
+            project_b_id, f"subj-b-{uuid.uuid4().hex[:8]}", physical_resources,
+            known_project_id=project_a_id, known_project_subject_id=subj_a_id
+        )
+        assert result_b["statusCode"] == 200, result_b
+
+        assert _materialized_totals(query_athena, subject_uuid) == {
+            "by_subject": (1, 2),
+            project_a_id: (1, 2),
+            project_b_id: (1, 2),
+        }
+
+    finally:
+        for project_id in (project_a_id, project_b_id):
+            try:
+                remove_project(project_id, physical_resources)
+            except Exception as e:
+                print(f"Warning: Project {project_id} cleanup failed: {e}")
+
+
+@pytest.mark.slow
+def test_link_subject_with_many_terms(
+    physical_resources,
+    create_evidence_helper,
+    query_athena
+):
+    """
+    Linking a subject with more terms than one INSERT can partition.
+
+    subject_terms_by_project_term is partitioned by (project_id, term_id), and
+    Athena fails an INSERT that opens more than 100 partitions. 60 terms in two
+    projects is 120. The recompute once wrote them in one INSERT, which failed
+    after the subject's rows had been deleted, leaving it in neither project.
+    """
+    n_terms = 60
+    project_a_id = f"test-parts-a-{uuid.uuid4().hex[:8]}"
+    project_b_id = f"test-parts-b-{uuid.uuid4().hex[:8]}"
+    create_project(project_a_id, "Test Link Partitions Project A", physical_resources)
+    create_project(project_b_id, "Test Link Partitions Project B", physical_resources)
+
+    try:
+        subj_a_id = f"subj-a-{uuid.uuid4().hex[:8]}"
+        result_a = create_subject(project_a_id, subj_a_id, physical_resources)
+        assert result_a["statusCode"] == 200
+        subject_uuid = json.loads(result_a["body"])["subject"]["subject_id"]
+
+        # Synthetic term IRIs: evidence creation does not validate terms, and
+        # these cannot collide with terms other tests query for.
+        term_iris = [f"http://purl.obolibrary.org/obo/HP_{9900000 + i:07d}" for i in range(n_terms)]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            list(executor.map(
+                lambda term_iri: create_evidence_helper(subject_id=subject_uuid, term_iri=term_iri),
+                term_iris
+            ))
+
+        result_b = create_subject(
+            project_b_id, f"subj-b-{uuid.uuid4().hex[:8]}", physical_resources,
+            known_project_id=project_a_id, known_project_subject_id=subj_a_id
+        )
+        assert result_b["statusCode"] == 200, result_b
+
+        assert _materialized_totals(query_athena, subject_uuid) == {
+            "by_subject": (n_terms, n_terms),
+            project_a_id: (n_terms, n_terms),
+            project_b_id: (n_terms, n_terms),
+        }
+
+    finally:
+        for project_id in (project_a_id, project_b_id):
+            try:
+                remove_project(project_id, physical_resources)
+            except Exception as e:
+                print(f"Warning: Project {project_id} cleanup failed: {e}")

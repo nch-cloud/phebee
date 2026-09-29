@@ -2172,6 +2172,53 @@ def _extract_term_id_from_iri(term_iri: str) -> str:
     return term_iri.split('/')[-1]
 
 
+# Athena fails an INSERT that writes to more than 100 partitions
+# (ICEBERG_TOO_MANY_OPEN_PARTITIONS). by_project_term is partitioned by
+# (project_id, term_id), so one INSERT covering n projects can take at most
+# 100 // n terms.
+MAX_PARTITIONS_PER_INSERT = 100
+
+
+def _evidence_source(database_name: str, evidence_table: str) -> str:
+    """The evidence table pinned to its current snapshot.
+
+    A recompute reads evidence in several queries: a term count, then one
+    INSERT per term range. Reading one snapshot keeps the term ranks stable
+    between them, so evidence that arrives mid-recompute cannot shift a term
+    into two ranges or out of all of them.
+    """
+    rows = query_iceberg_evidence(
+        f'SELECT CAST(snapshot_id AS VARCHAR) AS snapshot_id '
+        f'FROM "{database_name}"."{evidence_table}$snapshots" '
+        f'ORDER BY committed_at DESC LIMIT 1'
+    )
+    if not rows:
+        # A table with no snapshot has no evidence, and cannot be read AS OF one.
+        return f"{database_name}.{evidence_table}"
+    return f"{database_name}.{evidence_table} FOR VERSION AS OF {rows[0]['snapshot_id']}"
+
+
+def _term_rank_ranges(evidence_source: str, subject_filter: str, terms_per_insert: int) -> List[tuple]:
+    """Split the distinct term_iris under subject_filter into rank ranges of at most terms_per_insert."""
+    rows = query_iceberg_evidence(
+        f"SELECT COUNT(DISTINCT term_iri) AS n FROM {evidence_source} WHERE {subject_filter}"
+    )
+    n = int(rows[0]['n']) if rows and rows[0].get('n') else 0
+    return [(lo, min(lo + terms_per_insert - 1, n)) for lo in range(1, n + 1, terms_per_insert)]
+
+
+def _term_rank_filter(evidence_source: str, subject_filter: str, rank_range: tuple, column: str) -> str:
+    """A predicate keeping the term_iris whose rank, in term_iri order, falls in rank_range."""
+    lo, hi = rank_range
+    return f"""{column} IN (
+        SELECT term_iri FROM (
+            SELECT term_iri, DENSE_RANK() OVER (ORDER BY term_iri) AS term_rank
+            FROM (SELECT DISTINCT term_iri FROM {evidence_source} WHERE {subject_filter})
+        )
+        WHERE term_rank BETWEEN {lo} AND {hi}
+    )"""
+
+
 def materialize_project(project_id: str, batch_size: int = 100) -> Dict[str, int]:
     """
     Materialize all subject-term associations for an entire project.
@@ -2234,18 +2281,19 @@ def materialize_project(project_id: str, batch_size: int = 100) -> Dict[str, int
         logger.warning(f"No subjects found for project {project_id}")
         return {"subjects_processed": 0, "terms_materialized": 0}
 
-    # Step 2: Delete existing records for this project (do once, not per batch)
+    evidence_source = _evidence_source(database_name, evidence_table)
+
+    # Step 2: Delete existing records for this project (do once, not per batch).
+    # A failed delete stops here: the inserts below would duplicate the rows
+    # it left behind.
     # Delete from by_project_term_table first (project-specific)
     delete_by_project = f"""
     DELETE FROM {database_name}.{by_project_term_table}
     WHERE project_id = '{project_id}'
     """
 
-    try:
-        _execute_athena_query(delete_by_project)
-        logger.info(f"Deleted existing by_project_term records for project {project_id}")
-    except Exception as e:
-        logger.warning(f"Error deleting from by_project_term: {e}")
+    _execute_athena_query(delete_by_project)
+    logger.info(f"Deleted existing by_project_term records for project {project_id}")
 
     # Delete from by_subject_table (all subjects at once - this is project-agnostic)
     subject_id_list_all = "', '".join(subject_ids)
@@ -2256,11 +2304,8 @@ def materialize_project(project_id: str, batch_size: int = 100) -> Dict[str, int
     {subject_filter_all}
     """
 
-    try:
-        _execute_athena_query(delete_by_subject)
-        logger.info(f"Deleted existing by_subject records for {len(subject_ids)} subjects")
-    except Exception as e:
-        logger.warning(f"Error deleting from by_subject: {e}")
+    _execute_athena_query(delete_by_subject)
+    logger.info(f"Deleted existing by_subject records for {len(subject_ids)} subjects")
 
     # Step 3: Process subjects in batches to avoid TOO_MANY_OPEN_PARTITIONS error
     num_batches = (len(subject_ids) + batch_size - 1) // batch_size
@@ -2276,16 +2321,21 @@ def materialize_project(project_id: str, batch_size: int = 100) -> Dict[str, int
 
             # Build WHERE clause for this batch
             batch_subject_id_list = "', '".join(batch_subject_ids)
-            batch_subject_filter = f"WHERE subject_id IN ('{batch_subject_id_list}')"
+            batch_subject_condition = f"subject_id IN ('{batch_subject_id_list}')"
+            batch_subject_filter = f"WHERE {batch_subject_condition}"
 
-            # Build aggregation query for by_subject_table (project-agnostic)
+            # Build aggregation query for by_subject_table (project-agnostic).
+            # by_subject is partitioned by subject_id, so a batch of at most
+            # 100 subjects stays within the partition limit.
+            # Evidence is counted by evidence_id: the qualifier UNNEST repeats
+            # each evidence row once per qualifier.
             aggregate_by_subject = f"""
             WITH aggregated AS (
                 SELECT
                     subject_id,
                     CONCAT('http://ods.nationwidechildrens.org/phebee/subjects/', subject_id) as subject_iri,
                     term_iri,
-                    COUNT(*) as evidence_count,
+                    COUNT(DISTINCT evidence_id) as evidence_count,
                     -- Prefer note_date (clinical observation date), falling back to
                     -- created_date (import date) for evidence with no note behind it,
                     -- e.g. manually curated records where note_date is null.
@@ -2298,7 +2348,7 @@ def materialize_project(project_id: str, batch_size: int = 100) -> Dict[str, int
                             ELSE NULL
                         END
                     ) as active_qualifiers
-                FROM {database_name}.{evidence_table}
+                FROM {evidence_source}
                 LEFT JOIN UNNEST(COALESCE(qualifiers, ARRAY[])) AS t(q) ON TRUE
                 {batch_subject_filter}
                 GROUP BY subject_id, term_iri, termlink_id
@@ -2334,7 +2384,9 @@ def materialize_project(project_id: str, batch_size: int = 100) -> Dict[str, int
             ),
             """
 
-            aggregate_by_project = f"""
+            def aggregate_by_project(rank_range):
+                term_filter = _term_rank_filter(evidence_source, batch_subject_condition, rank_range, "e.term_iri")
+                return f"""
             WITH {mapping_cte}
             aggregated AS (
                 SELECT
@@ -2344,7 +2396,7 @@ def materialize_project(project_id: str, batch_size: int = 100) -> Dict[str, int
                     CONCAT('http://ods.nationwidechildrens.org/phebee/subjects/', e.subject_id) as subject_iri,
                     CONCAT('http://ods.nationwidechildrens.org/phebee/projects/{project_id}/', m.project_subject_id) as project_subject_iri,
                     e.term_iri,
-                    COUNT(*) as evidence_count,
+                    COUNT(DISTINCT e.evidence_id) as evidence_count,
                     -- Prefer note_date, falling back to created_date for note-less evidence.
                     MIN(COALESCE(CAST(e.note_context.note_date AS DATE), e.created_date)) as first_evidence_date,
                     MAX(COALESCE(CAST(e.note_context.note_date AS DATE), e.created_date)) as last_evidence_date,
@@ -2355,9 +2407,10 @@ def materialize_project(project_id: str, batch_size: int = 100) -> Dict[str, int
                             ELSE NULL
                         END
                     ) as active_qualifiers
-                FROM {database_name}.{evidence_table} e
+                FROM {evidence_source} e
                 JOIN subject_mapping m ON e.subject_id = m.subject_id
                 LEFT JOIN UNNEST(COALESCE(e.qualifiers, ARRAY[])) AS t(q) ON TRUE
+                WHERE e.{batch_subject_condition} AND {term_filter}
                 GROUP BY e.subject_id, m.project_subject_id, e.term_iri, e.termlink_id
             )
             SELECT
@@ -2399,27 +2452,31 @@ def materialize_project(project_id: str, batch_size: int = 100) -> Dict[str, int
             _execute_athena_query(insert_by_subject_query)
             logger.info(f"Batch {batch_num + 1}/{num_batches}: Inserted by_subject records")
 
-            # Insert into by_project_term_table for this batch
-            insert_by_project_query = f"""
-            INSERT INTO {database_name}.{by_project_term_table} (
-                project_id,
-                subject_id,
-                project_subject_id,
-                subject_iri,
-                project_subject_iri,
-                term_iri,
-                term_id,
-                term_label,
-                qualifiers,
-                evidence_count,
-                termlink_id,
-                first_evidence_date,
-                last_evidence_date
-            )
-            {aggregate_by_project}
-            """
-            _execute_athena_query(insert_by_project_query)
-            logger.info(f"Batch {batch_num + 1}/{num_batches}: Inserted by_project_term records")
+            # Insert into by_project_term_table for this batch, one term range
+            # at a time: its partitions are (project_id, term_id), and a batch
+            # of subjects can easily cover more than 100 distinct terms.
+            rank_ranges = _term_rank_ranges(evidence_source, batch_subject_condition, MAX_PARTITIONS_PER_INSERT)
+            for rank_range in rank_ranges:
+                insert_by_project_query = f"""
+                INSERT INTO {database_name}.{by_project_term_table} (
+                    project_id,
+                    subject_id,
+                    project_subject_id,
+                    subject_iri,
+                    project_subject_iri,
+                    term_iri,
+                    term_id,
+                    term_label,
+                    qualifiers,
+                    evidence_count,
+                    termlink_id,
+                    first_evidence_date,
+                    last_evidence_date
+                )
+                {aggregate_by_project(rank_range)}
+                """
+                _execute_athena_query(insert_by_project_query)
+            logger.info(f"Batch {batch_num + 1}/{num_batches}: Inserted by_project_term records in {len(rank_ranges)} term ranges")
 
         # Step 4: Get final statistics
         stats_query = f"""
@@ -2482,10 +2539,12 @@ def materialize_subject_terms(subject_id: str) -> Dict[str, int]:
     project_mappings = {}  # {project_id: project_subject_id}
 
     try:
-        # Query reverse mappings: PK='SUBJECT#{subject_id}'
+        # Query reverse mappings: PK='SUBJECT#{subject_id}'. Consistent, since
+        # a link calls this straight after writing the new mapping.
         response = table.query(
             KeyConditionExpression='PK = :pk',
-            ExpressionAttributeValues={':pk': f'SUBJECT#{subject_id}'}
+            ExpressionAttributeValues={':pk': f'SUBJECT#{subject_id}'},
+            ConsistentRead=True
         )
 
         for item in response.get('Items', []):
@@ -2508,17 +2567,34 @@ def materialize_subject_terms(subject_id: str) -> Dict[str, int]:
         logger.warning(f"No project mappings found for subject {subject_id}")
         return {"projects_affected": 0, "terms_materialized": 0}
 
-    # Step 2: Delete existing records for this subject from by_subject_table
+    subject_condition = f"subject_id = '{subject_id}'"
+    evidence_source = _evidence_source(database_name, evidence_table)
+
+    # by_project_term is partitioned by (project_id, term_id), so an INSERT
+    # covering n projects can take at most 100 // n terms. Group the projects
+    # first, in case a subject belongs to more than 100 of them.
+    project_items = sorted(project_mappings.items())
+    project_groups = [project_items[i:i + MAX_PARTITIONS_PER_INSERT]
+                      for i in range(0, len(project_items), MAX_PARTITIONS_PER_INSERT)]
+    # Work out every insert before deleting anything, so a failure in this
+    # step leaves the existing rows in place.
+    by_project_inserts = [
+        (group, rank_range)
+        for group in project_groups
+        for rank_range in _term_rank_ranges(evidence_source, subject_condition,
+                                            MAX_PARTITIONS_PER_INSERT // len(group))
+    ]
+
+    # Step 2: Delete existing records for this subject from by_subject_table.
+    # A failed delete stops here: the inserts below would duplicate the rows
+    # it left behind.
     delete_by_subject = f"""
     DELETE FROM {database_name}.{by_subject_table}
     WHERE subject_id = '{subject_id}'
     """
 
-    try:
-        _execute_athena_query(delete_by_subject)
-        logger.info(f"Deleted existing by_subject records for subject {subject_id}")
-    except Exception as e:
-        logger.warning(f"Error deleting from by_subject: {e}")
+    _execute_athena_query(delete_by_subject)
+    logger.info(f"Deleted existing by_subject records for subject {subject_id}")
 
     # Step 3: Delete existing records for this subject from by_project_term_table
     delete_by_project = f"""
@@ -2526,20 +2602,20 @@ def materialize_subject_terms(subject_id: str) -> Dict[str, int]:
     WHERE subject_id = '{subject_id}'
     """
 
-    try:
-        _execute_athena_query(delete_by_project)
-        logger.info(f"Deleted existing by_project_term records for subject {subject_id}")
-    except Exception as e:
-        logger.warning(f"Error deleting from by_project_term: {e}")
+    _execute_athena_query(delete_by_project)
+    logger.info(f"Deleted existing by_project_term records for subject {subject_id}")
 
-    # Step 4: Build aggregation query for by_subject_table (project-agnostic)
+    # Step 4: Build aggregation query for by_subject_table (project-agnostic).
+    # by_subject is partitioned by subject_id, so this writes one partition.
+    # Evidence is counted by evidence_id: the qualifier UNNEST repeats each
+    # evidence row once per qualifier.
     aggregate_by_subject = f"""
     WITH aggregated AS (
         SELECT
             subject_id,
             CONCAT('http://ods.nationwidechildrens.org/phebee/subjects/', subject_id) as subject_iri,
             term_iri,
-            COUNT(*) as evidence_count,
+            COUNT(DISTINCT evidence_id) as evidence_count,
             -- Prefer note_date (clinical observation date), falling back to
             -- created_date (import date) for evidence with no note behind it,
             -- e.g. manually curated records where note_date is null.
@@ -2552,9 +2628,9 @@ def materialize_subject_terms(subject_id: str) -> Dict[str, int]:
                     ELSE NULL
                 END
             ) as active_qualifiers
-        FROM {database_name}.{evidence_table}
+        FROM {evidence_source}
         LEFT JOIN UNNEST(COALESCE(qualifiers, ARRAY[])) AS t(q) ON TRUE
-        WHERE subject_id = '{subject_id}'
+        WHERE {subject_condition}
         GROUP BY subject_id, term_iri, termlink_id
     )
     SELECT
@@ -2574,21 +2650,17 @@ def materialize_subject_terms(subject_id: str) -> Dict[str, int]:
     FROM aggregated
     """
 
-    # Step 5: Build aggregation query for by_project_term_table (project-specific)
-    # Create mapping CTE for all projects this subject belongs to
-    mapping_values = []
-    for project_id, project_subject_id in project_mappings.items():
-        mapping_values.append(f"('{project_id}', '{subject_id}', '{project_subject_id}')")
-
-    mapping_cte = f"""
-    subject_mapping AS (
+    # Step 5: Build aggregation query for by_project_term_table (project-specific),
+    # for one group of projects and one range of terms.
+    def aggregate_by_project(group, rank_range):
+        mapping_values = [f"('{project_id}', '{subject_id}', '{project_subject_id}')"
+                          for project_id, project_subject_id in group]
+        term_filter = _term_rank_filter(evidence_source, subject_condition, rank_range, "e.term_iri")
+        return f"""
+    WITH subject_mapping AS (
         SELECT project_id, subject_id, project_subject_id
         FROM (VALUES {', '.join(mapping_values)}) AS t(project_id, subject_id, project_subject_id)
     ),
-    """
-
-    aggregate_by_project = f"""
-    WITH {mapping_cte}
     aggregated AS (
         SELECT
             m.project_id,
@@ -2597,7 +2669,7 @@ def materialize_subject_terms(subject_id: str) -> Dict[str, int]:
             CONCAT('http://ods.nationwidechildrens.org/phebee/subjects/', e.subject_id) as subject_iri,
             CONCAT('http://ods.nationwidechildrens.org/phebee/projects/', m.project_id, '/', m.project_subject_id) as project_subject_iri,
             e.term_iri,
-            COUNT(*) as evidence_count,
+            COUNT(DISTINCT e.evidence_id) as evidence_count,
             -- Prefer note_date, falling back to created_date for note-less evidence.
             MIN(COALESCE(CAST(e.note_context.note_date AS DATE), e.created_date)) as first_evidence_date,
             MAX(COALESCE(CAST(e.note_context.note_date AS DATE), e.created_date)) as last_evidence_date,
@@ -2608,9 +2680,10 @@ def materialize_subject_terms(subject_id: str) -> Dict[str, int]:
                     ELSE NULL
                 END
             ) as active_qualifiers
-        FROM {database_name}.{evidence_table} e
+        FROM {evidence_source} e
         JOIN subject_mapping m ON e.subject_id = m.subject_id
         LEFT JOIN UNNEST(COALESCE(e.qualifiers, ARRAY[])) AS t(q) ON TRUE
+        WHERE e.{subject_condition} AND {term_filter}
         GROUP BY m.project_id, e.subject_id, m.project_subject_id, e.term_iri, e.termlink_id
     )
     SELECT
@@ -2654,26 +2727,28 @@ def materialize_subject_terms(subject_id: str) -> Dict[str, int]:
         logger.info(f"Inserted by_subject records for subject {subject_id}")
 
         # Step 7: Insert into by_project_term_table (project-specific for all projects)
-        insert_by_project_query = f"""
-        INSERT INTO {database_name}.{by_project_term_table} (
-            project_id,
-            subject_id,
-            project_subject_id,
-            subject_iri,
-            project_subject_iri,
-            term_iri,
-            term_id,
-            term_label,
-            qualifiers,
-            evidence_count,
-            termlink_id,
-            first_evidence_date,
-            last_evidence_date
-        )
-        {aggregate_by_project}
-        """
-        _execute_athena_query(insert_by_project_query)
-        logger.info(f"Inserted by_project_term records for subject {subject_id} across {len(project_mappings)} projects")
+        for group, rank_range in by_project_inserts:
+            insert_by_project_query = f"""
+            INSERT INTO {database_name}.{by_project_term_table} (
+                project_id,
+                subject_id,
+                project_subject_id,
+                subject_iri,
+                project_subject_iri,
+                term_iri,
+                term_id,
+                term_label,
+                qualifiers,
+                evidence_count,
+                termlink_id,
+                first_evidence_date,
+                last_evidence_date
+            )
+            {aggregate_by_project(group, rank_range)}
+            """
+            _execute_athena_query(insert_by_project_query)
+        logger.info(f"Inserted by_project_term records for subject {subject_id} across "
+                    f"{len(project_mappings)} projects in {len(by_project_inserts)} inserts")
 
         # Step 8: Get statistics
         stats_query = f"""
