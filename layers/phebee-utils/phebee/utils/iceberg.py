@@ -46,6 +46,13 @@ class EvidenceAlreadyExistsError(Exception):
 # Cache for Athena workgroup configuration to avoid rate limiting
 _WORKGROUP_CONFIG_CACHE = {}
 
+# Seconds between GetQueryExecution calls while an interactive query runs. A
+# query is seen as finished half an interval late on average, so at 0.5 s every
+# round trip lost ~250 ms. GetQueryExecution is limited to 500 calls/s per
+# account with no burst; at concurrency 25 (~50 queries in flight) 0.2 s makes
+# ~250 calls/s, and boto3 retries a throttled call.
+ATHENA_POLL_INTERVAL = 0.2
+
 
 def get_workgroup_config_cached(athena_client, workgroup="primary"):
     """
@@ -401,7 +408,6 @@ def query_iceberg_evidence(query: str, all_pages: bool = False) -> List[Dict[str
         query_execution_id = response['QueryExecutionId']
         
         # Wait for query completion
-        # Poll every 0.5s for fast queries (most queries complete in 1-5 seconds)
         while True:
             result = athena_client.get_query_execution(QueryExecutionId=query_execution_id)
             status = result['QueryExecution']['Status']['State']
@@ -412,7 +418,7 @@ def query_iceberg_evidence(query: str, all_pages: bool = False) -> List[Dict[str
                 error_msg = result['QueryExecution']['Status'].get('StateChangeReason', 'Unknown error')
                 raise Exception(f"Athena query failed: {error_msg}")
 
-            time.sleep(0.5)
+            time.sleep(ATHENA_POLL_INTERVAL)
         
         # Get query results
         results = athena_client.get_query_results(QueryExecutionId=query_execution_id)
@@ -2125,7 +2131,6 @@ def _execute_athena_query(query: str, wait_for_completion: bool = True) -> str:
 
     if wait_for_completion:
         # Wait for query completion
-        # Poll every 0.5s for fast queries (most queries complete in 1-5 seconds)
         while True:
             result = athena_client.get_query_execution(QueryExecutionId=query_execution_id)
             status = result['QueryExecution']['Status']['State']
@@ -2136,7 +2141,7 @@ def _execute_athena_query(query: str, wait_for_completion: bool = True) -> str:
                 error_msg = result['QueryExecution']['Status'].get('StateChangeReason', 'Unknown error')
                 raise Exception(f"Athena query failed: {error_msg}")
 
-            time.sleep(0.5)
+            time.sleep(ATHENA_POLL_INTERVAL)
 
     return query_execution_id
 
