@@ -225,6 +225,12 @@ paths:
         - A Monarch Knowledge Graph entity (e.g., disease) to find subjects with associated phenotypes
 
         Supports cursor-based pagination for large datasets.
+
+        With a term filter, only subjects with a matching phenotype are returned, each with its
+        matching phenotypes, ordered by subject. Without one, every member of the project is
+        returned (members with no evidence have an empty phenotype list), ordered by
+        project_subject_id, each with all of its phenotypes; total_count is the member count.
+        Phenotypes are shared across all projects a subject belongs to.
       operationId: getSubjectsWithPhenotypes
       requestBody:
         required: true
@@ -255,7 +261,10 @@ paths:
                 include_qualified:
                   type: boolean
                   default: true
-                  description: Include term links with negated, hypothetical, or family qualifiers when filtering by term_iri
+                  description: |
+                    Include term links with negated, hypothetical, or family qualifiers. With a term filter,
+                    false excludes subjects whose only matches are qualified. Without one, false removes
+                    qualified phenotypes but still lists every member.
                 include_child_terms:
                   type: boolean
                   default: true
@@ -265,9 +274,9 @@ paths:
                 limit:
                   type: integer
                   minimum: 1
-                  maximum: 5000
-                  default: 1000
-                  description: Maximum number of subjects to return per page
+                  maximum: 200
+                  default: 100
+                  description: Maximum number of subjects to return per page. Larger values are reduced to the maximum; follow next_cursor for the rest.
                 cursor:
                   type: string
                   description: Pagination offset (integer as string) from previous response's next_cursor

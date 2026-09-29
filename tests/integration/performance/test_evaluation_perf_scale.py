@@ -522,9 +522,15 @@ def create_api_test_functions(api_base_url: str, sigv4_auth, project_id: str,
         subjects the dataset says it does. Checking status_code alone does not
         establish that: the Feb 2026 campaign measured a materially incomplete
         table at 50k and 100k and still passed, because an incomplete table
-        answers with HTTP 200. total_count comes from the query's own
-        COUNT(*) OVER () over the full distinct set, so it is the cheapest
-        available witness that the scan covered the cohort being billed for.
+        answers with HTTP 200.
+
+        Two witnesses, because the unfiltered query now reads membership and
+        phenotypes separately. total_count is the project's member count, from
+        DynamoDB, so it shows the cohort was registered but not that its
+        evidence was materialized: a member with none is listed with an empty
+        phenotype list. So the page's subjects must also carry phenotypes --
+        every benchmark subject has 150-499 terms, so an empty list means the
+        table is incomplete.
 
         Only the unfiltered workloads can use this. A term or qualifier filter
         legitimately returns a subset, and the harness has no independent count
@@ -538,6 +544,13 @@ def create_api_test_functions(api_base_url: str, sigv4_auth, project_id: str,
             f"dataset has {expected_subject_count} subjects. The project is "
             f"incomplete, so this cell's latency does not measure the cohort it "
             f"claims to. pagination={pagination}"
+        )
+        bare = [s.get("project_subject_id") for s in payload.get("body") or []
+                if not s.get("phenotypes")]
+        assert not bare, (
+            f"{workload}: /subjects/query listed {len(bare)} subjects with no "
+            f"phenotypes (e.g. {bare[:3]}). Every benchmark subject has evidence, so "
+            f"subject_terms_by_subject is incomplete."
         )
         return payload
 

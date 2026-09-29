@@ -360,13 +360,16 @@ PHEBEE_NS = Namespace(PHEBEE)
 OBO = Namespace("http://purl.obolibrary.org/obo/")
 
 
-def query_iceberg_evidence(query: str) -> List[Dict[str, Any]]:
+def query_iceberg_evidence(query: str, all_pages: bool = False) -> List[Dict[str, Any]]:
     """
     Execute a query against the Iceberg evidence table using Athena.
-    
+
     Args:
         query: SQL query to execute
-        
+        all_pages: Read every page of results. By default only the first
+            GetQueryResults page is read, which holds at most 999 data rows
+            (its 1000-row cap includes the header), and the rest are dropped.
+
     Returns:
         List of result rows as dictionaries
     """
@@ -413,18 +416,28 @@ def query_iceberg_evidence(query: str) -> List[Dict[str, Any]]:
         
         # Get query results
         results = athena_client.get_query_results(QueryExecutionId=query_execution_id)
-        
+
         # Parse results into list of dictionaries
         columns = [col['Name'] for col in results['ResultSet']['ResultSetMetadata']['ColumnInfo']]
         rows = []
-        
-        for row in results['ResultSet']['Rows'][1:]:  # Skip header row
-            row_data = {}
-            for i, col in enumerate(columns):
-                value = row['Data'][i].get('VarCharValue', '')
-                row_data[col] = value
-            rows.append(row_data)
-        
+
+        # The header row appears on the first page only.
+        page_rows = results['ResultSet']['Rows'][1:]
+        while True:
+            for row in page_rows:
+                row_data = {}
+                for i, col in enumerate(columns):
+                    value = row['Data'][i].get('VarCharValue', '')
+                    row_data[col] = value
+                rows.append(row_data)
+
+            next_token = results.get('NextToken')
+            if not all_pages or not next_token:
+                break
+            results = athena_client.get_query_results(
+                QueryExecutionId=query_execution_id, NextToken=next_token)
+            page_rows = results['ResultSet']['Rows']
+
         return rows
         
     except Exception as e:
@@ -1607,6 +1620,42 @@ def query_subject_by_id(subject_id: str) -> List[Dict[str, Any]]:
         raise
 
 
+# Qualifiers that include_qualified=False excludes. qualifiers is
+# array<struct>, so each is an ANY_MATCH over qualifier_type; short names are
+# the legacy form and full IRIs the current one.
+_EXCLUDE_QUALIFIED_PREDICATE = """
+            NOT (
+                ANY_MATCH(qualifiers, q -> q.qualifier_type = 'negated') OR
+                ANY_MATCH(qualifiers, q -> q.qualifier_type = 'http://ods.nationwidechildrens.org/phebee/qualifier/negated') OR
+                ANY_MATCH(qualifiers, q -> q.qualifier_type = 'hypothetical') OR
+                ANY_MATCH(qualifiers, q -> q.qualifier_type = 'http://ods.nationwidechildrens.org/phebee/qualifier/hypothetical') OR
+                ANY_MATCH(qualifiers, q -> q.qualifier_type = 'family') OR
+                ANY_MATCH(qualifiers, q -> q.qualifier_type = 'http://ods.nationwidechildrens.org/phebee/qualifier/family')
+            )
+        """
+
+_TERMS_AGGREGATE = """ARRAY_AGG(
+            ROW(term_id, term_iri, term_label, qualifiers, evidence_count, termlink_id, first_evidence_date, last_evidence_date)
+        ) as terms"""
+
+_PROJECTS_IRI = "http://ods.nationwidechildrens.org/phebee/projects"
+_SUBJECTS_IRI = "http://ods.nationwidechildrens.org/phebee/subjects"
+
+
+def _sql_literal(value) -> str:
+    """Quote a value as a SQL string literal.
+
+    Request values such as project_subject_ids reach these queries verbatim, so
+    a quote in one has to be escaped rather than allowed to end the literal.
+    """
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _sql_in_list(values) -> str:
+    """Render values as the inside of a SQL IN (...)."""
+    return ", ".join(_sql_literal(v) for v in values)
+
+
 def query_subjects_by_project(
     project_id: str,
     term_ids: List[str] = None,
@@ -1620,10 +1669,18 @@ def query_subjects_by_project(
 ) -> Dict[str, Any]:
     """
     Query subjects in a project with optional term filtering and pagination.
-    Uses the subject_terms_by_project_term table for efficient queries.
 
     Supports hierarchy expansion via ontology_hierarchy table when include_child_terms=True.
     Supports querying with multiple terms - subjects matching ANY of the terms will be returned.
+
+    The two kinds of request read differently (see _query_project_members):
+    - With term_ids, subjects come from subject_terms_by_project_term: only
+      subjects with a matching phenotype, each with only its matching phenotypes,
+      in subject_id order.
+    - Without, subjects are the project's members from DynamoDB, in
+      project_subject_id order, each with all of its phenotypes from
+      subject_terms_by_subject. Members with no evidence are included with an
+      empty phenotype list, and total_count is the member count.
 
     Args:
         project_id: The project ID
@@ -1631,7 +1688,8 @@ def query_subjects_by_project(
         term_source: Ontology source ("hpo" or "mondo") - inferred from term_ids if not provided
         term_source_version: Optional ontology version - if not provided, uses latest version
         include_child_terms: If True, expand each term_id to include all descendants (default True)
-        include_qualified: If False, exclude terms with negated/hypothetical/family qualifiers (default True)
+        include_qualified: If False, exclude terms with negated/hypothetical/family qualifiers (default True).
+            Without term_ids this filters phenotypes only; every member is still listed.
         project_subject_ids: Optional list of specific project_subject_ids to filter by
         limit: Number of subjects to return (default 50)
         offset: Offset for pagination (default 0)
@@ -1641,101 +1699,83 @@ def query_subjects_by_project(
             - subjects: List of subject records with phenotypes in API format
             - pagination: Pagination metadata (limit, cursor, next_cursor, has_more, total_count)
     """
-    from phebee.utils.hash import generate_termlink_hash
-
     database_name = os.environ.get('ICEBERG_DATABASE')
     table_name = os.environ.get('ICEBERG_SUBJECT_TERMS_BY_PROJECT_TERM_TABLE')
 
     if not database_name or not table_name:
         raise ValueError("ICEBERG_DATABASE and ICEBERG_SUBJECT_TERMS_BY_PROJECT_TERM_TABLE environment variables are required")
 
-    # Infer ontology sources from term_ids (supports mixed HPO + MONDO)
-    ontology_sources = set()
-    if term_ids:
-        for tid in term_ids:
-            if tid.startswith('HP:'):
-                ontology_sources.add('hpo')
-            elif tid.startswith('MONDO:'):
-                ontology_sources.add('mondo')
+    if not term_ids:
+        return _query_project_members(
+            project_id=project_id,
+            include_qualified=include_qualified,
+            project_subject_ids=project_subject_ids,
+            limit=limit,
+            offset=offset,
+        )
 
     # Build WHERE clauses
-    where_clauses = [f"project_id = '{project_id}'"]
+    where_clauses = [f"project_id = {_sql_literal(project_id)}"]
 
     # Build term filter with hierarchy expansion for multiple terms
-    if term_ids:
-        all_expanded_term_ids = set()
+    all_expanded_term_ids = set()
 
-        # Group term_ids by ontology source
-        terms_by_source = {}
-        for tid in term_ids:
-            if tid.startswith('HP:'):
-                source = 'hpo'
-            elif tid.startswith('MONDO:'):
-                source = 'mondo'
-            else:
-                logger.warning(f"Unknown ontology source for term {tid}, skipping")
-                continue
-
-            if source not in terms_by_source:
-                terms_by_source[source] = []
-            terms_by_source[source].append(tid)
-
-        if include_child_terms:
-            # Expand each term to include descendants
-            for source, source_term_ids in terms_by_source.items():
-                source_version = term_source_version
-                if not source_version:
-                    source_version = get_current_term_source_version(source)
-
-                logger.info(f"Expanding {len(source_term_ids)} {source.upper()} terms with descendants (version={source_version})")
-
-                for tid in source_term_ids:
-                    try:
-                        descendant_ids = query_term_descendants(tid, ontology_source=source, version=source_version)
-                        if descendant_ids:
-                            for d in descendant_ids:
-                                all_expanded_term_ids.add(d['term_id'])
-                        all_expanded_term_ids.add(tid)  # Always include query term
-
-                    except Exception as e:
-                        logger.warning(f"Error querying descendants for {tid}: {e}, using exact match")
-                        all_expanded_term_ids.add(tid)
-
-                logger.info(f"Expanded to {len(all_expanded_term_ids)} total terms (including descendants)")
+    # Group term_ids by ontology source
+    terms_by_source = {}
+    for tid in term_ids:
+        if tid.startswith('HP:'):
+            source = 'hpo'
+        elif tid.startswith('MONDO:'):
+            source = 'mondo'
         else:
-            # No expansion - exact matches only
-            all_expanded_term_ids = set(term_ids)
+            logger.warning(f"Unknown ontology source for term {tid}, skipping")
+            continue
 
-        # Build IN clause
-        if all_expanded_term_ids:
-            term_list = "', '".join(sorted(all_expanded_term_ids))
-            where_clauses.append(f"term_id IN ('{term_list}')")
-            logger.info(f"Final query will match {len(all_expanded_term_ids)} terms")
-        else:
-            logger.warning("No valid term IDs found after expansion")
-            where_clauses.append("1=0")  # Return no results
+        if source not in terms_by_source:
+            terms_by_source[source] = []
+        terms_by_source[source].append(tid)
+
+    if include_child_terms:
+        # Expand each term to include descendants
+        for source, source_term_ids in terms_by_source.items():
+            source_version = term_source_version
+            if not source_version:
+                source_version = get_current_term_source_version(source)
+
+            logger.info(f"Expanding {len(source_term_ids)} {source.upper()} terms with descendants (version={source_version})")
+
+            for tid in source_term_ids:
+                try:
+                    descendant_ids = query_term_descendants(tid, ontology_source=source, version=source_version)
+                    if descendant_ids:
+                        for d in descendant_ids:
+                            all_expanded_term_ids.add(d['term_id'])
+                    all_expanded_term_ids.add(tid)  # Always include query term
+
+                except Exception as e:
+                    logger.warning(f"Error querying descendants for {tid}: {e}, using exact match")
+                    all_expanded_term_ids.add(tid)
+
+            logger.info(f"Expanded to {len(all_expanded_term_ids)} total terms (including descendants)")
+    else:
+        # No expansion - exact matches only
+        all_expanded_term_ids = set(term_ids)
+
+    # Build IN clause
+    if all_expanded_term_ids:
+        where_clauses.append(f"term_id IN ({_sql_in_list(sorted(all_expanded_term_ids))})")
+        logger.info(f"Final query will match {len(all_expanded_term_ids)} terms")
+    else:
+        logger.warning("No valid term IDs found after expansion")
+        where_clauses.append("1=0")  # Return no results
 
     # Build qualifier filter
     if not include_qualified:
-        # Exclude terms with negated, hypothetical, or family qualifiers
-        # Check both short names (legacy) and full IRIs (current) for backward compatibility
-        # qualifiers is array<struct>, so check if any struct has qualifier_type matching
-        # Use ANY_MATCH for array filtering in Presto/Athena
-        where_clauses.append("""
-            NOT (
-                ANY_MATCH(qualifiers, q -> q.qualifier_type = 'negated') OR
-                ANY_MATCH(qualifiers, q -> q.qualifier_type = 'http://ods.nationwidechildrens.org/phebee/qualifier/negated') OR
-                ANY_MATCH(qualifiers, q -> q.qualifier_type = 'hypothetical') OR
-                ANY_MATCH(qualifiers, q -> q.qualifier_type = 'http://ods.nationwidechildrens.org/phebee/qualifier/hypothetical') OR
-                ANY_MATCH(qualifiers, q -> q.qualifier_type = 'family') OR
-                ANY_MATCH(qualifiers, q -> q.qualifier_type = 'http://ods.nationwidechildrens.org/phebee/qualifier/family')
-            )
-        """)
+        where_clauses.append(_EXCLUDE_QUALIFIED_PREDICATE)
 
     # Build project_subject_ids filter
     if project_subject_ids:
-        psid_list = "', '".join(project_subject_ids)
-        where_clauses.append(f"project_subject_id IN ('{psid_list}')")
+        where_clauses.append(f"project_subject_id IN ({_sql_in_list(project_subject_ids)})")
 
     where_clause = " AND ".join(where_clauses)
 
@@ -1746,47 +1786,20 @@ def query_subjects_by_project(
     else:
         pagination_clause = f"LIMIT {limit}"
 
-    # Two ways to read a page, chosen by whether the filter is selective.
-    #
-    # Unfiltered, the aggregate has to read every row in the project before the
-    # limit applies -- Athena cannot push a LIMIT through GROUP BY ... ORDER BY
-    # -- which at 100k subjects is a 2.9 GB scan taking ~13 s to return 10
-    # subjects. Two passes fix that: pass one reads only subject_id to find the
-    # page (665 MB), pass two fetches full rows for those subjects by literal id.
-    # The ids must be inlined as literals; Athena's dynamic filtering does not
-    # prune partitions from a join, so joining back to the page costs more than
-    # the query it replaces.
-    #
-    # But the two passes are necessarily sequential -- pass two's IN list is
-    # built from pass one's rows -- whereas the aggregate and its count are
-    # independent and overlap. So two passes trade an extra Athena round trip
-    # (~1.5 s, the per-query floor) for a smaller scan. That is a large win when
-    # the scan is 2.9 GB and a pure loss once the filter has already made it
-    # small. Measured at concurrency 1 on 2026-09-25, the term-filtered workloads
-    # were flat from 1k to 100k subjects -- specific_phenotype 3678 -> 3665 ms,
-    # qualified_filtering 4176 -> 3715 ms, hierarchy_expansion 2943 -> 4299 ms --
-    # while the two unfiltered ones grew 3.2-3.6x. Spending the extra round trip
-    # on those three bought nothing at any size, so it is not spent.
-    #
-    # A term filter prunes on the table's own term_id and an explicit subject
-    # list prunes on subject; either keeps the aggregate small enough that one
-    # pass wins. include_qualified is deliberately not counted as selective: it
-    # is a row predicate over the qualifiers array, so it drops rows without
-    # reducing what has to be read to find them.
-    selective = bool(term_ids) or bool(project_subject_ids)
-
-    # Selective path: one aggregate for the page, one count for the total, run
-    # concurrently. COUNT(DISTINCT subject_id) over the same where_clause is the
-    # same total the window function produces on the other path.
+    # A term filter prunes on the table's own term_id, so one aggregate reads
+    # little enough that splitting the page read into two sequential passes
+    # would only add a round trip (~1.5 s, the per-query floor). Measured at
+    # concurrency 1 on 2026-09-25, the term-filtered workloads were flat from 1k
+    # to 100k subjects. The aggregate and its count are independent, so they run
+    # concurrently; COUNT(DISTINCT subject_id) over the same where_clause is the
+    # total of the grouped rows.
     aggregate_query = f"""
     SELECT
         subject_id,
         project_subject_id,
         subject_iri,
         project_subject_iri,
-        ARRAY_AGG(
-            ROW(term_id, term_iri, term_label, qualifiers, evidence_count, termlink_id, first_evidence_date, last_evidence_date)
-        ) as terms
+        {_TERMS_AGGREGATE}
     FROM {database_name}.{table_name}
     WHERE {where_clause}
     GROUP BY subject_id, project_subject_id, subject_iri, project_subject_iri
@@ -1794,22 +1807,6 @@ def query_subjects_by_project(
     {pagination_clause}
     """
 
-    # Unfiltered path, pass one. COUNT(*) OVER () is evaluated across the full
-    # distinct set before the limit applies, so total_count stays exact without a
-    # second scan to count it.
-    page_query = f"""
-    SELECT subject_id, COUNT(*) OVER () as total_count
-    FROM (
-        SELECT DISTINCT subject_id
-        FROM {database_name}.{table_name}
-        WHERE {where_clause}
-    )
-    ORDER BY subject_id
-    {pagination_clause}
-    """
-
-    # Total for the selective path, and for the unfiltered path only when its
-    # page comes back empty (see below).
     count_query = f"""
     SELECT COUNT(DISTINCT subject_id) as total
     FROM {database_name}.{table_name}
@@ -1817,164 +1814,158 @@ def query_subjects_by_project(
     """
 
     try:
-        if selective:
-            # Independent queries, so overlap them: wall time is the slower of
-            # the two rather than their sum.
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                data_future = executor.submit(query_iceberg_evidence, aggregate_query)
-                count_future = executor.submit(query_iceberg_evidence, count_query)
-                results = data_future.result()
-                count_results = count_future.result()
+        # Wall time is the slower of the two queries rather than their sum.
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            data_future = executor.submit(query_iceberg_evidence, aggregate_query, all_pages=True)
+            count_future = executor.submit(query_iceberg_evidence, count_query)
+            results = data_future.result()
+            count_results = count_future.result()
 
-            total_count = int(count_results[0]['total']) if count_results else 0
-            # An empty page needs no special case here: the shared parsing below
-            # yields no subjects, and has_more compares against a total that was
-            # counted independently of the page.
-        else:
-            results, total_count = _read_page_in_two_passes(
-                page_query=page_query,
-                count_query=count_query,
-                where_clause=where_clause,
-                database_name=database_name,
-                table_name=table_name,
-                offset=offset,
-            )
-            if results is None:
-                logger.info(f"Found 0 subjects for project {project_id} (total: {total_count}, offset: {offset})")
-                return {
-                    "subjects": [],
-                    "pagination": {
-                        "limit": limit,
-                        "cursor": str(offset) if offset > 0 else None,
-                        "next_cursor": None,
-                        "has_more": False,
-                        "total_count": total_count
-                    }
-                }
+        total_count = int(count_results[0]['total']) if count_results else 0
 
-        # Parse subjects and convert to API format
-        subjects = []
-        for row in results:
-            # Parse terms array - this comes as a string representation of ROW structures
-            terms_str = row.get('terms')
-            phenotypes = []
-
-            if terms_str and terms_str != '[]' and terms_str != 'null':
-                # Parse the array of ROW structures
-                # ROW format: (term_id, term_iri, term_label, qualifiers, evidence_count, termlink_id, first_evidence_date, last_evidence_date)
-                field_names = ['term_id', 'term_iri', 'term_label', 'qualifiers', 'evidence_count', 'termlink_id', 'first_evidence_date', 'last_evidence_date']
-                terms_list = parse_athena_row_array(terms_str, field_names)
-                for term_dict in terms_list:
-                    # Parse qualifiers array of structs
-                    qualifiers_str = term_dict.get('qualifiers')
-                    qualifiers = []
-                    if qualifiers_str and qualifiers_str != '[]' and qualifiers_str != 'null':
-                        # Parse using standard parsing function
-                        qualifier_objects = parse_qualifiers_field(qualifiers_str)
-                        # Format as "type:value" for API compatibility
-                        qualifiers = [q.to_string() for q in qualifier_objects]
-
-                    # Build phenotype in API format
-                    phenotype = {
-                        "term": {
-                            "iri": term_dict.get('term_iri'),
-                            "id": term_dict.get('term_id'),
-                            "label": term_dict.get('term_label') or term_dict.get('term_id')
-                        },
-                        "qualifiers": qualifiers,
-                        "termlink_id": term_dict.get('termlink_id'),
-                        "evidence_count": int(term_dict.get('evidence_count', 0)) if term_dict.get('evidence_count') else 0,
-                        "first_evidence_date": term_dict.get('first_evidence_date'),
-                        "last_evidence_date": term_dict.get('last_evidence_date')
-                    }
-                    phenotypes.append(phenotype)
-
-            # Build subject in API format
-            subject_data = {
+        subjects = [
+            {
                 "subject_iri": row.get('subject_iri'),
                 "project_subject_iri": row.get('project_subject_iri'),
                 "project_subject_id": row.get('project_subject_id'),
-                "phenotypes": phenotypes
+                "phenotypes": _phenotypes_from_terms(row.get('terms')),
             }
-            subjects.append(subject_data)
-
-        has_more = (offset + len(subjects)) < total_count
+            for row in results
+        ]
 
         logger.info(f"Found {len(subjects)} subjects for project {project_id} (total: {total_count}, offset: {offset})")
-
-        # Build pagination in API format
-        next_cursor = str(offset + len(subjects)) if has_more else None
-        pagination = {
-            "limit": limit,
-            "cursor": str(offset) if offset > 0 else None,
-            "next_cursor": next_cursor,
-            "has_more": has_more,
-            "total_count": total_count
-        }
-
-        return {
-            "subjects": subjects,
-            "pagination": pagination
-        }
+        return {"subjects": subjects, "pagination": _pagination(limit, offset, len(subjects), total_count)}
 
     except Exception as e:
         logger.error(f"Error querying subjects by project {project_id}: {e}")
         raise
 
 
-def _read_page_in_two_passes(
-    page_query: str,
-    count_query: str,
-    where_clause: str,
-    database_name: str,
-    table_name: str,
+def _query_project_members(
+    project_id: str,
+    include_qualified: bool,
+    project_subject_ids: Optional[List[str]],
+    limit: int,
     offset: int,
-) -> Tuple[Optional[List[Dict[str, Any]]], int]:
-    """Read one page of subjects without aggregating the whole project.
+) -> Dict[str, Any]:
+    """Read a page of a project's members from DynamoDB, then their phenotypes.
 
-    Returns (rows, total_count). `rows` is None when the page is empty, which the
-    caller has to treat as its own case rather than as an empty aggregate: pass
-    two builds an IN list from pass one's rows, and an empty IN list is a syntax
-    error.
+    subject_terms_by_project_term is partitioned by (project_id, term_id), so with
+    no term filter nothing prunes. Finding a page there meant a DISTINCT over the
+    whole project, and reading that page meant a second scan of the project
+    (~7.7 s for 10 subjects at 100k, c1, 2026-09-29). Instead, the page comes from
+    the DynamoDB membership items (forward PROJECT#/SUBJECT#). The phenotypes come
+    from subject_terms_by_subject, which is identity-partitioned on subject_id,
+    so the IN list prunes to exactly the page's partitions.
 
-    Split out of query_subjects_by_project only so the two page-reading
-    strategies read as alternatives rather than as one long branch.
+    Phenotypes are deliberately subject-wide rather than per project: a subject's
+    information accumulates across the projects it belongs to, and
+    subject_terms_by_subject has no project_id.
+
+    total_count is the member count, from a COUNT walk run concurrently with the
+    page read. With project_subject_ids it is the number of those ids that are
+    members, and the page is sliced from them in the same project_subject_id
+    order.
     """
-    page_results = query_iceberg_evidence(page_query)
+    from phebee.utils.dynamodb import (
+        count_project_subjects,
+        get_project_subjects_by_ids,
+        get_project_subjects_page,
+    )
 
-    if not page_results:
-        # No row to read the window count from. At offset 0 an empty page means
-        # nothing matched the filter; past the end of the results the total is
-        # still nonzero and has to be counted directly.
-        if offset > 0:
-            count_results = query_iceberg_evidence(count_query)
-            return None, int(count_results[0]['total']) if count_results else 0
-        return None, 0
+    database_name = os.environ.get('ICEBERG_DATABASE')
+    by_subject_table = os.environ.get('ICEBERG_SUBJECT_TERMS_BY_SUBJECT_TABLE')
+    if not database_name or not by_subject_table:
+        raise ValueError("ICEBERG_DATABASE and ICEBERG_SUBJECT_TERMS_BY_SUBJECT_TABLE environment variables are required")
 
-    total_count = int(page_results[0]['total_count'])
-    subject_id_list = "', '".join(row['subject_id'] for row in page_results)
+    try:
+        if project_subject_ids:
+            members = get_project_subjects_by_ids(project_id, project_subject_ids)
+            total_count = len(members)
+            page = members[offset:offset + limit]
+        else:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                count_future = executor.submit(count_project_subjects, project_id)
+                page = get_project_subjects_page(project_id, offset, limit)
+                total_count = count_future.result()
 
-    # The full where_clause is reapplied here, not just the subject filter:
-    # under a term or qualifier filter the caller expects only the matching
-    # terms for each subject, and restricting on subject_id alone would
-    # return every term those subjects have.
-    query = f"""
-    SELECT
-        subject_id,
-        project_subject_id,
-        subject_iri,
-        project_subject_iri,
-        ARRAY_AGG(
-            ROW(term_id, term_iri, term_label, qualifiers, evidence_count, termlink_id, first_evidence_date, last_evidence_date)
-        ) as terms
-    FROM {database_name}.{table_name}
-    WHERE {where_clause}
-        AND subject_id IN ('{subject_id_list}')
-    GROUP BY subject_id, project_subject_id, subject_iri, project_subject_iri
-    ORDER BY subject_id
-    """
+        phenotypes_by_subject = {}
+        if page:
+            # Not filtered by project: see the docstring. The qualifier filter
+            # drops phenotypes, never subjects; a member whose phenotypes are all
+            # excluded is listed with none.
+            qualifier_clause = f"AND {_EXCLUDE_QUALIFIED_PREDICATE}" if not include_qualified else ""
+            query = f"""
+            SELECT subject_id, {_TERMS_AGGREGATE}
+            FROM {database_name}.{by_subject_table}
+            WHERE subject_id IN ({_sql_in_list(subject_id for _, subject_id in page)})
+            {qualifier_clause}
+            GROUP BY subject_id
+            """
+            # Every page, not just the first: one row per subject, and a page of
+            # more than 999 would otherwise lose the rest. Those members would
+            # then be listed with no phenotypes instead of being missing.
+            for row in query_iceberg_evidence(query, all_pages=True):
+                phenotypes_by_subject[row['subject_id']] = _phenotypes_from_terms(row.get('terms'))
 
-    return query_iceberg_evidence(query), total_count
+        subjects = [
+            {
+                "subject_iri": f"{_SUBJECTS_IRI}/{subject_id}",
+                "project_subject_iri": f"{_PROJECTS_IRI}/{project_id}/{project_subject_id}",
+                "project_subject_id": project_subject_id,
+                "phenotypes": phenotypes_by_subject.get(subject_id, []),
+            }
+            for project_subject_id, subject_id in page
+        ]
+
+        logger.info(f"Found {len(subjects)} members for project {project_id} (total: {total_count}, offset: {offset})")
+        return {"subjects": subjects, "pagination": _pagination(limit, offset, len(subjects), total_count)}
+
+    except Exception as e:
+        logger.error(f"Error querying members of project {project_id}: {e}")
+        raise
+
+
+def _phenotypes_from_terms(terms_str: Optional[str]) -> List[Dict[str, Any]]:
+    """Convert an aggregated terms column (_TERMS_AGGREGATE) to API phenotypes."""
+    if not terms_str or terms_str == '[]' or terms_str == 'null':
+        return []
+
+    # ROW format: (term_id, term_iri, term_label, qualifiers, evidence_count, termlink_id, first_evidence_date, last_evidence_date)
+    field_names = ['term_id', 'term_iri', 'term_label', 'qualifiers', 'evidence_count', 'termlink_id', 'first_evidence_date', 'last_evidence_date']
+    phenotypes = []
+    for term_dict in parse_athena_row_array(terms_str, field_names):
+        qualifiers_str = term_dict.get('qualifiers')
+        qualifiers = []
+        if qualifiers_str and qualifiers_str != '[]' and qualifiers_str != 'null':
+            # Format as "type:value" for API compatibility
+            qualifiers = [q.to_string() for q in parse_qualifiers_field(qualifiers_str)]
+
+        phenotypes.append({
+            "term": {
+                "iri": term_dict.get('term_iri'),
+                "id": term_dict.get('term_id'),
+                "label": term_dict.get('term_label') or term_dict.get('term_id')
+            },
+            "qualifiers": qualifiers,
+            "termlink_id": term_dict.get('termlink_id'),
+            "evidence_count": int(term_dict.get('evidence_count', 0)) if term_dict.get('evidence_count') else 0,
+            "first_evidence_date": term_dict.get('first_evidence_date'),
+            "last_evidence_date": term_dict.get('last_evidence_date')
+        })
+    return phenotypes
+
+
+def _pagination(limit: int, offset: int, n_returned: int, total_count: int) -> Dict[str, Any]:
+    # The cursor advances by what was returned, not by the limit asked for.
+    has_more = (offset + n_returned) < total_count
+    return {
+        "limit": limit,
+        "cursor": str(offset) if offset > 0 else None,
+        "next_cursor": str(offset + n_returned) if has_more else None,
+        "has_more": has_more,
+        "total_count": total_count
+    }
 
 
 def query_subject_with_hierarchy(
