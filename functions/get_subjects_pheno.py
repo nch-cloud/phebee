@@ -15,8 +15,11 @@ metrics = Metrics()
 
 s3_client = get_client("s3")
 
-# api.yaml documents this maximum for /subjects/query.
-MAX_LIMIT = 5000
+# api.yaml documents these for /subjects/query. A page of benchmark subjects
+# (~320 phenotypes each) passes Lambda's 6 MB response cap at ~220 subjects,
+# gzipped, and a page of 2000 takes longer than API Gateway's 30 s timeout.
+DEFAULT_LIMIT = 100
+MAX_LIMIT = 200
 
 
 def lambda_handler(event, context):
@@ -109,7 +112,7 @@ def lambda_handler(event, context):
     # rejected: pagination advances by what was returned, so a client that
     # follows next_cursor still receives every subject.
     try:
-        limit = int(body.get("limit", 1000))
+        limit = int(body.get("limit", DEFAULT_LIMIT))
     except (TypeError, ValueError):
         raise ValueError("Parameter 'limit' must be a positive integer.")
     if limit < 1:

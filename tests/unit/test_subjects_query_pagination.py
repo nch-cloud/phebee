@@ -166,7 +166,7 @@ class TestTermFilterUsesOneAggregateAndAConcurrentCount:
         assert "GROUP BY subject_id" in sql
 
     def test_aggregate_reads_every_result_page(self):
-        """GetQueryResults caps a page at 999 data rows; the default limit is 1000."""
+        """GetQueryResults caps a page at 999 data rows, and a limit larger than that is not an error."""
         rec = _Recorder(aggregate=[_row("s1")], count=[{"total": "1"}])
         _call_with(rec, term_ids=["HP:0001627"], include_child_terms=False, limit=1000)
 
