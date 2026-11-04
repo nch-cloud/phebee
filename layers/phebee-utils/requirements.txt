@@ -3,3 +3,4 @@ requests
 boto3
 rdflib
 aws-xray-sdk
+certifi>=2026.10.19

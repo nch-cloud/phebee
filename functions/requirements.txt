@@ -7,3 +7,4 @@ aws-xray-sdk
 aws-requests-auth
 pydantic
 rdflib
+certifi>=2026.10.19
