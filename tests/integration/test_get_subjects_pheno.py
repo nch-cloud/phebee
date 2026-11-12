@@ -1323,7 +1323,7 @@ def test_get_subjects_phenopacket_negated_is_excluded(invoke_get_subjects_pheno,
     assert "excluded" not in plain_feature
 
 
-def test_get_subjects_phenopacket_records_ontology_versions(invoke_get_subjects_pheno, create_subject_with_evidence):
+def test_get_subjects_phenopacket_records_ontology_versions(invoke_get_subjects_pheno, create_subject_with_evidence, mondo_installed):
     """
     Packet metadata names the installed ontology releases.
 

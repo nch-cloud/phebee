@@ -343,6 +343,70 @@ def app_name(physical_resources):
     return physical_resources["AppName"]
 
 
+def _stack_output(cloudformation_stack, key):
+    cf_client = get_client("cloudformation")
+    outputs = cf_client.describe_stacks(StackName=cloudformation_stack)["Stacks"][0]["Outputs"]
+    return next((o["OutputValue"] for o in outputs if o["OutputKey"] == key), None)
+
+
+def _run_ontology_update(cloudformation_stack, output_key, label):
+    """Start the ontology update state machine named by a stack output and wait for it.
+
+    Returns the execution ARN on success, None if the output is missing or the
+    execution did not succeed.
+    """
+    sfn_arn = _stack_output(cloudformation_stack, output_key)
+    if not sfn_arn:
+        print(f"[{label} UPDATE] {output_key} not found - skipping {label} update")
+        return None
+
+    sfn_client = get_client("stepfunctions")
+    execution_name = f"test-session-{label.lower()}-update-{int(time.time())}"
+    print(f"\n[{label} UPDATE] Starting session-level {label} update: {execution_name}")
+    response = sfn_client.start_execution(
+        stateMachineArn=sfn_arn,
+        name=execution_name,
+        input=json.dumps({"test": True})
+    )
+    execution_arn = response["executionArn"]
+    print(f"[{label} UPDATE] Execution ARN: {execution_arn}")
+    print(f"[{label} UPDATE] Waiting for execution to complete (may take several minutes)...")
+    start_time = time.time()
+
+    while True:
+        execution = sfn_client.describe_execution(executionArn=execution_arn)
+        status = execution["status"]
+        elapsed = int(time.time() - start_time)
+        if elapsed % 60 == 0:
+            print(f"[{label} UPDATE] Status: {status} (elapsed: {elapsed//60}m)")
+
+        if status == "SUCCEEDED":
+            duration = time.time() - start_time
+            print(f"[{label} UPDATE] Completed successfully in {duration//60:.0f}m {duration%60:.0f}s")
+            return execution_arn
+        if status in ["FAILED", "TIMED_OUT", "ABORTED"]:
+            print(f"[{label} UPDATE] Execution {status}: {execution.get('cause', 'Unknown error')}")
+            return None
+
+        time.sleep(30)
+
+
+def _installed_source_version(cloudformation_stack, source_name):
+    """Installed version of an ontology source, read the way the Lambdas read it, or None."""
+    table = _stack_output(cloudformation_stack, "DynamoDBTableName")
+    if not table:
+        return None
+    items = get_client("dynamodb").query(
+        TableName=table,
+        KeyConditionExpression="PK = :pk",
+        ExpressionAttributeValues={":pk": {"S": f"SOURCE~{source_name}"}},
+    )["Items"]
+    installed = [i for i in items if "InstallTimestamp" in i and "Version" in i]
+    if not installed:
+        return None
+    return max(installed, key=lambda i: i["InstallTimestamp"]["S"])["Version"]["S"]
+
+
 @pytest.fixture(scope="session")
 def hpo_update_execution(cloudformation_stack):
     """
@@ -351,59 +415,27 @@ def hpo_update_execution(cloudformation_stack):
     This ensures HPO source data exists in DynamoDB and ontology hierarchy
     is available in Iceberg tables for tests that depend on it.
     """
-    cf_client = get_client("cloudformation")
+    return _run_ontology_update(cloudformation_stack, "UpdateHPOSFNArn", "HPO")
 
-    # Get UpdateHPOSFNArn from stack outputs
-    response = cf_client.describe_stacks(StackName=cloudformation_stack)
-    outputs = response['Stacks'][0]['Outputs']
 
-    hpo_sfn_arn = None
-    for output in outputs:
-        if output['OutputKey'] == 'UpdateHPOSFNArn':
-            hpo_sfn_arn = output['OutputValue']
-            break
+@pytest.fixture(scope="session")
+def mondo_installed(cloudformation_stack):
+    """
+    Make sure a MONDO version is installed, running the update only if none is.
 
-    if not hpo_sfn_arn:
-        print("[HPO UPDATE] UpdateHPOSFNArn not found - skipping HPO update")
-        return None
-
-    sfn_client = get_client("stepfunctions")
-
-    # Start execution
-    execution_name = f"test-session-hpo-update-{int(time.time())}"
-    print(f"\n[HPO UPDATE] Starting session-level HPO update: {execution_name}")
-
-    response = sfn_client.start_execution(
-        stateMachineArn=hpo_sfn_arn,
-        name=execution_name,
-        input=json.dumps({"test": True})
-    )
-
-    execution_arn = response['executionArn']
-    print(f"[HPO UPDATE] Execution ARN: {execution_arn}")
-
-    # Wait for completion
-    print("[HPO UPDATE] Waiting for execution to complete (may take 15-45 minutes)...")
-    start_time = time.time()
-
-    while True:
-        execution = sfn_client.describe_execution(executionArn=execution_arn)
-        status = execution['status']
-
-        elapsed = int(time.time() - start_time)
-        if elapsed % 60 == 0:  # Print every minute
-            print(f"[HPO UPDATE] Status: {status} (elapsed: {elapsed//60}m)")
-
-        if status == 'SUCCEEDED':
-            duration = time.time() - start_time
-            print(f"[HPO UPDATE] Completed successfully in {duration//60:.0f}m {duration%60:.0f}s")
-            return execution_arn
-        elif status in ['FAILED', 'TIMED_OUT', 'ABORTED']:
-            error = execution.get('cause', 'Unknown error')
-            print(f"[HPO UPDATE] Execution {status}: {error}")
-            return None
-
-        time.sleep(30)
+    A freshly deployed stack has no MONDO until test_update_mondo_sfn runs, which
+    sorts after the modules that read the MONDO version (phenopacket metadata).
+    Returns the installed version string.
+    """
+    version = _installed_source_version(cloudformation_stack, "mondo")
+    if version:
+        print(f"\n[MONDO] Already installed: {version}")
+        return version
+    if _run_ontology_update(cloudformation_stack, "UpdateMondoSFNArn", "MONDO") is None:
+        pytest.skip("MONDO is not installed and the update could not be run")
+    version = _installed_source_version(cloudformation_stack, "mondo")
+    assert version, "MONDO update succeeded but no installed version was recorded"
+    return version
 
 
 @pytest.fixture(scope="session", autouse=True)
