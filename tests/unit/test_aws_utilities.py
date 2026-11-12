@@ -100,6 +100,11 @@ class TestExtractBody:
         result = extract_body(event)
         assert result == {"key": "value", "number": 42}
 
+    def test_null_body_from_rest_api(self):
+        """REST API (payload 1.0) sends body=null for a bodiless GET; treat as no parameters."""
+        event = {"body": None, "pathParameters": {"source_name": "hpo"}}
+        assert extract_body(event) == {}
+
     def test_empty_body(self):
         """Test extracting empty body."""
         event = {"body": "{}"}

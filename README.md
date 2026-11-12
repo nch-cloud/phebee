@@ -50,7 +50,7 @@ PheBee uses a hybrid architecture combining knowledge graphs with data lake tech
 4. **Query Path**:
    - API Gateway → Lambda → Athena queries over the Iceberg subject-term and evidence tables
    - Descendant expansion reads the Iceberg ontology hierarchy table, cached per term and ontology version in DynamoDB
-   - The HTTP API read operations do not query Neptune; the graph is written during ingestion and can be queried with SPARQL through the read-only SPARQL function (direct Lambda invocation only, not exposed through the HTTP API)
+   - The API read operations do not query Neptune; the graph is written during ingestion and can be queried with SPARQL through the read-only SPARQL function (direct Lambda invocation only, not exposed through the API)
 
 ### Why This Architecture?
 
@@ -98,6 +98,8 @@ prod:                                  # The environment name
         - CreateVpcEndpoints=false     # true: the stack creates every VPC endpoint PheBee needs (see Network requirements). Leave false if
                                 # the VPC already has them or uses NAT; only one private-DNS endpoint per service fits in a VPC
         - RouteTableIds=               # Comma-separated route tables of the two subnets. Required only when CreateVpcEndpoints=true
+        - ApiEndpointType=REGIONAL     # REGIONAL: public hostname with IAM auth. PRIVATE: reachable only through an execute-api VPC endpoint
+        - ExecuteApiVpcEndpointId=     # Existing execute-api endpoint for a PRIVATE API; not needed when CreateVpcEndpoints=true
       tags:
         - app=phebee                   # Tags applied to the stack for resource tracking or cost management
 ```
@@ -121,6 +123,8 @@ PheBee is bring-your-own-VPC: every Lambda function, the EMR Serverless applicat
 | A VPC with private subnets and nothing else | `CreateVpcEndpoints=true` and `RouteTableIds=<route tables of the two subnets>`. The stack creates gateway endpoints for S3 and DynamoDB and interface endpoints for the rest. The VPC must have DNS support and DNS hostnames enabled (both are on by default). Interface endpoints are billed hourly, roughly USD 7 per endpoint per availability zone per month. |
 | Subnets with a NAT gateway | Nothing. Leave `CreateVpcEndpoints=false`. |
 | An organisation that manages endpoints centrally, for example in a hub VPC | Leave `CreateVpcEndpoints=false`, set `ServiceEgressCidr` to the private range that reaches the hub (for example `10.0.0.0/8`), and make sure the hub's private hosted zones are associated with the PheBee VPC. Gateway endpoints for S3 and DynamoDB route to public prefix lists, so a narrowed CIDR needs interface endpoints for both. |
+
+**Private API.** By default the API is a REST API on a public hostname, accepting only SigV4-signed requests from IAM principals in the deploying account. Set `ApiEndpointType=PRIVATE` to make it reachable only through an execute-api VPC endpoint, so request and response bodies never leave the VPC. Either let the stack create that endpoint (`CreateVpcEndpoints=true`, with `ApiClientCidr` controlling who may reach it) or pass an existing one in `ExecuteApiVpcEndpointId`. The stack outputs two URLs for a private API: `ApiGatewayUrl`, which works where the endpoint has private DNS enabled, and `ApiGatewayVpceUrl`, which works regardless. Private DNS on an execute-api endpoint applies to every API Gateway hostname in that VPC, so a VPC that also calls public API Gateway APIs should use the endpoint-specific URL instead. The API URL always ends in the stage name (`/v1` by default).
 
 Only functions that talk to Neptune are attached to the Neptune client security group, so nothing else in the VPC can reach port 8182. Two features need the public internet and degrade clearly without it:
 

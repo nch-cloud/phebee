@@ -8,6 +8,7 @@ verification using Athena/Iceberg analytical tables.
 import pytest
 import json
 import boto3
+import requests
 import uuid
 import time
 import os
@@ -760,8 +761,22 @@ def api_base_url(physical_resources):
     api_url = physical_resources.get("ApiGatewayUrl") or physical_resources.get("HttpApiUrl")
     if not api_url:
         pytest.skip("ApiGatewayUrl/HttpApiUrl not found in physical_resources - API Gateway may not be deployed")
+    api_url = api_url.rstrip("/")
 
-    return api_url.rstrip("/")
+    # A PRIVATE API resolves and connects only from inside the VPC. Probe once
+    # with a short timeout so an outside runner skips the API tests in seconds
+    # instead of hanging on every request. Any HTTP status means reachable.
+    try:
+        requests.get(api_url, timeout=5)
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+        endpoint_type = physical_resources.get("ApiEndpointType", "unknown")
+        pytest.skip(
+            f"API at {api_url} is not reachable from this runner "
+            f"(ApiEndpointType={endpoint_type}): {type(e).__name__}. "
+            "Run the api tests from inside the VPC."
+        )
+
+    return api_url
 
 
 @pytest.fixture(scope="session")

@@ -68,6 +68,41 @@ Parameters:
       S3 and DynamoDB gateway endpoints. Required when CreateVpcEndpoints is
       true; ignored otherwise.
 
+  ApiEndpointType:
+    Type: String
+    Default: REGIONAL
+    AllowedValues: [REGIONAL, PRIVATE]
+    Description: >-
+      REGIONAL publishes the API on a public hostname, protected by IAM (SigV4)
+      authentication. PRIVATE makes it reachable only through an execute-api
+      VPC endpoint, so request and response bodies never leave the VPC.
+      Changing this later replaces the API and changes its URL.
+
+  ExecuteApiVpcEndpointId:
+    Type: String
+    Default: ""
+    Description: >-
+      Existing execute-api interface VPC endpoint (vpce-...) that callers use
+      to reach a PRIVATE API. Required when ApiEndpointType is PRIVATE and
+      CreateVpcEndpoints is false; ignored otherwise.
+
+  ApiClientCidr:
+    Type: String
+    Default: 0.0.0.0/0
+    AllowedPattern: "^(\\d{1,3}\\.){3}\\d{1,3}/\\d{1,2}$"
+    ConstraintDescription: "Must be an IPv4 CIDR block"
+    Description: >-
+      Source range allowed to reach the execute-api VPC endpoint the stack
+      creates for a PRIVATE API (only used when CreateVpcEndpoints is true).
+      The endpoint has private addresses, so the default admits anything that
+      can already route to the VPC; narrow it to your client subnets if wanted.
+
+  ApiStageName:
+    Type: String
+    Default: v1
+    AllowedPattern: "^[a-zA-Z0-9_-]+$"
+    Description: Stage name, which becomes the first path segment of the API URL.
+
   OntologyDownloadInVpc:
     Type: String
     Default: "false"
@@ -193,6 +228,14 @@ Rules:
       - Assert: !Not [!Equals [!Ref RouteTableIds, ""]]
         AssertDescription: RouteTableIds is required when CreateVpcEndpoints is true, because gateway endpoints attach to route tables.
 
+  PrivateApiNeedsAnEndpoint:
+    RuleCondition: !Equals [!Ref ApiEndpointType, PRIVATE]
+    Assertions:
+      - Assert: !Or
+          - !Equals [!Ref CreateVpcEndpoints, "true"]
+          - !Not [!Equals [!Ref ExecuteApiVpcEndpointId, ""]]
+        AssertDescription: A PRIVATE API needs an execute-api VPC endpoint. Set CreateVpcEndpoints=true or supply ExecuteApiVpcEndpointId.
+
 Conditions:
   ShouldCreateS3Bucket: !Equals [!Ref CreateS3Bucket, true]
 
@@ -203,6 +246,12 @@ Conditions:
   ShouldCreateLakeFormationEndpoint: !And
     - !Condition ShouldCreateVpcEndpoints
     - !Condition CatalogAccountIdProvided
+
+  PrivateApi: !Equals [!Ref ApiEndpointType, PRIVATE]
+
+  ShouldCreateExecuteApiEndpoint: !And
+    - !Condition ShouldCreateVpcEndpoints
+    - !Condition PrivateApi
 
   ShouldEnableS3Logging: !Not [!Equals [!Ref S3AccessLogBucketName, ""]]
 
@@ -883,6 +932,42 @@ Resources:
       PrivateDnsEnabled: true
       SubnetIds: [!Ref SubnetId1, !Ref SubnetId2]
       SecurityGroupIds: [!Ref PheBeeVpcEndpointSecurityGroup]
+
+  # The execute-api endpoint is for API clients in the VPC, not for PheBee's own
+  # compute, so it gets its own security group. Private DNS makes the plain
+  # https://<api-id>.execute-api.<region>.amazonaws.com name resolve to it; note
+  # that this also routes every other API Gateway hostname in the VPC through
+  # the endpoint, which blocks calls from this VPC to public API Gateway APIs.
+  PheBeeApiEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: ShouldCreateExecuteApiEndpoint
+    Properties:
+      GroupDescription: Clients of the private PheBee API
+      GroupName: !Sub phebee-api-vpce-sg-${AppName}
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: !Ref ApiClientCidr
+          Description: API clients
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 127.0.0.1/32
+          Description: Endpoints initiate no connections; this replaces the default allow-all
+
+  PheBeeExecuteApiEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: ShouldCreateExecuteApiEndpoint
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.execute-api
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: [!Ref SubnetId1, !Ref SubnetId2]
+      SecurityGroupIds: [!Ref PheBeeApiEndpointSecurityGroup]
 
   DownloadGithubReleaseFunction:
     Type: AWS::Serverless::Function
@@ -2678,9 +2763,26 @@ Resources:
   # HTTP API
   #################
 
-  HttpApi:
-    Type: AWS::Serverless::HttpApi
+  # REST API rather than HTTP API: only REST APIs support a PRIVATE endpoint.
+  # Routes, bodies and SigV4 auth are unchanged from the HTTP API; the URL gains
+  # the stage as its first path segment.
+  RestApi:
+    Type: AWS::Serverless::Api
     Properties:
+      Name: !Sub phebee-${AppName}
+      StageName: !Ref ApiStageName
+      OpenApiVersion: "3.0.1"
+      # The definition is an included file, so SAM's change hash cannot see
+      # edits to api.yaml; without this, a changed route would never reach the stage.
+      AlwaysDeploy: true
+      EndpointConfiguration:
+        Type: !Ref ApiEndpointType
+        VPCEndpointIds: !If
+          - PrivateApi
+          - - !If [ShouldCreateExecuteApiEndpoint, !Ref PheBeeExecuteApiEndpoint, !Ref ExecuteApiVpcEndpointId]
+          - !Ref AWS::NoValue
+      # The resource policy lives in api.yaml (x-amazon-apigateway-policy);
+      # SAM cannot inject Auth settings into an included definition.
       DefinitionBody:
         'Fn::Transform':
           Name: 'AWS::Include'
@@ -3477,9 +3579,24 @@ Outputs:
   NeptuneClusterIdentifier:
     Value: !Ref PheBeeNeptuneCluster
   
-  HttpApiUrl:
-    Description: Base URL for the HTTP API
-    Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+  ApiGatewayUrl:
+    Description: Base URL of the PheBee API (for a PRIVATE API, resolvable only inside the VPC with private DNS on the execute-api endpoint)
+    Value: !Sub "https://${RestApi}.execute-api.${AWS::Region}.amazonaws.com/${ApiStageName}"
+
+  ApiId:
+    Description: REST API ID
+    Value: !Ref RestApi
+
+  ApiEndpointType:
+    Description: REGIONAL (public hostname, IAM auth) or PRIVATE (VPC endpoint only)
+    Value: !Ref ApiEndpointType
+
+  ApiGatewayVpceUrl:
+    Condition: PrivateApi
+    Description: Endpoint-specific URL for the PRIVATE API, usable without private DNS
+    Value: !Sub
+      - "https://${RestApi}-${Vpce}.execute-api.${AWS::Region}.amazonaws.com/${ApiStageName}"
+      - Vpce: !If [ShouldCreateExecuteApiEndpoint, !Ref PheBeeExecuteApiEndpoint, !Ref ExecuteApiVpcEndpointId]
 
   AppName:
     Description: Application name used for resource naming

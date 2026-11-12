@@ -21,12 +21,18 @@ def get_current_timestamp():
     )
 
 def extract_body(event):
-    """Safely extracts the body from a Lambda event, supporting API Gateway, direct, and internal invocation."""
+    """Safely extracts the body from a Lambda event, supporting API Gateway, direct, and internal invocation.
+
+    A REST API (payload format 1.0) sends ``"body": null`` for a request with
+    no body, where an HTTP API omitted the key; both mean "no parameters".
+    """
     if "body" in event:
-        if isinstance(event["body"], str):
-            return json.loads(event["body"])
-        else:
-            return event["body"]
+        body = event["body"]
+        if body is None:
+            return {}
+        if isinstance(body, str):
+            return json.loads(body)
+        return body
     return event
 
 def deserialize_dynamodb_json_list(items):

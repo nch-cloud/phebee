@@ -37,7 +37,7 @@ small fix, see A5).
 HTTP APIs cannot be private. Only a REST API supports
 `EndpointConfiguration.Type: PRIVATE`.
 
-A1. Replace `AWS::Serverless::HttpApi` with `AWS::Serverless::Api` in
+A1. **Done.** Replace `AWS::Serverless::HttpApi` with `AWS::Serverless::Api` in
     `template.yaml`. New parameters:
 
     | Parameter | Default | Purpose |
@@ -51,37 +51,37 @@ A1. Replace `AWS::Serverless::HttpApi` with `AWS::Serverless::Api` in
     denies any caller not arriving through that endpoint. A template
     rule asserts that PRIVATE has an endpoint id or endpoint creation on.
 
-A2. Rewrite `api.yaml` for the REST integration format on all 12 routes:
+A2. **Done.** Rewrite `api.yaml` for the REST integration format on all 12 routes:
     `type: aws_proxy`, `httpMethod: POST`, same `uri` and `credentials`;
     drop `payloadFormatVersion`, `connectionType`,
     `x-amazon-apigateway-cors` and `x-amazon-apigateway-importexport-version`
     (HTTP-API-only keys). Keep the `sigv4` security scheme; its
     `x-amazon-apigateway-authtype: awsSigv4` form is the REST form.
 
-A3. CORS. The current API allows `*` origins. Callers sign with SigV4,
+A3. **Done (dropped).** CORS. The current API allows `*` origins. Callers sign with SigV4,
     which browsers cannot do, so CORS has no legitimate consumer.
     Recommendation: drop it rather than add 12 OPTIONS mock methods.
     **Decision needed.**
 
-A4. Integration timeout. Routes set `timeoutInMillis: 30000`. REST APIs
+A4. **Done (29 000 ms).** Integration timeout. Routes set `timeoutInMillis: 30000`. REST APIs
     cap at 29 000 ms unless the account quota is raised. Set 29 000 and
     document that long `/subjects/query` calls should use direct Lambda
     invocation, which the tests already do. **Decision needed** if you
     would rather request the quota increase.
 
-A5. Payload format 1.0 difference: for a GET with no body, format 2.0
+A5. **Done, with unit test.** Payload format 1.0 difference: for a GET with no body, format 2.0
     omits `body`; format 1.0 sends `"body": null`. `extract_body` in
     `layers/phebee-utils/phebee/utils/aws.py` returns `None` in that
     case instead of the event. Treat `None` as absent. Affects
     `GET /source/{source_name}` only.
 
-A6. Outputs. Rename `HttpApiUrl` to `ApiGatewayUrl`, value
+A6. **Done; also `ApiEndpointType` and conditional `ApiGatewayVpceUrl`.** Outputs. Rename `HttpApiUrl` to `ApiGatewayUrl`, value
     `https://<id>.execute-api.<region>.amazonaws.com/<stage>`. The test
     fixture at `tests/integration/conftest.py:760` already looks for
     `ApiGatewayUrl` first. Add an `ApiId` output so in-VPC callers can
     build the `<id>-<vpce>` hostname when private DNS is off.
 
-A7. Private DNS caveat for the README: enabling private DNS on the
+A7. **Done (README and template comment).** Private DNS caveat for the README: enabling private DNS on the
     execute-api endpoint makes every `*.execute-api.<region>` name in
     the VPC resolve privately, which blocks calls from that VPC to any
     public API Gateway. Deployers choose: private DNS on and use the
@@ -186,7 +186,7 @@ D1. **Done.** Parameters:
     | `CreateVpcEndpoints` | `false` | Create every endpoint below. |
     | `RouteTableIds` | `""` (CommaDelimitedList) | Required when creating; gateway endpoints attach to route tables. |
 
-D2. **Done, except execute-api, which lands with workstream A.** Endpoints and why each is needed:
+D2. **Done.** Endpoints and why each is needed:
 
     | Service | Type | Used by |
     |---|---|---|
@@ -223,7 +223,7 @@ D2a. **Deferred (decided 2026-11-12): stay bring-your-own-VPC; revisit if users 
     CreateVpc; own VPC + CreateVpcEndpoints; own VPC with centrally
     managed endpoints and a narrowed `ServiceEgressCidr`.
 
-D3. **README done; test preflight still to do (G3).** When `CreateVpcEndpoints=false`, the README lists the same table as
+D3. **Done.** When `CreateVpcEndpoints=false`, the README lists the same table as
     a prerequisite checklist and the integration test preflight checks
     for reachability (G3).
 
@@ -286,9 +286,9 @@ F3. Version note for `CITATION.cff` / release: this is a breaking
 G1. `sam validate --lint` and `cfn-lint` on the template; unit tests
     unchanged.
 
-G2. `extract_body` unit test for the `"body": null` case (A5).
+G2. **Done.** `extract_body` unit test for the `"body": null` case (A5).
 
-G3. Integration preflight in `tests/integration/conftest.py`: if the API
+G3. **Done.** Integration preflight in `tests/integration/conftest.py`: if the API
     is private and the runner cannot connect within a few seconds, skip
     the `tests/integration/api` module with a message rather than
     hanging on the 900 s Lambda timeout config.

@@ -33,12 +33,11 @@ paths:
       x-amazon-apigateway-integration:
         credentials:
           Fn::GetAtt: [PheBeeAPIRole, Arn]
-        payloadFormatVersion: "2.0"
+        httpMethod: "POST"
         type: "aws_proxy"
         uri:
           Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-CreateProjectFunction/invocations
-        connectionType: "INTERNET"
-        timeoutInMillis: 30000
+        timeoutInMillis: 29000
 
   /project/remove:
     post:
@@ -63,12 +62,11 @@ paths:
       x-amazon-apigateway-integration:
         credentials:
           Fn::GetAtt: [PheBeeAPIRole, Arn]
-        payloadFormatVersion: "2.0"
+        httpMethod: "POST"
         type: "aws_proxy"
         uri:
           Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-RemoveProjectFunction/invocations
-        connectionType: "INTERNET"
-        timeoutInMillis: 30000
+        timeoutInMillis: 29000
 
   # --- Subject-related endpoints ---
   /subject/create:
@@ -104,12 +102,11 @@ paths:
       x-amazon-apigateway-integration:
         credentials:
           Fn::GetAtt: [PheBeeAPIRole, Arn]
-        payloadFormatVersion: "2.0"
+        httpMethod: "POST"
         type: "aws_proxy"
         uri:
           Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-CreateSubjectFunction/invocations
-        connectionType: "INTERNET"
-        timeoutInMillis: 30000
+        timeoutInMillis: 29000
 
   /subject:
     post:
@@ -139,12 +136,11 @@ paths:
       x-amazon-apigateway-integration:
         credentials:
           Fn::GetAtt: [PheBeeAPIRole, Arn]
-        payloadFormatVersion: "2.0"
+        httpMethod: "POST"
         type: "aws_proxy"
         uri:
           Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-GetSubjectFunction/invocations
-        connectionType: "INTERNET"
-        timeoutInMillis: 30000
+        timeoutInMillis: 29000
 
   /subject/term-info:
     post:
@@ -179,12 +175,11 @@ paths:
       x-amazon-apigateway-integration:
         credentials:
           Fn::GetAtt: [PheBeeAPIRole, Arn]
-        payloadFormatVersion: "2.0"
+        httpMethod: "POST"
         type: "aws_proxy"
         uri:
           Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-GetSubjectTermInfoFunction/invocations
-        connectionType: "INTERNET"
-        timeoutInMillis: 30000
+        timeoutInMillis: 29000
 
   /subject/remove:
     post:
@@ -209,12 +204,11 @@ paths:
       x-amazon-apigateway-integration:
         credentials:
           Fn::GetAtt: [PheBeeAPIRole, Arn]
-        payloadFormatVersion: "2.0"
+        httpMethod: "POST"
         type: "aws_proxy"
         uri:
           Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-RemoveSubjectFunction/invocations
-        connectionType: "INTERNET"
-        timeoutInMillis: 30000
+        timeoutInMillis: 29000
 
   /subjects/query:
     post:
@@ -285,12 +279,11 @@ paths:
       x-amazon-apigateway-integration:
         credentials:
           Fn::GetAtt: [PheBeeAPIRole, Arn]
-        payloadFormatVersion: "2.0"
+        httpMethod: "POST"
         type: "aws_proxy"
         uri:
           Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-GetSubjectsPhenotypesFunction/invocations
-        connectionType: "INTERNET"
-        timeoutInMillis: 30000
+        timeoutInMillis: 29000
 
   # --- Term & link-related endpoints ---
   
@@ -313,20 +306,11 @@ paths:
       x-amazon-apigateway-integration:
         credentials:
           Fn::GetAtt: [PheBeeAPIRole, Arn]
-        payloadFormatVersion: "2.0"
+        httpMethod: "POST"
         type: "aws_proxy"
         uri:
           Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-GetSourceInfoFunction/invocations
-        connectionType: "INTERNET"
-        timeoutInMillis: 30000
-
-
-
-
-
-
-
-
+        timeoutInMillis: 29000
 
 
   /evidence/create:
@@ -456,12 +440,11 @@ paths:
       x-amazon-apigateway-integration:
         credentials:
           Fn::GetAtt: [PheBeeAPIRole, Arn]
-        payloadFormatVersion: "2.0"
+        httpMethod: "POST"
         type: "aws_proxy"
         uri:
           Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-CreateEvidenceFunction/invocations
-        connectionType: "INTERNET"
-        timeoutInMillis: 30000
+        timeoutInMillis: 29000
 
   /evidence:
     post:
@@ -512,12 +495,11 @@ paths:
       x-amazon-apigateway-integration:
         credentials:
           Fn::GetAtt: [PheBeeAPIRole, Arn]
-        payloadFormatVersion: "2.0"
+        httpMethod: "POST"
         type: "aws_proxy"
         uri:
           Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-GetEvidenceFunction/invocations
-        connectionType: "INTERNET"
-        timeoutInMillis: 30000
+        timeoutInMillis: 29000
         
   /evidence/query:
     post:
@@ -606,12 +588,11 @@ paths:
       x-amazon-apigateway-integration:
         credentials:
           Fn::GetAtt: [PheBeeAPIRole, Arn]
-        payloadFormatVersion: "2.0"
+        httpMethod: "POST"
         type: "aws_proxy"
         uri:
           Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-QueryEvidenceFunction/invocations
-        connectionType: "INTERNET"
-        timeoutInMillis: 30000
+        timeoutInMillis: 29000
 
   /evidence/remove:
     post:
@@ -641,23 +622,36 @@ paths:
       x-amazon-apigateway-integration:
         credentials:
           Fn::GetAtt: [PheBeeAPIRole, Arn]
-        payloadFormatVersion: "2.0"
+        httpMethod: "POST"
         type: "aws_proxy"
         uri:
           Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-RemoveEvidenceFunction/invocations
-        connectionType: "INTERNET"
-        timeoutInMillis: 30000
+        timeoutInMillis: 29000
 
-x-amazon-apigateway-cors:
-  allowMethods:
-    - "*"
-  maxAge: 0
-  allowCredentials: false
-  allowOrigins:
-    - "*"
-  allowHeaders:
-    - "*"
-x-amazon-apigateway-importexport-version: "1.0"
+# Same-account IAM principals only, which is what an API with no resource
+# policy already meant. For a PRIVATE API, additionally only through the
+# designated execute-api VPC endpoint (a private API requires such a policy).
+x-amazon-apigateway-policy:
+  Version: "2012-10-17"
+  Statement:
+    - Effect: Allow
+      Principal:
+        AWS:
+          Fn::Sub: arn:${AWS::Partition}:iam::${AWS::AccountId}:root
+      Action: execute-api:Invoke
+      Resource: execute-api:/*
+      Condition:
+        Fn::If:
+          - PrivateApi
+          - StringEquals:
+              aws:SourceVpce:
+                Fn::If:
+                  - ShouldCreateExecuteApiEndpoint
+                  - Ref: PheBeeExecuteApiEndpoint
+                  - Ref: ExecuteApiVpcEndpointId
+          - StringEquals:
+              aws:PrincipalAccount:
+                Ref: AWS::AccountId
 
 components:
   securitySchemes:
