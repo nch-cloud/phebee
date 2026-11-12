@@ -35,6 +35,19 @@ Parameters:
     Description: "Subnet in the VPC which Neptune is supposed to run. ex: subnet-xxxxxxxxxxxxxx"
     Type: String   
 
+  ServiceEgressCidr:
+    Type: String
+    Default: 0.0.0.0/0
+    AllowedPattern: "^(\\d{1,3}\\.){3}\\d{1,3}/\\d{1,2}$"
+    ConstraintDescription: "Must be an IPv4 CIDR block, e.g. 10.0.0.0/8"
+    Description: >-
+      Destination CIDR for HTTPS (tcp/443) egress from PheBee compute to AWS
+      service endpoints. Leave at 0.0.0.0/0 when the subnets use S3 or
+      DynamoDB gateway endpoints or NAT, since gateway endpoints route to
+      Amazon's public prefix lists. Narrow it (e.g. 10.0.0.0/8) only when
+      every AWS service is reached through interface endpoints in a
+      private address range.
+
   CreateS3Bucket:
     Default: true
     AllowedValues:
@@ -648,10 +661,25 @@ Resources:
       GroupName: !Sub phebee-lambda-sg-${AppName}
       VpcId: !Ref VpcId
       SecurityGroupEgress:
-        # Egress is needed to allow test suite to invoke lambdas and receive a response
-        # TODO : Might be able to lock this down to specific ports to further tighten security
-        - IpProtocol: -1
-          CidrIp: 0.0.0.0/0
+        # HTTPS to AWS service endpoints (DynamoDB, S3, Athena, Glue, EventBridge, ...).
+        # Lambda log delivery, X-Ray and the Lambda API itself do not traverse
+        # the function ENI, so nothing else is needed here. The Neptune rule is
+        # a standalone resource below to avoid a circular reference.
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: !Ref ServiceEgressCidr
+          Description: HTTPS to AWS service endpoints
+
+  PheBeeLambdaToNeptuneEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref PheBeeLambdaSecurityGroup
+      DestinationSecurityGroupId: !Ref PheBeeNeptuneSecurityGroup
+      IpProtocol: tcp
+      FromPort: 8182
+      ToPort: 8182
+      Description: SPARQL and bulk-load calls to the PheBee Neptune cluster
 
   DownloadGithubReleaseFunction:
     Type: AWS::Serverless::Function

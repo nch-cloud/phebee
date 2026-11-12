@@ -16,6 +16,7 @@ integration-test:
         - VpcId=
         - SubnetId1=
         - SubnetId2=
+        - ServiceEgressCidr=0.0.0.0/0
         - S3AccessLogBucketName=
         - RunOntologyUpdatesOnSchedule=false
       tags:
@@ -33,6 +34,7 @@ dev:
         - VpcId=
         - SubnetId1=
         - SubnetId2=
+        - ServiceEgressCidr=0.0.0.0/0
         - S3AccessLogBucketName=
         - RunOntologyUpdatesOnSchedule=false
       tags:
@@ -50,6 +52,7 @@ staging:
         - VpcId=
         - SubnetId1=
         - SubnetId2=
+        - ServiceEgressCidr=0.0.0.0/0
         - S3AccessLogBucketName=
         - RunOntologyUpdatesOnSchedule=true
       tags:
@@ -67,6 +70,7 @@ prod:
         - VpcId=
         - SubnetId1=
         - SubnetId2=
+        - ServiceEgressCidr=0.0.0.0/0
         - S3AccessLogBucketName=
         - RunOntologyUpdatesOnSchedule=true
       tags:

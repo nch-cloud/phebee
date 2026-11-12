@@ -91,6 +91,8 @@ prod:                                  # The environment name
                                 # Learn more: https://docs.aws.amazon.com/vpc/latest/userguide/VPC_Subnets.html
         - SubnetId2=                   # The second subnet ID, usually in a different availability zone for high availability and fault tolerance
                                 # Learn more: https://docs.aws.amazon.com/vpc/latest/userguide/VPC_Subnets.html
+        - ServiceEgressCidr=0.0.0.0/0  # Destination for HTTPS egress from Lambda to AWS services. Keep 0.0.0.0/0 with S3/DynamoDB gateway endpoints or NAT;
+                                # narrow to a private range (e.g. 10.0.0.0/8) only if every AWS service is reached via interface endpoints there
       tags:
         - app=phebee                   # Tags applied to the stack for resource tracking or cost management
 ```
