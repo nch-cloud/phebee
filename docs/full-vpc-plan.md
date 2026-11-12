@@ -203,6 +203,26 @@ D2. Endpoints and why each is needed:
     Plus a `PheBeeVpcEndpointSecurityGroup` allowing tcp/443 from the
     Lambda and EMR security groups.
 
+D2a. **Proposed, decision needed: `CreateVpc` option.** Today's deploy is
+    one command only for someone who can already name a VPC, two private
+    subnets and their route tables. To keep PheBee deployable without any
+    networking expertise, add `CreateVpc` (default false). When true the
+    template builds a dedicated VPC with two private subnets in two AZs,
+    their route tables, both gateway endpoints and the interface endpoints
+    from D2, and ignores `VpcId`/`SubnetId*`/`RouteTableIds`. No NAT is
+    needed (GitHub downloader is outside the VPC; Monarch degrades
+    clearly). Rough cost: the interface endpoints, about USD 70 to 85 per
+    month. The integration test stack becomes self-contained.
+
+    Trade: `VpcId`, `SubnetId1`, `SubnetId2` go back to optional strings
+    (a typed parameter cannot be blank), with a template-level cfn-lint
+    directive suppressing the W1030 warnings that commit 9854a83 cleared.
+    Every `VpcConfig` and the EMR network block then use
+    `!If [CreateVpcEnabled, !Ref PrivateSubnet1, !Ref SubnetId1]`,
+    applied by script as in workstream B. Three documented tiers:
+    CreateVpc; own VPC + CreateVpcEndpoints; own VPC with centrally
+    managed endpoints and a narrowed `ServiceEgressCidr`.
+
 D3. When `CreateVpcEndpoints=false`, the README lists the same table as
     a prerequisite checklist and the integration test preflight checks
     for reachability (G3).
