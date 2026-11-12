@@ -418,6 +418,26 @@ def hpo_update_execution(cloudformation_stack):
     return _run_ontology_update(cloudformation_stack, "UpdateHPOSFNArn", "HPO")
 
 
+@pytest.fixture
+def ensure_hpo_installed(cloudformation_stack):
+    """
+    Function-scoped: reinstall HPO if the stack currently has none.
+
+    For tests that run after something erased the ontologies (the reset tests
+    wipe them) but still need the hierarchy table and term labels. The
+    session-scoped hpo_update_execution fixture cannot help there, since it
+    has already run.
+    """
+    version = _installed_source_version(cloudformation_stack, "hpo")
+    if version:
+        return version
+    if _run_ontology_update(cloudformation_stack, "UpdateHPOSFNArn", "HPO") is None:
+        pytest.skip("HPO is not installed and the update could not be run")
+    version = _installed_source_version(cloudformation_stack, "hpo")
+    assert version, "HPO update succeeded but no installed version was recorded"
+    return version
+
+
 @pytest.fixture(scope="session")
 def mondo_installed(cloudformation_stack):
     """
