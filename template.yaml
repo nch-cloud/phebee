@@ -607,6 +607,15 @@ Resources:
       VpcId: !Ref VpcId
       # Ingress is a standalone resource (PheBeeNeptuneIngressFromClients) so this
       # group and PheBeeNeptuneClientSecurityGroup can reference each other.
+      SecurityGroupEgress:
+        # The cluster only initiates connections to S3, for bulk loads. Same
+        # caveat as the Lambda group: an S3 gateway endpoint routes to public
+        # prefix lists, so narrowing ServiceEgressCidr needs an interface endpoint.
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: !Ref ServiceEgressCidr
+          Description: Bulk-load reads from S3
 
   PheBeeNeptuneSubnetGroup:
     Type: AWS::Neptune::DBSubnetGroup

@@ -230,6 +230,11 @@ E1. **Done on `full_vpc` (Lambda SG; EMR SG gets the same rules in C1).**
     default). Hub-endpoint sites must also associate the hub's private
     hosted zones with the PheBee VPC so service names resolve privately.
 
+    Also applied to `PheBeeNeptuneSecurityGroup` (tcp/443 only; the cluster
+    initiates connections only to S3 for bulk loads), so its egress is no
+    longer the CloudFormation default allow-all. Its sole ingress is
+    tcp/8182 from `PheBeeNeptuneClientSecurityGroup`.
+
 E2. **Parameter descriptions done.** Fix the `VpcId` and subnet parameter descriptions that still say the
     VPC is "where Neptune runs". Safe at any time.
 
