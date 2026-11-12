@@ -20,20 +20,19 @@ Parameters:
     AllowedPattern: "^[a-z0-9-]+$"
     ConstraintDescription: "Must contain only lowercase letters, numbers, and hyphens"
 
+  # No defaults: these are required, and a typed parameter makes a missing or
+  # malformed value fail at validation instead of partway through a deploy.
   VpcId:
-    Default: false
+    Type: AWS::EC2::VPC::Id
     Description: "VPC that hosts all PheBee compute: Lambda functions, EMR Serverless and Neptune. ex: vpc-xxxxxxxxxxxxxx"
-    Type: String  
 
   SubnetId1:
-    Default: false
+    Type: AWS::EC2::Subnet::Id
     Description: "First private subnet for Lambda, EMR Serverless and Neptune. ex: subnet-xxxxxxxxxxxxxx"
-    Type: String
 
   SubnetId2:
-    Default: false
+    Type: AWS::EC2::Subnet::Id
     Description: "Second private subnet, in a different availability zone. ex: subnet-xxxxxxxxxxxxxx"
-    Type: String
 
   ServiceEgressCidr:
     Type: String
