@@ -717,6 +717,22 @@ Resources:
       ToPort: 8182
       Description: PheBee Neptune clients
 
+  # EMR Serverless workers run in a service-owned network and use ENIs in these
+  # subnets only to reach customer-side resources, so no worker-to-worker rule
+  # is needed. Jobs read and write S3, Glue and DynamoDB only.
+  PheBeeEmrSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: PheBee EMR Serverless workers
+      GroupName: !Sub phebee-emr-sg-${AppName}
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: !Ref ServiceEgressCidr
+          Description: HTTPS to AWS service endpoints
+
   DownloadGithubReleaseFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -1890,6 +1906,14 @@ Resources:
       AutoStopConfiguration:
         Enabled: true
         IdleTimeoutMinutes: 15
+      # Spark jobs handle the evidence table, so they run inside the VPC like the
+      # Lambdas. Each worker takes a private IP from these subnets while running.
+      NetworkConfiguration:
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+        SecurityGroupIds:
+          - !Ref PheBeeEmrSecurityGroup
 
   # EMR Execution Role
   EMRExecutionRole:
