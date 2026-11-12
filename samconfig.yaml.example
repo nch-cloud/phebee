@@ -19,10 +19,10 @@ integration-test:
         - ServiceEgressCidr=0.0.0.0/0
         - OntologyDownloadInVpc=false
         - CreateVpcEndpoints=false
-        - RouteTableIds=
+        - RouteTableIds=""
         - ApiEndpointType=REGIONAL
-        - ExecuteApiVpcEndpointId=
-        - S3AccessLogBucketName=
+        - ExecuteApiVpcEndpointId=""
+        - S3AccessLogBucketName=""
         - RunOntologyUpdatesOnSchedule=false
       tags:
         - app=phebee
@@ -42,10 +42,10 @@ dev:
         - ServiceEgressCidr=0.0.0.0/0
         - OntologyDownloadInVpc=false
         - CreateVpcEndpoints=false
-        - RouteTableIds=
+        - RouteTableIds=""
         - ApiEndpointType=REGIONAL
-        - ExecuteApiVpcEndpointId=
-        - S3AccessLogBucketName=
+        - ExecuteApiVpcEndpointId=""
+        - S3AccessLogBucketName=""
         - RunOntologyUpdatesOnSchedule=false
       tags:
         - app=phebee
@@ -65,10 +65,10 @@ staging:
         - ServiceEgressCidr=0.0.0.0/0
         - OntologyDownloadInVpc=false
         - CreateVpcEndpoints=false
-        - RouteTableIds=
+        - RouteTableIds=""
         - ApiEndpointType=REGIONAL
-        - ExecuteApiVpcEndpointId=
-        - S3AccessLogBucketName=
+        - ExecuteApiVpcEndpointId=""
+        - S3AccessLogBucketName=""
         - RunOntologyUpdatesOnSchedule=true
       tags:
         - app=phebee
@@ -88,10 +88,10 @@ prod:
         - ServiceEgressCidr=0.0.0.0/0
         - OntologyDownloadInVpc=false
         - CreateVpcEndpoints=false
-        - RouteTableIds=
+        - RouteTableIds=""
         - ApiEndpointType=REGIONAL
-        - ExecuteApiVpcEndpointId=
-        - S3AccessLogBucketName=
+        - ExecuteApiVpcEndpointId=""
+        - S3AccessLogBucketName=""
         - RunOntologyUpdatesOnSchedule=true
       tags:
         - app=phebee

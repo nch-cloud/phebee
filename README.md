@@ -97,9 +97,9 @@ prod:                                  # The environment name
                                 # outside the VPC by default. Set true only if policy requires it and the subnets have NAT or a proxy
         - CreateVpcEndpoints=false     # true: the stack creates every VPC endpoint PheBee needs (see Network requirements). Leave false if
                                 # the VPC already has them or uses NAT; only one private-DNS endpoint per service fits in a VPC
-        - RouteTableIds=               # Comma-separated route tables of the two subnets. Required only when CreateVpcEndpoints=true
+        - RouteTableIds=""             # Comma-separated route tables of the two subnets. Required only when CreateVpcEndpoints=true
         - ApiEndpointType=REGIONAL     # REGIONAL: public hostname with IAM auth. PRIVATE: reachable only through an execute-api VPC endpoint
-        - ExecuteApiVpcEndpointId=     # Existing execute-api endpoint for a PRIVATE API; not needed when CreateVpcEndpoints=true
+        - ExecuteApiVpcEndpointId=""   # Existing execute-api endpoint for a PRIVATE API; not needed when CreateVpcEndpoints=true
       tags:
         - app=phebee                   # Tags applied to the stack for resource tracking or cost management
 ```
