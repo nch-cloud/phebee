@@ -1988,7 +1988,6 @@ Resources:
         NotifyBulkImportCompleteFunction: !GetAtt NotifyBulkImportCompleteFunction.Arn
         NotifyBulkImportFailureFunction: !GetAtt NotifyBulkImportFailureFunction.Arn
         MaterializeProjectSubjectTermsFunction: !GetAtt MaterializeProjectSubjectTermsFunction.Arn
-        DynamoDBTableName: !Ref DynamoDBTable
 
   BulkImportStateMachineRole:
     Type: AWS::IAM::Role
