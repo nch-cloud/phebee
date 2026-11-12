@@ -126,14 +126,12 @@ def test_subjects_query_with_monarch_entity(api_base_url, sigv4_auth, test_proje
 
 def test_subjects_query_monarch_requires_no_expansion(api_base_url, sigv4_auth, test_project_id):
     """
-    Smoke test: POST /subjects/query with term_association_source_entity + include_child_terms=true fails.
+    Smoke test: POST /subjects/query with term_association_source_entity + include_child_terms=true
+    is rejected as a client error.
 
     Validates:
-    - Parameter validation works (returns 500 error)
-
-    Note: API Gateway masks the detailed error message for security, so we only verify
-    the status code, not the error message content. The detailed validation is tested
-    in test_get_subjects_pheno.py integration tests.
+    - Parameter validation returns 400 with a JSON body naming the offending parameter
+      (an unhandled exception would surface as an opaque 502 from the REST API)
     """
     response = requests.post(
         f"{api_base_url}/subjects/query",
@@ -146,10 +144,11 @@ def test_subjects_query_monarch_requires_no_expansion(api_base_url, sigv4_auth, 
         auth=sigv4_auth
     )
 
-    assert response.status_code == 500, \
-        f"Expected 500 for invalid parameter combination, got {response.status_code}"
-
-    # API Gateway returns generic error, detailed validation tested in integration tests
+    assert response.status_code == 400, \
+        f"Expected 400 for invalid parameter combination, got {response.status_code}"
+    body = response.json()
+    assert body["error"] == "invalid_request"
+    assert "include_child_terms" in body["message"]
     body = response.json()
     assert "message" in body or "error" in body, \
         "Response should contain an error message"

@@ -174,11 +174,11 @@ def test_get_subjects_missing_project_id(invoke_get_subjects_pheno):
     Test 14: Missing project_id parameter should return error.
 
     Action: Call without project_id
-    Verify: Returns 500 with error about missing project_id
+    Verify: Returns 400 with error about missing project_id
     """
     result = invoke_get_subjects_pheno()
 
-    assert result["statusCode"] == 500
+    assert result["statusCode"] == 400
     assert "project_id" in result["body"].lower()
 
 
@@ -593,7 +593,7 @@ def test_get_subjects_root_term_rejected(invoke_get_subjects_pheno, test_project
         include_child_terms=True
     )
 
-    assert result["statusCode"] == 500
+    assert result["statusCode"] == 400
     assert "root" in result["body"].lower() or "all subjects" in result["body"].lower()
 
 
@@ -1068,7 +1068,7 @@ def test_monarch_mutual_exclusivity(invoke_get_subjects_pheno, test_project_id):
     )
 
     # Should return error status
-    assert result["statusCode"] == 500
+    assert result["statusCode"] == 400
     # Error should mention mutual exclusivity
     error_body = json.loads(result["body"])
     assert "mutually exclusive" in str(error_body).lower()
@@ -1092,7 +1092,7 @@ def test_monarch_with_include_child_terms_error(invoke_get_subjects_pheno, test_
     )
 
     # Should return error status
-    assert result["statusCode"] == 500
+    assert result["statusCode"] == 400
     # Error should explain the semantic issue
     error_body = json.loads(result["body"])
     error_msg = str(error_body).lower()
