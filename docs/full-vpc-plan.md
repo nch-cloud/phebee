@@ -203,7 +203,7 @@ D2. Endpoints and why each is needed:
     Plus a `PheBeeVpcEndpointSecurityGroup` allowing tcp/443 from the
     Lambda and EMR security groups.
 
-D2a. **Proposed, decision needed: `CreateVpc` option.** Today's deploy is
+D2a. **Deferred (decided 2026-11-12): stay bring-your-own-VPC; revisit if users ask.** `CreateVpc` option. Today's deploy is
     one command only for someone who can already name a VPC, two private
     subnets and their route tables. To keep PheBee deployable without any
     networking expertise, add `CreateVpc` (default false). When true the
