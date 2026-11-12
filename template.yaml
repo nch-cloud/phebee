@@ -47,6 +47,27 @@ Parameters:
       every AWS service is reached through interface endpoints in a
       private address range.
 
+  CreateVpcEndpoints:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: >-
+      Create the VPC endpoints PheBee needs in the supplied VPC: gateway
+      endpoints for S3 and DynamoDB, and interface endpoints (with private DNS)
+      for Athena, Glue, EventBridge, STS, the RDS control plane used for
+      Neptune status, and Lake Formation when CatalogAccountId is set. Leave
+      false when the VPC already has them or reaches AWS services through NAT;
+      a VPC can hold only one private-DNS interface endpoint per service.
+      Requires RouteTableIds and a VPC with DNS support and DNS hostnames enabled.
+
+  RouteTableIds:
+    Type: String
+    Default: ""
+    Description: >-
+      Comma-separated route table IDs of the PheBee subnets, used to attach the
+      S3 and DynamoDB gateway endpoints. Required when CreateVpcEndpoints is
+      true; ignored otherwise.
+
   OntologyDownloadInVpc:
     Type: String
     Default: "false"
@@ -165,10 +186,23 @@ Parameters:
     Default: "cron(20 9 * * ? *)"  # 4:20 AM EST = 9:20 UTC
     Description: Cron expression for ECO update
 
+Rules:
+  RouteTablesRequiredForEndpoints:
+    RuleCondition: !Equals [!Ref CreateVpcEndpoints, "true"]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref RouteTableIds, ""]]
+        AssertDescription: RouteTableIds is required when CreateVpcEndpoints is true, because gateway endpoints attach to route tables.
+
 Conditions:
   ShouldCreateS3Bucket: !Equals [!Ref CreateS3Bucket, true]
 
   OntologyDownloadInVpcEnabled: !Equals [!Ref OntologyDownloadInVpc, "true"]
+
+  ShouldCreateVpcEndpoints: !Equals [!Ref CreateVpcEndpoints, "true"]
+
+  ShouldCreateLakeFormationEndpoint: !And
+    - !Condition ShouldCreateVpcEndpoints
+    - !Condition CatalogAccountIdProvided
 
   ShouldEnableS3Logging: !Not [!Equals [!Ref S3AccessLogBucketName, ""]]
 
@@ -732,6 +766,123 @@ Resources:
           ToPort: 443
           CidrIp: !Ref ServiceEgressCidr
           Description: HTTPS to AWS service endpoints
+
+  #################
+  # VPC endpoints (optional, CreateVpcEndpoints=true)
+  #################
+  # Everything PheBee's Lambdas, EMR jobs and Neptune bulk loads reach, so a
+  # VPC with no NAT works. Endpoint policies are left at the AWS default (full
+  # access); scoping them to this stack's bucket and tables is a follow-up.
+
+  PheBeeVpcEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: ShouldCreateVpcEndpoints
+    Properties:
+      GroupDescription: PheBee interface VPC endpoints
+      GroupName: !Sub phebee-vpce-sg-${AppName}
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref PheBeeLambdaSecurityGroup
+          Description: PheBee Lambda functions
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref PheBeeEmrSecurityGroup
+          Description: PheBee EMR Serverless workers
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 127.0.0.1/32
+          Description: Endpoints initiate no connections; this replaces the default allow-all
+
+  PheBeeS3GatewayEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: ShouldCreateVpcEndpoints
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.s3
+      VpcEndpointType: Gateway
+      RouteTableIds: !Split [",", !Ref RouteTableIds]
+
+  PheBeeDynamoDBGatewayEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: ShouldCreateVpcEndpoints
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.dynamodb
+      VpcEndpointType: Gateway
+      RouteTableIds: !Split [",", !Ref RouteTableIds]
+
+  PheBeeAthenaEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: ShouldCreateVpcEndpoints
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.athena
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: [!Ref SubnetId1, !Ref SubnetId2]
+      SecurityGroupIds: [!Ref PheBeeVpcEndpointSecurityGroup]
+
+  PheBeeGlueEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: ShouldCreateVpcEndpoints
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.glue
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: [!Ref SubnetId1, !Ref SubnetId2]
+      SecurityGroupIds: [!Ref PheBeeVpcEndpointSecurityGroup]
+
+  PheBeeEventsEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: ShouldCreateVpcEndpoints
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.events
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: [!Ref SubnetId1, !Ref SubnetId2]
+      SecurityGroupIds: [!Ref PheBeeVpcEndpointSecurityGroup]
+
+  PheBeeStsEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: ShouldCreateVpcEndpoints
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.sts
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: [!Ref SubnetId1, !Ref SubnetId2]
+      SecurityGroupIds: [!Ref PheBeeVpcEndpointSecurityGroup]
+
+  # Neptune's management API (describe_db_clusters) shares the RDS control plane.
+  PheBeeRdsEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: ShouldCreateVpcEndpoints
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.rds
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: [!Ref SubnetId1, !Ref SubnetId2]
+      SecurityGroupIds: [!Ref PheBeeVpcEndpointSecurityGroup]
+
+  PheBeeLakeFormationEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: ShouldCreateLakeFormationEndpoint
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.lakeformation
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: [!Ref SubnetId1, !Ref SubnetId2]
+      SecurityGroupIds: [!Ref PheBeeVpcEndpointSecurityGroup]
 
   DownloadGithubReleaseFunction:
     Type: AWS::Serverless::Function

@@ -95,6 +95,9 @@ prod:                                  # The environment name
                                 # narrow to a private range (e.g. 10.0.0.0/8) only if every AWS service is reached via interface endpoints there
         - OntologyDownloadInVpc=false  # The GitHub ontology downloader needs internet access and handles no subject data, so it runs
                                 # outside the VPC by default. Set true only if policy requires it and the subnets have NAT or a proxy
+        - CreateVpcEndpoints=false     # true: the stack creates every VPC endpoint PheBee needs (see Network requirements). Leave false if
+                                # the VPC already has them or uses NAT; only one private-DNS endpoint per service fits in a VPC
+        - RouteTableIds=               # Comma-separated route tables of the two subnets. Required only when CreateVpcEndpoints=true
       tags:
         - app=phebee                   # Tags applied to the stack for resource tracking or cost management
 ```
@@ -111,9 +114,15 @@ The integration test suite reads the same file, so fill in the `integration-test
 
 #### Network requirements
 
-All PheBee Lambda functions run inside the VPC you supply, so the subnets must be able to reach the AWS services PheBee uses (S3, DynamoDB, Athena, Glue, EventBridge, the RDS control plane for Neptune status, and Lake Formation when a cross-account catalog is configured) through VPC endpoints or NAT. Only functions that talk to Neptune are attached to the Neptune client security group, so nothing else in the VPC can reach port 8182.
+PheBee is bring-your-own-VPC: every Lambda function, the EMR Serverless application and the Neptune cluster run in the two subnets you supply. Those subnets never need a public IP or an internet gateway, but they must be able to reach the AWS services PheBee uses: S3, DynamoDB, Athena, Glue, EventBridge, STS, the RDS control plane (for Neptune status), and Lake Formation when a cross-account catalog is configured. Pick whichever of these fits your account:
 
-Two features need the public internet and degrade clearly without it:
+| Situation | What to set |
+|---|---|
+| A VPC with private subnets and nothing else | `CreateVpcEndpoints=true` and `RouteTableIds=<route tables of the two subnets>`. The stack creates gateway endpoints for S3 and DynamoDB and interface endpoints for the rest. The VPC must have DNS support and DNS hostnames enabled (both are on by default). Interface endpoints are billed hourly, roughly USD 7 per endpoint per availability zone per month. |
+| Subnets with a NAT gateway | Nothing. Leave `CreateVpcEndpoints=false`. |
+| An organisation that manages endpoints centrally, for example in a hub VPC | Leave `CreateVpcEndpoints=false`, set `ServiceEgressCidr` to the private range that reaches the hub (for example `10.0.0.0/8`), and make sure the hub's private hosted zones are associated with the PheBee VPC. Gateway endpoints for S3 and DynamoDB route to public prefix lists, so a narrowed CIDR needs interface endpoints for both. |
+
+Only functions that talk to Neptune are attached to the Neptune client security group, so nothing else in the VPC can reach port 8182. Two features need the public internet and degrade clearly without it:
 
 - **Ontology updates** download releases from GitHub. That function runs outside the VPC by default (`OntologyDownloadInVpc=false`).
 - **Monarch expansion** (`term_association_source_entity` on the subjects query) calls `api-v3.monarchinitiative.org` from inside the VPC. Without an egress path the query returns HTTP 503 with an explanatory message; every other query path is unaffected.

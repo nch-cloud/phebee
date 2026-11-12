@@ -18,6 +18,8 @@ integration-test:
         - SubnetId2=
         - ServiceEgressCidr=0.0.0.0/0
         - OntologyDownloadInVpc=false
+        - CreateVpcEndpoints=false
+        - RouteTableIds=
         - S3AccessLogBucketName=
         - RunOntologyUpdatesOnSchedule=false
       tags:
@@ -37,6 +39,8 @@ dev:
         - SubnetId2=
         - ServiceEgressCidr=0.0.0.0/0
         - OntologyDownloadInVpc=false
+        - CreateVpcEndpoints=false
+        - RouteTableIds=
         - S3AccessLogBucketName=
         - RunOntologyUpdatesOnSchedule=false
       tags:
@@ -56,6 +60,8 @@ staging:
         - SubnetId2=
         - ServiceEgressCidr=0.0.0.0/0
         - OntologyDownloadInVpc=false
+        - CreateVpcEndpoints=false
+        - RouteTableIds=
         - S3AccessLogBucketName=
         - RunOntologyUpdatesOnSchedule=true
       tags:
@@ -75,6 +81,8 @@ prod:
         - SubnetId2=
         - ServiceEgressCidr=0.0.0.0/0
         - OntologyDownloadInVpc=false
+        - CreateVpcEndpoints=false
+        - RouteTableIds=
         - S3AccessLogBucketName=
         - RunOntologyUpdatesOnSchedule=true
       tags:

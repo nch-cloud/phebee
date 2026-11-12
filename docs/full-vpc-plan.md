@@ -162,15 +162,15 @@ B4. Observability inside the VPC. Lambda log delivery and the
 
 ### C. EMR Serverless into the VPC
 
-C1. Add `NetworkConfiguration` with `SubnetIds` and a new
+C1. **Done (ea298b8).** Add `NetworkConfiguration` with `SubnetIds` and a new
     `PheBeeEmrSecurityGroup` to `EMRServerlessApplication`.
     Unconditional: the VPC parameters are already mandatory.
 
-C2. EMR jobs need S3 (gateway), Glue and DynamoDB
+C2. **Done via D.** EMR jobs need S3 (gateway), Glue and DynamoDB
     (`materialize_all_analytical_tables.py` uses `boto3.resource('dynamodb')`),
     plus STS for the job role. Covered by workstream D.
 
-C3. Subnet sizing note for the README: EMR Serverless workers each take
+C3. **Done (template comment; README table).** Subnet sizing note for the README: EMR Serverless workers each take
     an IP; the subnets must have headroom for the configured maximum
     capacity.
 
@@ -179,14 +179,14 @@ C3. Subnet sizing note for the README: EMR Serverless workers each take
 Interface endpoints with private DNS are one-per-service-per-VPC, and
 many organisations manage them centrally, so creation must be optional.
 
-D1. Parameters:
+D1. **Done.** Parameters:
 
     | Parameter | Default | Purpose |
     |---|---|---|
     | `CreateVpcEndpoints` | `false` | Create every endpoint below. |
     | `RouteTableIds` | `""` (CommaDelimitedList) | Required when creating; gateway endpoints attach to route tables. |
 
-D2. Endpoints and why each is needed:
+D2. **Done, except execute-api, which lands with workstream A.** Endpoints and why each is needed:
 
     | Service | Type | Used by |
     |---|---|---|
@@ -223,7 +223,7 @@ D2a. **Deferred (decided 2026-11-12): stay bring-your-own-VPC; revisit if users 
     CreateVpc; own VPC + CreateVpcEndpoints; own VPC with centrally
     managed endpoints and a narrowed `ServiceEgressCidr`.
 
-D3. When `CreateVpcEndpoints=false`, the README lists the same table as
+D3. **README done; test preflight still to do (G3).** When `CreateVpcEndpoints=false`, the README lists the same table as
     a prerequisite checklist and the integration test preflight checks
     for reachability (G3).
 
@@ -312,6 +312,8 @@ G5. Evidence for the compliance team: VPC Flow Logs or endpoint
   subject and note identifiers. Retention and log-redaction policy.
 - Athena query results under `athena-results/<AppName>/` are an
   unmanaged copy of query output. Add a lifecycle rule.
+- VPC endpoint policies are the AWS default (full access). Scope them to
+  this stack's bucket, tables and workgroup.
 - RDF IRIs hard-code `ods.nationwidechildrens.org` in handlers and in
   the template (`GraphUri` near line 2768). Not a network issue, but it
   is the one organisation-specific string in the repo.
