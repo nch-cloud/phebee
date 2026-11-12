@@ -22,18 +22,18 @@ Parameters:
 
   VpcId:
     Default: false
-    Description: "VPC in which Neptune is supposed to run. ex: vpc-xxxxxxxxxxxxxx"
+    Description: "VPC that hosts all PheBee compute: Lambda functions, EMR Serverless and Neptune. ex: vpc-xxxxxxxxxxxxxx"
     Type: String  
 
   SubnetId1:
     Default: false
-    Description: "Subnet in the VPC which Neptune is supposed to run. ex: subnet-xxxxxxxxxxxxxx"
-    Type: String  
+    Description: "First private subnet for Lambda, EMR Serverless and Neptune. ex: subnet-xxxxxxxxxxxxxx"
+    Type: String
 
   SubnetId2:
     Default: false
-    Description: "Subnet in the VPC which Neptune is supposed to run. ex: subnet-xxxxxxxxxxxxxx"
-    Type: String   
+    Description: "Second private subnet, in a different availability zone. ex: subnet-xxxxxxxxxxxxxx"
+    Type: String
 
   ServiceEgressCidr:
     Type: String
@@ -47,6 +47,17 @@ Parameters:
       Amazon's public prefix lists. Narrow it (e.g. 10.0.0.0/8) only when
       every AWS service is reached through interface endpoints in a
       private address range.
+
+  OntologyDownloadInVpc:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: >-
+      Place the GitHub ontology-download function inside the VPC as well. It
+      fetches public ontology releases from api.github.com and handles no
+      subject data, so it stays outside by default; set true only where every
+      function must be in the VPC and the subnets have an egress path (NAT or
+      proxy) to GitHub.
 
   CreateS3Bucket:
     Default: true
@@ -157,6 +168,8 @@ Parameters:
 
 Conditions:
   ShouldCreateS3Bucket: !Equals [!Ref CreateS3Bucket, true]
+
+  OntologyDownloadInVpcEnabled: !Equals [!Ref OntologyDownloadInVpc, "true"]
 
   ShouldEnableS3Logging: !Not [!Equals [!Ref S3AccessLogBucketName, ""]]
 
@@ -492,6 +505,7 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
         - !Ref PheBeeIcebergPolicy
 
   CreateSubjectTermsBySubjectTableRole:
@@ -508,6 +522,7 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
         - !Ref PheBeeIcebergPolicy
 
   CreateSubjectTermsByProjectTermTableRole:
@@ -524,6 +539,7 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
         - !Ref PheBeeIcebergPolicy
 
   CreateOntologyHierarchyTableRole:
@@ -540,6 +556,7 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
         - !Ref PheBeeIcebergPolicy
 
   NeptuneLoaderRole:
@@ -589,12 +606,8 @@ Resources:
       GroupDescription: Amazon Neptune Created
       GroupName: !Sub phebee-neptune-sg-${AppName}
       VpcId: !Ref VpcId
-      SecurityGroupIngress:
-        - SourceSecurityGroupId: !Ref PheBeeLambdaSecurityGroup
-          IpProtocol: tcp
-          FromPort: 8182
-          ToPort: 8182
-          Description: PheBee Neptune
+      # Ingress is a standalone resource (PheBeeNeptuneIngressFromClients) so this
+      # group and PheBeeNeptuneClientSecurityGroup can reference each other.
 
   PheBeeNeptuneSubnetGroup:
     Type: AWS::Neptune::DBSubnetGroup
@@ -663,23 +676,38 @@ Resources:
       SecurityGroupEgress:
         # HTTPS to AWS service endpoints (DynamoDB, S3, Athena, Glue, EventBridge, ...).
         # Lambda log delivery, X-Ray and the Lambda API itself do not traverse
-        # the function ENI, so nothing else is needed here. The Neptune rule is
-        # a standalone resource below to avoid a circular reference.
+        # the function ENI, so nothing else is needed here. Neptune access is
+        # granted separately by PheBeeNeptuneClientSecurityGroup.
         - IpProtocol: tcp
           FromPort: 443
           ToPort: 443
           CidrIp: !Ref ServiceEgressCidr
           Description: HTTPS to AWS service endpoints
 
-  PheBeeLambdaToNeptuneEgress:
-    Type: AWS::EC2::SecurityGroupEgress
+  # Attached, in addition to PheBeeLambdaSecurityGroup, only to functions that
+  # call Neptune. Everything else in the VPC cannot reach port 8182.
+  PheBeeNeptuneClientSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupId: !Ref PheBeeLambdaSecurityGroup
-      DestinationSecurityGroupId: !Ref PheBeeNeptuneSecurityGroup
+      GroupDescription: PheBee functions permitted to reach the Neptune cluster
+      GroupName: !Sub phebee-neptune-client-sg-${AppName}
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 8182
+          ToPort: 8182
+          DestinationSecurityGroupId: !Ref PheBeeNeptuneSecurityGroup
+          Description: SPARQL and bulk-load calls to the PheBee Neptune cluster
+
+  PheBeeNeptuneIngressFromClients:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref PheBeeNeptuneSecurityGroup
+      SourceSecurityGroupId: !Ref PheBeeNeptuneClientSecurityGroup
       IpProtocol: tcp
       FromPort: 8182
       ToPort: 8182
-      Description: SPARQL and bulk-load calls to the PheBee Neptune cluster
+      Description: PheBee Neptune clients
 
   DownloadGithubReleaseFunction:
     Type: AWS::Serverless::Function
@@ -694,6 +722,18 @@ Resources:
         Variables:
           PheBeeBucketName: !Ref PheBeeBucket
           PheBeeDynamoTable: !Ref DynamoDBTable
+      # Fetches ontology releases from api.github.com and handles no subject data.
+      # Outside the VPC by default so deployments without NAT still get ontology
+      # updates; set OntologyDownloadInVpc=true where policy requires it and an
+      # egress path exists.
+      VpcConfig: !If
+        - OntologyDownloadInVpcEnabled
+        - SecurityGroupIds:
+            - !Ref PheBeeLambdaSecurityGroup
+          SubnetIds:
+            - !Ref SubnetId1
+            - !Ref SubnetId2
+        - !Ref AWS::NoValue
       Policies:
         - !Ref PheBeeDynamoDBWritePolicy
         - !Ref PheBeeDynamoDBReadPolicy
@@ -717,6 +757,12 @@ Resources:
       Environment:
         Variables:
           PheBeeDynamoTable: !Ref DynamoDBTable
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
       Policies:
         - !Ref PheBeeDynamoDBReadPolicy
         - !Ref PheBeeDynamoDBWritePolicy
@@ -737,6 +783,7 @@ Resources:
       VpcConfig:
         SecurityGroupIds:
           - !Ref PheBeeLambdaSecurityGroup
+          - !Ref PheBeeNeptuneClientSecurityGroup
         SubnetIds:
           - !Ref SubnetId1
           - !Ref SubnetId2
@@ -759,6 +806,7 @@ Resources:
       VpcConfig:
         SecurityGroupIds:
           - !Ref PheBeeLambdaSecurityGroup
+          - !Ref PheBeeNeptuneClientSecurityGroup
         SubnetIds:
           - !Ref SubnetId1
           - !Ref SubnetId2
@@ -777,6 +825,12 @@ Resources:
       Environment:
         Variables:
           PheBeeDynamoTable: !Ref DynamoDBTable
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
       Policies:
         - !Ref PheBeeDynamoDBReadPolicy
 
@@ -791,7 +845,6 @@ Resources:
         - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
-          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
           Region: !Sub ${AWS::Region}
           PheBeeDynamoTable: !Ref DynamoDBTable
           ICEBERG_DATABASE: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
@@ -804,7 +857,6 @@ Resources:
           - !Ref SubnetId1
           - !Ref SubnetId2
       Policies:
-        - !Ref PheBeeNeptuneReadPolicy
         - !Ref PheBeeDynamoDBReadPolicy
         - !Ref PheBeeIcebergPolicy
 
@@ -826,6 +878,12 @@ Resources:
           ICEBERG_ONTOLOGY_HIERARCHY_TABLE: !Ref IcebergOntologyHierarchyTable
           PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
           Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
       Policies:
         - !Ref PheBeeIcebergPolicy
 
@@ -853,6 +911,7 @@ Resources:
       VpcConfig:
         SecurityGroupIds:
           - !Ref PheBeeLambdaSecurityGroup
+          - !Ref PheBeeNeptuneClientSecurityGroup
         SubnetIds:
           - !Ref SubnetId1
           - !Ref SubnetId2
@@ -887,6 +946,7 @@ Resources:
       VpcConfig:
         SecurityGroupIds:
           - !Ref PheBeeLambdaSecurityGroup
+          - !Ref PheBeeNeptuneClientSecurityGroup
         SubnetIds:
           - !Ref SubnetId1
           - !Ref SubnetId2
@@ -913,6 +973,7 @@ Resources:
       VpcConfig:
         SecurityGroupIds:
           - !Ref PheBeeLambdaSecurityGroup
+          - !Ref PheBeeNeptuneClientSecurityGroup
         SubnetIds:
           - !Ref SubnetId1
           - !Ref SubnetId2
@@ -942,6 +1003,7 @@ Resources:
       VpcConfig:
         SecurityGroupIds:
           - !Ref PheBeeLambdaSecurityGroup
+          - !Ref PheBeeNeptuneClientSecurityGroup
         SubnetIds:
           - !Ref SubnetId1
           - !Ref SubnetId2
@@ -965,6 +1027,12 @@ Resources:
       Environment:
         Variables:
           PheBeeBucketName: !Ref PheBeeBucket
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
       Policies:
         - !Ref PheBeeS3ReadPolicy
         - !Ref PheBeeS3WritePolicy
@@ -981,6 +1049,12 @@ Resources:
       Environment:
         Variables:
           PheBeeBucketName: !Ref PheBeeBucket
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
       Policies:
         - !Ref PheBeeS3ReadPolicy
         - !Ref PheBeeS3WritePolicy
@@ -999,7 +1073,6 @@ Resources:
         - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
-          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
           Region: !Sub ${AWS::Region}
           PheBeeBus: !Ref PheBeeBus
           PheBeeBucketName: !Ref PheBeeBucket
@@ -1016,7 +1089,6 @@ Resources:
           - !Ref SubnetId1
           - !Ref SubnetId2
       Policies:
-        - !Ref PheBeeNeptuneReadPolicy
         - !Ref PheBeeDynamoDBReadPolicy
         - !Ref PheBeeDynamoDBWritePolicy
         - !Ref PheBeeS3WritePolicy
@@ -1050,6 +1122,7 @@ Resources:
       VpcConfig:
         SecurityGroupIds:
           - !Ref PheBeeLambdaSecurityGroup
+          - !Ref PheBeeNeptuneClientSecurityGroup
         SubnetIds:
           - !Ref SubnetId1
           - !Ref SubnetId2
@@ -1083,6 +1156,7 @@ Resources:
       VpcConfig:
         SecurityGroupIds:
           - !Ref PheBeeLambdaSecurityGroup
+          - !Ref PheBeeNeptuneClientSecurityGroup
         SubnetIds:
           - !Ref SubnetId1
           - !Ref SubnetId2
@@ -1109,6 +1183,12 @@ Resources:
           PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
           EVIDENCE_TABLE: !Sub ${AppName}_evidence
           Region: !Sub ${AWS::Region}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
       Policies:
         - !Ref PheBeeIcebergPolicy
 
@@ -1131,8 +1211,19 @@ Resources:
           PheBeeDynamoTable: !Ref DynamoDBTable
           EVIDENCE_TABLE: !Sub ${AppName}_evidence
           Region: !Sub ${AWS::Region}
+          NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+          - !Ref PheBeeNeptuneClientSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
       Policies:
         - !Ref PheBeeIcebergPolicy
+        - !Ref PheBeeNeptuneReadPolicy
+        - !Ref PheBeeNeptuneWritePolicy
+        - !Ref PheBeeNeptuneDeletePolicy
         - DynamoDBCrudPolicy:
             TableName: !Ref DynamoDBTable
 
@@ -1150,6 +1241,12 @@ Resources:
           ICEBERG_DATABASE: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
           ICEBERG_EVIDENCE_TABLE: !Ref IcebergEvidenceTable
           PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
       Policies:
         - !Ref PheBeeIcebergPolicy
 
@@ -1169,6 +1266,12 @@ Resources:
           ICEBERG_EVIDENCE_TABLE: !Ref IcebergEvidenceTable
           PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
           ATHENA_WORKGROUP: primary
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
       Policies:
         - !Ref PheBeeIcebergPolicy
 
@@ -1196,6 +1299,12 @@ Resources:
       Timeout: 30
       Layers:
         - !Ref PheBeeUtilsLayer
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
       Policies:
         - !Ref PheBeeS3ReadPolicy
 
@@ -1218,6 +1327,7 @@ Resources:
       VpcConfig:
         SecurityGroupIds:
           - !Ref PheBeeLambdaSecurityGroup
+          - !Ref PheBeeNeptuneClientSecurityGroup
         SubnetIds:
           - !Ref SubnetId1
           - !Ref SubnetId2
@@ -1243,6 +1353,7 @@ Resources:
       VpcConfig:
         SecurityGroupIds:
           - !Ref PheBeeLambdaSecurityGroup
+          - !Ref PheBeeNeptuneClientSecurityGroup
         SubnetIds:
           - !Ref SubnetId1
           - !Ref SubnetId2
@@ -1257,6 +1368,12 @@ Resources:
       Handler: evaluate_all_load_statuses.lambda_handler
       MemorySize: 256
       Timeout: 30
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
 
   GenerateTTLManifestFunction:
     Type: AWS::Serverless::Function
@@ -1268,6 +1385,12 @@ Resources:
       Timeout: 900
       Layers:
         - !Ref PheBeeUtilsLayer
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
       Policies:
         - Statement:
             - Effect: Allow
@@ -1310,6 +1433,12 @@ Resources:
       Environment:
         Variables:
           DYNAMODB_TABLE_NAME: !Ref DynamoDBTable
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
       Policies:
         - !Ref PheBeeIcebergPolicy
         - Statement:
@@ -1359,6 +1488,12 @@ Resources:
       Environment:
         Variables:
           PheBeeBus: !Ref PheBeeBus
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
       Policies:
         - !Ref PheBeePutEventsPolicy
 
@@ -1375,6 +1510,12 @@ Resources:
       Environment:
         Variables:
           PheBeeBus: !Ref PheBeeBus
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
       Policies:
         - !Ref PheBeePutEventsPolicy
 
@@ -1396,6 +1537,12 @@ Resources:
           ICEBERG_SUBJECT_TERMS_BY_PROJECT_TERM_TABLE: !Ref IcebergSubjectTermsByProjectTermTable
           PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
           PheBeeDynamoTable: !Ref DynamoDBTable
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
       Policies:
         - !Ref PheBeeIcebergPolicy
         - Statement:
@@ -1454,6 +1601,12 @@ Resources:
           ICEBERG_DATABASE: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
           ICEBERG_ONTOLOGY_HIERARCHY_TABLE: !Ref IcebergOntologyHierarchyTable
           PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
       Policies:
         - !Ref PheBeeIcebergPolicy
         - Statement:
@@ -1510,6 +1663,12 @@ Resources:
           ICEBERG_DATABASE: !If [IcebergDatabaseProvided, !Ref IcebergDatabase, !Join ['_', !Split ['-', !Ref AppName]]]
           ICEBERG_ONTOLOGY_HIERARCHY_TABLE: !Ref IcebergOntologyHierarchyTable
           PHEBEE_BUCKET_NAME: !Ref PheBeeBucket
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
       Policies:
         - !Ref PheBeeIcebergPolicy
         - Statement:
@@ -1561,6 +1720,12 @@ Resources:
       Timeout: 300
       Layers:
         - !Ref PheBeeUtilsLayer
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
       Policies:
         - Statement:
             - Effect: Allow
@@ -1595,6 +1760,7 @@ Resources:
                 aws:SourceAccount: !Ref AWS::AccountId
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
       Policies:
         - PolicyName: AthenaAccess
           PolicyDocument:
@@ -1689,6 +1855,12 @@ Resources:
       Handler: delete_ontology_hierarchy_partition.lambda_handler
       MemorySize: 256
       Timeout: 300
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
       Role: !GetAtt DeleteOntologyHierarchyPartitionRole.Arn
       Layers:
         - !Ref PheBeeUtilsLayer
@@ -1897,6 +2069,7 @@ Resources:
       VpcConfig:
         SecurityGroupIds:
           - !Ref PheBeeLambdaSecurityGroup
+          - !Ref PheBeeNeptuneClientSecurityGroup
         SubnetIds:
           - !Ref SubnetId1
           - !Ref SubnetId2
@@ -1914,6 +2087,12 @@ Resources:
       Runtime: python3.11
       Timeout: 120
       MemorySize: 256
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
       Role: !GetAtt CreateEvidenceTableRole.Arn
 
   CreateSubjectTermsBySubjectTableFunction:
@@ -1926,6 +2105,12 @@ Resources:
       Runtime: python3.11
       Timeout: 120
       MemorySize: 256
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
       Role: !GetAtt CreateSubjectTermsBySubjectTableRole.Arn
 
   CreateSubjectTermsByProjectTermTableFunction:
@@ -1938,6 +2123,12 @@ Resources:
       Runtime: python3.11
       Timeout: 120
       MemorySize: 256
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
       Role: !GetAtt CreateSubjectTermsByProjectTermTableRole.Arn
 
   CreateOntologyHierarchyTableFunction:
@@ -1950,6 +2141,12 @@ Resources:
       Runtime: python3.11
       Timeout: 120
       MemorySize: 256
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
       Role: !GetAtt CreateOntologyHierarchyTableRole.Arn
 
   #################
@@ -2381,6 +2578,7 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
       Policies:
         - PolicyName: AthenaAccess
           PolicyDocument:
@@ -2528,6 +2726,12 @@ Resources:
       Handler: validate_rebuild_input.lambda_handler
       MemorySize: 256
       Timeout: 60
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
 
   TruncateIcebergTableFunction:
     Type: AWS::Serverless::Function
@@ -2537,6 +2741,12 @@ Resources:
       Handler: truncate_iceberg_table.lambda_handler
       MemorySize: 512
       Timeout: 300
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
       Role: !GetAtt RebuildAthenaQueriesRole.Arn
       Layers:
         - !Ref PheBeeUtilsLayer
@@ -2554,17 +2764,18 @@ Resources:
       Timeout: 900
       Layers:
         - !Ref PheBeeUtilsLayer
-      VpcConfig:
-        SecurityGroupIds:
-          - !Ref PheBeeLambdaSecurityGroup
-        SubnetIds:
-          - !Ref SubnetId1
-          - !Ref SubnetId2
       Environment:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
           Region: !Ref AWS::Region
           NeptuneClusterIdentifier: !Ref PheBeeNeptuneCluster
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+          - !Ref PheBeeNeptuneClientSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
       Policies:
         - !Ref PheBeeNeptuneReadPolicy
         - !Ref PheBeeNeptuneDeletePolicy
@@ -2580,6 +2791,12 @@ Resources:
       Environment:
         Variables:
           EventBusName: !Ref PheBeeBus
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
       Policies:
         - Statement:
           - Effect: Allow
@@ -2597,6 +2814,12 @@ Resources:
       Environment:
         Variables:
           EventBusName: !Ref PheBeeBus
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
       Policies:
         - Statement:
           - Effect: Allow
@@ -2611,6 +2834,12 @@ Resources:
       Handler: gather_evidence_baseline_stats.lambda_handler
       MemorySize: 512
       Timeout: 300
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
       Role: !GetAtt RebuildAthenaQueriesRole.Arn
       Layers:
         - !Ref PheBeeUtilsLayer
@@ -2626,6 +2855,12 @@ Resources:
       Handler: validate_rehash.lambda_handler
       MemorySize: 512
       Timeout: 300
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
       Role: !GetAtt RebuildAthenaQueriesRole.Arn
       Layers:
         - !Ref PheBeeUtilsLayer
@@ -2641,6 +2876,12 @@ Resources:
       Handler: gather_iceberg_baseline_stats.lambda_handler
       MemorySize: 512
       Timeout: 300
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
       Role: !GetAtt RebuildAthenaQueriesRole.Arn
       Layers:
         - !Ref PheBeeUtilsLayer
@@ -2657,6 +2898,12 @@ Resources:
       Handler: validate_materialization.lambda_handler
       MemorySize: 512
       Timeout: 300
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
       Role: !GetAtt RebuildAthenaQueriesRole.Arn
       Layers:
         - !Ref PheBeeUtilsLayer
@@ -2672,15 +2919,16 @@ Resources:
       Handler: gather_neptune_baseline_stats.lambda_handler
       MemorySize: 512
       Timeout: 300
-      Role: !GetAtt RebuildNeptuneQueriesRole.Arn
-      Layers:
-        - !Ref PheBeeUtilsLayer
       VpcConfig:
         SecurityGroupIds:
           - !Ref PheBeeLambdaSecurityGroup
+          - !Ref PheBeeNeptuneClientSecurityGroup
         SubnetIds:
           - !Ref SubnetId1
           - !Ref SubnetId2
+      Role: !GetAtt RebuildNeptuneQueriesRole.Arn
+      Layers:
+        - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
@@ -2695,15 +2943,16 @@ Resources:
       Handler: validate_neptune.lambda_handler
       MemorySize: 512
       Timeout: 300
-      Role: !GetAtt RebuildNeptuneQueriesRole.Arn
-      Layers:
-        - !Ref PheBeeUtilsLayer
       VpcConfig:
         SecurityGroupIds:
           - !Ref PheBeeLambdaSecurityGroup
+          - !Ref PheBeeNeptuneClientSecurityGroup
         SubnetIds:
           - !Ref SubnetId1
           - !Ref SubnetId2
+      Role: !GetAtt RebuildNeptuneQueriesRole.Arn
+      Layers:
+        - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
@@ -2720,17 +2969,18 @@ Resources:
       Timeout: 600
       Layers:
         - !Ref PheBeeUtilsLayer
-      VpcConfig:
-        SecurityGroupIds:
-          - !Ref PheBeeLambdaSecurityGroup
-        SubnetIds:
-          - !Ref SubnetId1
-          - !Ref SubnetId2
       Environment:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
           NeptuneClusterIdentifier: !Ref PheBeeNeptuneCluster
           Region: !Ref AWS::Region
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+          - !Ref PheBeeNeptuneClientSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
       Policies:
         - !Ref PheBeeNeptuneResetPolicy
 
@@ -2742,15 +2992,16 @@ Resources:
       Handler: validate_neptune_complete.lambda_handler
       MemorySize: 1024
       Timeout: 900
-      Role: !GetAtt RebuildNeptuneQueriesRole.Arn
-      Layers:
-        - !Ref PheBeeUtilsLayer
       VpcConfig:
         SecurityGroupIds:
           - !Ref PheBeeLambdaSecurityGroup
+          - !Ref PheBeeNeptuneClientSecurityGroup
         SubnetIds:
           - !Ref SubnetId1
           - !Ref SubnetId2
+      Role: !GetAtt RebuildNeptuneQueriesRole.Arn
+      Layers:
+        - !Ref PheBeeUtilsLayer
       Environment:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
@@ -2770,16 +3021,17 @@ Resources:
       Timeout: 900
       Layers:
         - !Ref PheBeeUtilsLayer
-      VpcConfig:
-        SecurityGroupIds:
-          - !Ref PheBeeLambdaSecurityGroup
-        SubnetIds:
-          - !Ref SubnetId1
-          - !Ref SubnetId2
       Environment:
         Variables:
           NeptuneEndpoint: !Sub https://${PheBeeNeptuneCluster.Endpoint}:${PheBeeNeptuneCluster.Port}
           Region: !Ref AWS::Region
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref PheBeeLambdaSecurityGroup
+          - !Ref PheBeeNeptuneClientSecurityGroup
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
       Policies:
         - !Ref PheBeeNeptuneReadPolicy
 

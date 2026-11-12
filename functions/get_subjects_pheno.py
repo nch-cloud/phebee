@@ -6,7 +6,7 @@ from phebee.utils.iceberg import query_subjects_by_project
 from phebee.utils.aws import parse_s3_path, get_client, extract_body
 from phebee.utils.dynamodb import get_current_term_source_version
 from phebee.utils.phenopackets import subjects_to_phenopackets, zip_phenopackets
-from phebee.utils.monarch import get_associated_terms
+from phebee.utils.monarch import get_associated_terms, MonarchUnavailableError
 from phebee.constants import PHEBEE
 
 logger = Logger()
@@ -182,6 +182,17 @@ def lambda_handler(event, context):
                     })
                 }
 
+        except MonarchUnavailableError as e:
+            # Deployment has no route to the public internet. Report it as a
+            # service limitation of this deployment, not a client error.
+            logger.error(str(e))
+            return {
+                "statusCode": 503,
+                "body": json.dumps({
+                    "error": "monarch_unavailable",
+                    "message": str(e),
+                })
+            }
         except Exception as e:
             logger.error(f"Error fetching associated terms from Monarch: {e}")
             raise ValueError(f"Failed to fetch associated terms from Monarch for entity {term_association_source_entity}: {str(e)}")

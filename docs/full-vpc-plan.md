@@ -89,13 +89,59 @@ A7. Private DNS caveat for the README: enabling private DNS on the
 
 ### B. Lambda functions into the VPC
 
-B1. Add `VpcConfig` (Lambda security group, `SubnetId1`, `SubnetId2`)
+B1. **Done on `full_vpc`.** Add `VpcConfig` (`SubnetId1`, `SubnetId2`, security groups below)
     to the 32 functions that lack it, using the same explicit block the
-    20 Neptune functions use. Explicit blocks rather than
+    20 in-VPC functions use. Explicit blocks rather than
     `Globals.Function.VpcConfig`, because one function must opt out and
     SAM Globals cannot be unset per resource.
 
-B2. Exception: `DownloadGithubReleaseFunction` fetches ontology
+B1a. **Done.** Two security groups, so only Neptune callers get port 8182:
+
+    | Group | Rules | Attached to |
+    |---|---|---|
+    | `PheBeeLambdaSecurityGroup` (exists) | egress tcp/443 to `ServiceEgressCidr` | every in-VPC function |
+    | `PheBeeNeptuneClientSecurityGroup` (new) | egress tcp/8182 to `PheBeeNeptuneSecurityGroup` (standalone egress resource, as today) | the 18 Neptune callers, as a second group |
+
+    `PheBeeNeptuneSecurityGroup` ingress source moves from the Lambda
+    group to the client group. Both changes are in-place updates.
+    The existing `PheBeeLambdaToNeptuneEgress` resource just changes its
+    `GroupId`.
+
+    Neptune callers, traced through `phebee.utils.sparql` and
+    `phebee.utils.neptune` rather than taken from today's VpcConfig list:
+    CheckBulkLoadStatus, CheckNeptuneBulkLoadStatus, ClearNeptuneGraph,
+    CreateEvidence, CreateProject, CreateSubject, ExecuteSparqlReadonly,
+    GatherNeptuneBaselineStats, GetLoadStatus, RemoveEvidence,
+    RemoveProject, RemoveSubject, ResetDatabase, ResetNeptuneDatabase,
+    StartLoad, StartNeptuneBulkLoad, ValidateNeptune,
+    ValidateNeptuneComplete.
+
+    Three functions are in the VPC today but never touch Neptune and
+    get only the base group: GetSubject, GetSubjectsPhenotypes,
+    PrepareEvidencePayload.
+
+B1b. **Done (integration test extended, not yet run against a stack).** Latent bug found by the trace: `RemoveEvidenceFunction` calls
+    `delete_term_link` (a Neptune write) when the last evidence for a
+    term link is removed, but it is outside the VPC and has no
+    `NeptuneEndpoint` environment variable. The call raises, the handler
+    logs and swallows it, and the term link is orphaned in the graph.
+    Fix in this workstream: VpcConfig with both groups plus the
+    `NeptuneEndpoint` and `Region` variables. Add an integration test
+    that removes the last evidence and checks the term link is gone.
+
+B1c. External dependency found by the trace: `GetSubjectsPhenotypesFunction`
+    calls `https://api-v3.monarchinitiative.org` when a query passes
+    `term_association_source_entity`. It is already in the VPC, so this
+    path only works where the subnets have NAT or a proxy. It sends a
+    disease identifier, never subject data. Options: (a) document that
+    the Monarch expansion needs outbound internet and fails with a clear
+    error otherwise; (b) preload disease-to-phenotype associations into
+    an Iceberg table at ontology-update time, removing the runtime
+    dependency. **Decided and done: (a).**
+    Connect timeout 5 s; the handler returns HTTP 503 with an explanatory
+    message. (b) stays a follow-up ticket.
+
+B2. **Done (`OntologyDownloadInVpc`, default false).** Exception: `DownloadGithubReleaseFunction` fetches ontology
     releases from `api.github.com`. In a VPC without NAT it would fail.
     It handles public ontology files and no subject data.
     Recommendation: keep it outside the VPC and say why in the template
@@ -104,7 +150,7 @@ B2. Exception: `DownloadGithubReleaseFunction` fetches ontology
     forbid any out-of-VPC Lambda and have NAT or a proxy.
     **Decision needed.**
 
-B3. The four CloudFormation custom-resource functions
+B3. **Done; the six explicit roles gained AWSLambdaVPCAccessExecutionRole.** The four CloudFormation custom-resource functions
     (`Create*TableFunction`) answer CloudFormation by PUT to a presigned
     S3 URL. That works through the S3 gateway endpoint. They go in the
     VPC with everything else.
@@ -184,7 +230,7 @@ E1. **Done on `full_vpc` (Lambda SG; EMR SG gets the same rules in C1).**
     default). Hub-endpoint sites must also associate the hub's private
     hosted zones with the PheBee VPC so service names resolve privately.
 
-E2. Fix the `VpcId` and subnet parameter descriptions that still say the
+E2. **Parameter descriptions done.** Fix the `VpcId` and subnet parameter descriptions that still say the
     VPC is "where Neptune runs". Safe at any time.
 
     The two `GroupDescription: Amazon Neptune Created` strings are a

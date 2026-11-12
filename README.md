@@ -93,6 +93,8 @@ prod:                                  # The environment name
                                 # Learn more: https://docs.aws.amazon.com/vpc/latest/userguide/VPC_Subnets.html
         - ServiceEgressCidr=0.0.0.0/0  # Destination for HTTPS egress from Lambda to AWS services. Keep 0.0.0.0/0 with S3/DynamoDB gateway endpoints or NAT;
                                 # narrow to a private range (e.g. 10.0.0.0/8) only if every AWS service is reached via interface endpoints there
+        - OntologyDownloadInVpc=false  # The GitHub ontology downloader needs internet access and handles no subject data, so it runs
+                                # outside the VPC by default. Set true only if policy requires it and the subnets have NAT or a proxy
       tags:
         - app=phebee                   # Tags applied to the stack for resource tracking or cost management
 ```
@@ -106,6 +108,15 @@ sam deploy --config-env prod
 This command will use the parameters defined in your `samconfig.yaml` without needing to specify them manually each time.
 
 The integration test suite reads the same file, so fill in the `integration-test` environment before running it. See [Running Integration Tests](#running-integration-tests).
+
+#### Network requirements
+
+All PheBee Lambda functions run inside the VPC you supply, so the subnets must be able to reach the AWS services PheBee uses (S3, DynamoDB, Athena, Glue, EventBridge, the RDS control plane for Neptune status, and Lake Formation when a cross-account catalog is configured) through VPC endpoints or NAT. Only functions that talk to Neptune are attached to the Neptune client security group, so nothing else in the VPC can reach port 8182.
+
+Two features need the public internet and degrade clearly without it:
+
+- **Ontology updates** download releases from GitHub. That function runs outside the VPC by default (`OntologyDownloadInVpc=false`).
+- **Monarch expansion** (`term_association_source_entity` on the subjects query) calls `api-v3.monarchinitiative.org` from inside the VPC. Without an egress path the query returns HTTP 503 with an explanatory message; every other query path is unaffected.
 
 ### Prerequisites
 

@@ -9,6 +9,31 @@ import json
 from typing import List
 from math import ceil
 
+MONARCH_API_HOST = "api-v3.monarchinitiative.org"
+# Connect fast-fails so a deployment without an egress path reports the problem
+# in seconds instead of waiting out the read timeout on every page.
+MONARCH_TIMEOUT = (5, 30)  # (connect, read) seconds
+
+
+class MonarchUnavailableError(Exception):
+    """The Monarch API could not be reached from this deployment.
+
+    Raised on connection failures and timeouts. PheBee compute runs inside a
+    VPC, and the Monarch expansion is the only feature that needs outbound
+    internet access, so this almost always means the subnets have no NAT or
+    proxy route to the public internet.
+    """
+
+    def __init__(self, entity: str, cause: str):
+        super().__init__(
+            f"The Monarch API ({MONARCH_API_HOST}) could not be reached from this "
+            f"PheBee deployment while expanding entity {entity} ({cause}). Queries "
+            f"that use term_association_source_entity require outbound internet "
+            f"access from the PheBee Lambda subnets; this deployment appears not to "
+            f"have it. Query by term_iri instead, or ask your administrator whether "
+            f"an egress path to {MONARCH_API_HOST} can be provided."
+        )
+
 # Logging setup following pattern from neptune.py
 try:
     from aws_lambda_powertools import Logger
@@ -69,7 +94,7 @@ def get_associated_terms(entity: str, limit: int = 500) -> List[str]:
 
     try:
         # Make initial request to get total count
-        response = requests.get(base_url, params=params, timeout=30)
+        response = requests.get(base_url, params=params, timeout=MONARCH_TIMEOUT)
 
         if response.status_code != 200:
             error_msg = f"Monarch API request failed: status={response.status_code}, error={response.text}"
@@ -109,7 +134,7 @@ def get_associated_terms(entity: str, limit: int = 500) -> List[str]:
                 offset = page * limit
                 params["offset"] = offset
 
-                response = requests.get(base_url, params=params, timeout=30)
+                response = requests.get(base_url, params=params, timeout=MONARCH_TIMEOUT)
 
                 if response.status_code != 200:
                     error_msg = f"Monarch API request failed on page {page + 1}: status={response.status_code}"
@@ -139,10 +164,13 @@ def get_associated_terms(entity: str, limit: int = 500) -> List[str]:
 
         return term_list
 
-    except requests.exceptions.Timeout:
-        error_msg = f"Monarch API request timed out after 30 seconds for entity {entity}"
-        logger.error(error_msg)
-        raise Exception(error_msg)
+    except requests.exceptions.Timeout as e:
+        logger.error(f"Monarch API request timed out for entity {entity}: {e}")
+        raise MonarchUnavailableError(entity, "request timed out") from e
+
+    except requests.exceptions.ConnectionError as e:
+        logger.error(f"Monarch API connection failed for entity {entity}: {e}")
+        raise MonarchUnavailableError(entity, "connection failed") from e
 
     except requests.exceptions.RequestException as e:
         error_msg = f"Network error while querying Monarch API for entity {entity}: {str(e)}"
