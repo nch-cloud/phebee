@@ -210,16 +210,14 @@ def make_signed_request(method, query_type, query):
 
     # ************* SEND THE REQUEST *************
     if method == "GET":
-        r = requests.get(
-            request_url, headers=request.headers, verify=False, params=params
-        )
+        r = requests.get(request_url, headers=request.headers, params=params)
 
     elif method == "POST":
         if query_type == "loader":
             request.headers["Content-type"] = "application/json"
         elif query_type == "sparql" or query_type == "sparqlupdate":
             request.headers["Content-type"] = "application/x-www-form-urlencoded"
-        r = requests.post(request_url, headers=request.headers, verify=False, data=data)
+        r = requests.post(request_url, headers=request.headers, data=data)
 
     else:
         raise ValueError('Request method must be "GET" or "POST"')
