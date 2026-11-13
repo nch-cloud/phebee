@@ -104,7 +104,7 @@ prod:                                  # The environment name
                                 # outside the VPC by default. Set true only if policy requires it and the subnets have NAT or a proxy
         - CreateVpcEndpoints=false     # true: the stack creates every VPC endpoint PheBee needs (see Network requirements). Leave false if
                                 # the VPC already has them or uses NAT; only one private-DNS endpoint per service fits in a VPC
-        - RouteTableIds=""             # Comma-separated route tables of the two subnets. Required only when CreateVpcEndpoints=true
+        - RouteTableIds=""             # Route tables of the two subnets, for S3/DynamoDB gateway endpoints. Leave empty if the VPC already has them
         - ApiEndpointType=REGIONAL     # REGIONAL: public hostname with IAM auth. PRIVATE: reachable only through an execute-api VPC endpoint
         - ExecuteApiVpcEndpointId=""   # Existing execute-api endpoint for a PRIVATE API; not needed when CreateVpcEndpoints=true
       tags:
@@ -127,7 +127,7 @@ PheBee is bring-your-own-VPC: every Lambda function, the EMR Serverless applicat
 
 | Situation | What to set |
 |---|---|
-| A VPC with private subnets and nothing else | `CreateVpcEndpoints=true` and `RouteTableIds=<route tables of the two subnets>`. The stack creates gateway endpoints for S3 and DynamoDB and interface endpoints for the rest. The VPC must have DNS support and DNS hostnames enabled (both are on by default). Interface endpoints are billed hourly, roughly USD 7 per endpoint per availability zone per month. |
+| A VPC with private subnets and nothing else | `CreateVpcEndpoints=true` and `RouteTableIds=<route tables of the two subnets>`. The stack creates gateway endpoints for S3 and DynamoDB and interface endpoints for the rest. If the VPC already has the two gateway endpoints, which most do, leave `RouteTableIds` empty and only the interface endpoints are created. The VPC must have DNS support and DNS hostnames enabled (both are on by default). Interface endpoints are billed hourly, roughly USD 7 per endpoint per availability zone per month. |
 | Subnets with a NAT gateway | Nothing. Leave `CreateVpcEndpoints=false`. |
 | An organisation that manages endpoints centrally, for example in a hub VPC | Leave `CreateVpcEndpoints=false`, set `ServiceEgressCidr` to the private range that reaches the hub (for example `10.0.0.0/8`), and make sure the hub's private hosted zones are associated with the PheBee VPC. Gateway endpoints for S3 and DynamoDB route to public prefix lists, so a narrowed CIDR needs interface endpoints for both. |
 

@@ -52,21 +52,23 @@ Parameters:
     Default: "false"
     AllowedValues: ["true", "false"]
     Description: >-
-      Create the VPC endpoints PheBee needs in the supplied VPC: gateway
-      endpoints for S3 and DynamoDB, and interface endpoints (with private DNS)
-      for Athena, Glue, EventBridge, STS, the RDS control plane used for
-      Neptune status, and Lake Formation when CatalogAccountId is set. Leave
-      false when the VPC already has them or reaches AWS services through NAT;
-      a VPC can hold only one private-DNS interface endpoint per service.
-      Requires RouteTableIds and a VPC with DNS support and DNS hostnames enabled.
+      Create the interface VPC endpoints PheBee needs in the supplied VPC
+      (with private DNS): Athena, Glue, EventBridge, STS, the RDS control plane
+      used for Neptune status, execute-api for a PRIVATE API, and Lake
+      Formation when CatalogAccountId is set. Also creates S3 and DynamoDB
+      gateway endpoints when RouteTableIds is given. Leave false when the VPC
+      already has them or reaches AWS services through NAT; a VPC can hold
+      only one private-DNS interface endpoint per service. Requires DNS
+      support and DNS hostnames enabled on the VPC.
 
   RouteTableIds:
     Type: String
     Default: ""
     Description: >-
-      Comma-separated route table IDs of the PheBee subnets, used to attach the
-      S3 and DynamoDB gateway endpoints. Required when CreateVpcEndpoints is
-      true; ignored otherwise.
+      Comma-separated route table IDs of the PheBee subnets, used to attach
+      S3 and DynamoDB gateway endpoints when CreateVpcEndpoints is true. Leave
+      empty if the VPC already has those gateway endpoints (most do) and only
+      the interface endpoints should be created.
 
   ApiEndpointType:
     Type: String
@@ -222,12 +224,6 @@ Parameters:
     Description: Cron expression for ECO update
 
 Rules:
-  RouteTablesRequiredForEndpoints:
-    RuleCondition: !Equals [!Ref CreateVpcEndpoints, "true"]
-    Assertions:
-      - Assert: !Not [!Equals [!Ref RouteTableIds, ""]]
-        AssertDescription: RouteTableIds is required when CreateVpcEndpoints is true, because gateway endpoints attach to route tables.
-
   PrivateApiNeedsAnEndpoint:
     RuleCondition: !Equals [!Ref ApiEndpointType, PRIVATE]
     Assertions:
@@ -242,6 +238,10 @@ Conditions:
   OntologyDownloadInVpcEnabled: !Equals [!Ref OntologyDownloadInVpc, "true"]
 
   ShouldCreateVpcEndpoints: !Equals [!Ref CreateVpcEndpoints, "true"]
+
+  ShouldCreateGatewayEndpoints: !And
+    - !Condition ShouldCreateVpcEndpoints
+    - !Not [!Equals [!Ref RouteTableIds, ""]]
 
   ShouldCreateLakeFormationEndpoint: !And
     - !Condition ShouldCreateVpcEndpoints
@@ -820,7 +820,9 @@ Resources:
   # VPC endpoints (optional, CreateVpcEndpoints=true)
   #################
   # Everything PheBee's Lambdas, EMR jobs and Neptune bulk loads reach, so a
-  # VPC with no NAT works. Endpoint policies are left at the AWS default (full
+  # VPC with no NAT works. Gateway endpoints are created only when RouteTableIds
+  # is given, since most VPCs already have them and a route table takes one
+  # route per prefix list. Endpoint policies are left at the AWS default (full
   # access); scoping them to this stack's bucket and tables is a follow-up.
 
   PheBeeVpcEndpointSecurityGroup:
@@ -850,7 +852,7 @@ Resources:
 
   PheBeeS3GatewayEndpoint:
     Type: AWS::EC2::VPCEndpoint
-    Condition: ShouldCreateVpcEndpoints
+    Condition: ShouldCreateGatewayEndpoints
     Properties:
       VpcId: !Ref VpcId
       ServiceName: !Sub com.amazonaws.${AWS::Region}.s3
@@ -859,7 +861,7 @@ Resources:
 
   PheBeeDynamoDBGatewayEndpoint:
     Type: AWS::EC2::VPCEndpoint
-    Condition: ShouldCreateVpcEndpoints
+    Condition: ShouldCreateGatewayEndpoints
     Properties:
       VpcId: !Ref VpcId
       ServiceName: !Sub com.amazonaws.${AWS::Region}.dynamodb
