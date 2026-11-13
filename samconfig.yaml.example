@@ -22,6 +22,7 @@ integration-test:
         - RouteTableIds=""
         - ApiEndpointType=REGIONAL
         - ExecuteApiVpcEndpointId=""
+        - AssociateApiVpcEndpoint=true
         - S3AccessLogBucketName=""
         - RunOntologyUpdatesOnSchedule=false
       tags:
@@ -45,6 +46,7 @@ dev:
         - RouteTableIds=""
         - ApiEndpointType=REGIONAL
         - ExecuteApiVpcEndpointId=""
+        - AssociateApiVpcEndpoint=true
         - S3AccessLogBucketName=""
         - RunOntologyUpdatesOnSchedule=false
       tags:
@@ -68,6 +70,7 @@ staging:
         - RouteTableIds=""
         - ApiEndpointType=REGIONAL
         - ExecuteApiVpcEndpointId=""
+        - AssociateApiVpcEndpoint=true
         - S3AccessLogBucketName=""
         - RunOntologyUpdatesOnSchedule=true
       tags:
@@ -91,6 +94,7 @@ prod:
         - RouteTableIds=""
         - ApiEndpointType=REGIONAL
         - ExecuteApiVpcEndpointId=""
+        - AssociateApiVpcEndpoint=true
         - S3AccessLogBucketName=""
         - RunOntologyUpdatesOnSchedule=true
       tags:

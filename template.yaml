@@ -88,6 +88,20 @@ Parameters:
       to reach a PRIVATE API. Required when ApiEndpointType is PRIVATE and
       CreateVpcEndpoints is false; ignored otherwise.
 
+  AssociateApiVpcEndpoint:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: >-
+      Associate the execute-api VPC endpoint with the PRIVATE API, which gives
+      it the extra hostname https://<api-id>-<vpce-id>.execute-api.<region>
+      .amazonaws.com. API Gateway must be able to see the endpoint, so set
+      false when ExecuteApiVpcEndpointId belongs to another account (a shared
+      networking account, for example). Access is still restricted to that
+      endpoint by the resource policy; clients then use the default hostname
+      (if the endpoint has private DNS), a custom domain, or the endpoint's
+      own DNS name with a Host header.
+
   ApiClientCidr:
     Type: String
     Default: 0.0.0.0/0
@@ -252,6 +266,14 @@ Conditions:
   ShouldCreateExecuteApiEndpoint: !And
     - !Condition ShouldCreateVpcEndpoints
     - !Condition PrivateApi
+
+  # The endpoint the stack creates is always in this account, so it can
+  # always be associated; a supplied one only when the deployer says so.
+  ShouldAssociateApiVpcEndpoint: !And
+    - !Condition PrivateApi
+    - !Or
+      - !Condition ShouldCreateExecuteApiEndpoint
+      - !Equals [!Ref AssociateApiVpcEndpoint, "true"]
 
   ShouldEnableS3Logging: !Not [!Equals [!Ref S3AccessLogBucketName, ""]]
 
@@ -2780,7 +2802,7 @@ Resources:
       EndpointConfiguration:
         Type: !Ref ApiEndpointType
         VPCEndpointIds: !If
-          - PrivateApi
+          - ShouldAssociateApiVpcEndpoint
           - - !If [ShouldCreateExecuteApiEndpoint, !Ref PheBeeExecuteApiEndpoint, !Ref ExecuteApiVpcEndpointId]
           - !Ref AWS::NoValue
       # The resource policy lives in api.yaml (x-amazon-apigateway-policy);
@@ -3582,7 +3604,7 @@ Outputs:
     Value: !Ref PheBeeNeptuneCluster
   
   ApiGatewayUrl:
-    Description: Base URL of the PheBee API (for a PRIVATE API, resolvable only inside the VPC with private DNS on the execute-api endpoint)
+    Description: Base URL of the PheBee API. For a PRIVATE API this resolves only inside the VPC when the execute-api endpoint has private DNS; otherwise use ApiGatewayVpceUrl, a custom domain, or the endpoint's DNS name with this hostname in the Host header.
     Value: !Sub "https://${RestApi}.execute-api.${AWS::Region}.amazonaws.com/${ApiStageName}"
 
   ApiId:
@@ -3594,8 +3616,8 @@ Outputs:
     Value: !Ref ApiEndpointType
 
   ApiGatewayVpceUrl:
-    Condition: PrivateApi
-    Description: Endpoint-specific URL for the PRIVATE API, usable without private DNS
+    Condition: ShouldAssociateApiVpcEndpoint
+    Description: Endpoint-specific URL for the PRIVATE API, usable without private DNS (only when the endpoint is associated with the API)
     Value: !Sub
       - "https://${RestApi}-${Vpce}.execute-api.${AWS::Region}.amazonaws.com/${ApiStageName}"
       - Vpce: !If [ShouldCreateExecuteApiEndpoint, !Ref PheBeeExecuteApiEndpoint, !Ref ExecuteApiVpcEndpointId]

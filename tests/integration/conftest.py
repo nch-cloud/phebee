@@ -810,7 +810,13 @@ def api_base_url(physical_resources):
     Returns:
         str: Base URL for API Gateway (e.g., https://abc123.execute-api.us-east-1.amazonaws.com/prod)
     """
-    api_url = physical_resources.get("ApiGatewayUrl") or physical_resources.get("HttpApiUrl")
+    # For a private API the endpoint-specific URL works whether or not the
+    # endpoint has private DNS, so prefer it when the stack exported one.
+    api_url = (
+        physical_resources.get("ApiGatewayVpceUrl")
+        or physical_resources.get("ApiGatewayUrl")
+        or physical_resources.get("HttpApiUrl")
+    )
     if not api_url:
         pytest.skip("ApiGatewayUrl/HttpApiUrl not found in physical_resources - API Gateway may not be deployed")
     api_url = api_url.rstrip("/")
