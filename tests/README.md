@@ -81,6 +81,8 @@ End-to-end run of the manuscript's functional workflows against a small syntheti
 
 Smoke tests for API Gateway → Lambda integration.
 
+These run against the stack's `ApiGatewayUrl` output. When the stack was deployed with `ApiEndpointType=PRIVATE`, the API is reachable only from inside its VPC; a runner outside it skips this module after a short connection probe, with a message saying so. Run it from a host in the VPC to exercise the private path.
+
 **Location**: `tests/integration/api/`
 
 **What they test**:

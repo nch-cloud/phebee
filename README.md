@@ -13,6 +13,7 @@ PheBee leverages ontologies like HPO (Human Phenotype Ontology), MONDO (Monarch 
 - Graph-based data storage in AWS Neptune
 - RESTful API with OpenAPI spec and AWS Signature V4 authentication
 - Serverless architecture powered by AWS SAM and Lambda
+- Runs entirely inside your VPC, with an optional private API, for environments where identifiers must not leave the network
 - Iceberg tables registered in AWS Glue Data Catalog, enabling integration with Lake Formation and other analytics tools
 - Scripted deployment (AWS SAM) and a pytest integration suite that can deploy and tear down a test stack
 
@@ -51,6 +52,12 @@ PheBee uses a hybrid architecture combining knowledge graphs with data lake tech
    - API Gateway → Lambda → Athena queries over the Iceberg subject-term and evidence tables
    - Descendant expansion reads the Iceberg ontology hierarchy table, cached per term and ontology version in DynamoDB
    - The API read operations do not query Neptune; the graph is written during ingestion and can be queried with SPARQL through the read-only SPARQL function (direct Lambda invocation only, not exposed through the API)
+
+### Network Model
+
+Every PheBee component that stores or moves subject, encounter or note identifiers runs inside the VPC you supply: all Lambda functions, the EMR Serverless application that runs the bulk import and rebuild jobs, and the Neptune cluster. The subnets reach S3, DynamoDB, Athena, Glue and EventBridge through VPC endpoints or NAT, and the stack can create those endpoints for you (`CreateVpcEndpoints=true`). Only the functions that call Neptune carry the security group that can reach it.
+
+The API is a REST API authenticated with AWS Signature V4. It is public by default (`ApiEndpointType=REGIONAL`) and can be made reachable only through an execute-api VPC endpoint (`ApiEndpointType=PRIVATE`), so request and response bodies never leave the VPC. Two features need the public internet: ontology downloads from GitHub, which run outside the VPC by default, and the Monarch disease-to-phenotype expansion, which returns a clear 503 where no egress exists. See [Network requirements](#network-requirements) for the parameters.
 
 ### Why This Architecture?
 
