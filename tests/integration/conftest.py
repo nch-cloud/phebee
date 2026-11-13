@@ -824,15 +824,30 @@ def api_base_url(physical_resources):
     # A PRIVATE API resolves and connects only from inside the VPC. Probe once
     # with a short timeout so an outside runner skips the API tests in seconds
     # instead of hanging on every request. Any HTTP status means reachable.
+    endpoint_type = physical_resources.get("ApiEndpointType", "unknown")
     try:
-        requests.get(api_url, timeout=5)
+        probe = requests.get(api_url, timeout=5)
     except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
-        endpoint_type = physical_resources.get("ApiEndpointType", "unknown")
         pytest.skip(
             f"API at {api_url} is not reachable from this runner "
             f"(ApiEndpointType={endpoint_type}): {type(e).__name__}. "
             "Run the api tests from inside the VPC."
         )
+
+    # A private API's public hostname still resolves, but API Gateway answers
+    # requests that did not arrive through the designated VPC endpoint with a
+    # bare 403 "Forbidden". An unauthenticated probe that did get through says
+    # "Missing Authentication Token" instead.
+    if endpoint_type == "PRIVATE" and probe.status_code == 403:
+        try:
+            message = probe.json().get("message")
+        except ValueError:
+            message = None
+        if message == "Forbidden":
+            pytest.skip(
+                f"API at {api_url} is PRIVATE and this runner is not behind its VPC endpoint. "
+                "Run the api tests from inside the VPC."
+            )
 
     return api_url
 
