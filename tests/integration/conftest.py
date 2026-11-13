@@ -834,10 +834,13 @@ def api_base_url(physical_resources):
             "Run the api tests from inside the VPC."
         )
 
-    # A private API's public hostname still resolves, but API Gateway answers
-    # requests that did not arrive through the designated VPC endpoint with a
-    # bare 403 "Forbidden". An unauthenticated probe that did get through says
-    # "Missing Authentication Token" instead.
+    # From outside the VPC a private API's hostname normally does not resolve
+    # at all (API Gateway withdraws the public DNS record), which the except
+    # clause above handles. Where it does resolve, for example through a hub
+    # endpoint the runner is not allowed to use, requests that did not arrive
+    # through the designated VPC endpoint get a bare 403 "Forbidden". An
+    # unauthenticated probe that did get through says "Missing Authentication
+    # Token" instead.
     if endpoint_type == "PRIVATE" and probe.status_code == 403:
         try:
             message = probe.json().get("message")
