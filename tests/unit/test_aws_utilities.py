@@ -100,6 +100,17 @@ class TestExtractBody:
         result = extract_body(event)
         assert result == {"key": "value", "number": 42}
 
+    def test_base64_body_from_rest_api_with_binary_media_types(self):
+        """With every media type declared binary, REST API request bodies arrive base64-encoded."""
+        import base64
+        event = {"body": base64.b64encode(b'{"project_id": "p1"}').decode(), "isBase64Encoded": True}
+        assert extract_body(event) == {"project_id": "p1"}
+
+    def test_null_body_from_rest_api(self):
+        """REST API (payload 1.0) sends body=null for a bodiless GET; treat as no parameters."""
+        event = {"body": None, "pathParameters": {"source_name": "hpo"}}
+        assert extract_body(event) == {}
+
     def test_empty_body(self):
         """Test extracting empty body."""
         event = {"body": "{}"}

@@ -8,6 +8,7 @@ verification using Athena/Iceberg analytical tables.
 import pytest
 import json
 import boto3
+import requests
 import uuid
 import time
 import os
@@ -342,6 +343,88 @@ def app_name(physical_resources):
     return physical_resources["AppName"]
 
 
+def _stack_output(cloudformation_stack, key):
+    cf_client = get_client("cloudformation")
+    outputs = cf_client.describe_stacks(StackName=cloudformation_stack)["Stacks"][0]["Outputs"]
+    return next((o["OutputValue"] for o in outputs if o["OutputKey"] == key), None)
+
+
+def _run_ontology_update(cloudformation_stack, output_key, label):
+    """Start the ontology update state machine named by a stack output and wait for it.
+
+    Returns the execution ARN on success, None if the output is missing or the
+    execution did not succeed.
+    """
+    sfn_arn = _stack_output(cloudformation_stack, output_key)
+    if not sfn_arn:
+        print(f"[{label} UPDATE] {output_key} not found - skipping {label} update")
+        return None
+
+    sfn_client = get_client("stepfunctions")
+    execution_name = f"test-session-{label.lower()}-update-{int(time.time())}"
+    print(f"\n[{label} UPDATE] Starting session-level {label} update: {execution_name}")
+    response = sfn_client.start_execution(
+        stateMachineArn=sfn_arn,
+        name=execution_name,
+        input=json.dumps({"test": True})
+    )
+    execution_arn = response["executionArn"]
+    print(f"[{label} UPDATE] Execution ARN: {execution_arn}")
+    print(f"[{label} UPDATE] Waiting for execution to complete (may take several minutes)...")
+    start_time = time.time()
+
+    while True:
+        execution = sfn_client.describe_execution(executionArn=execution_arn)
+        status = execution["status"]
+        elapsed = int(time.time() - start_time)
+        if elapsed % 60 == 0:
+            print(f"[{label} UPDATE] Status: {status} (elapsed: {elapsed//60}m)")
+
+        if status == "SUCCEEDED":
+            duration = time.time() - start_time
+            print(f"[{label} UPDATE] Completed successfully in {duration//60:.0f}m {duration%60:.0f}s")
+            return execution_arn
+        if status in ["FAILED", "TIMED_OUT", "ABORTED"]:
+            print(f"[{label} UPDATE] Execution {status}: {execution.get('cause', 'Unknown error')}")
+            return None
+
+        time.sleep(30)
+
+
+def _installed_source_version(cloudformation_stack, source_name):
+    """Installed version of an ontology source, read the way the Lambdas read it, or None."""
+    table = _stack_output(cloudformation_stack, "DynamoDBTableName")
+    if not table:
+        return None
+    items = get_client("dynamodb").query(
+        TableName=table,
+        KeyConditionExpression="PK = :pk",
+        ExpressionAttributeValues={":pk": {"S": f"SOURCE~{source_name}"}},
+    )["Items"]
+    installed = [i for i in items if "InstallTimestamp" in i and "Version" in i]
+    if not installed:
+        return None
+    return max(installed, key=lambda i: i["InstallTimestamp"]["S"])["Version"]["S"]
+
+
+@pytest.fixture(scope="session")
+def query_neptune(app_name):
+    """Run a read-only SPARQL query through the ExecuteSparqlReadonly Lambda and return its results."""
+    lambda_client = get_client("lambda")
+
+    def _query(sparql_query, graph_restriction="subjects"):
+        response = lambda_client.invoke(
+            FunctionName=f"{app_name}-ExecuteSparqlReadonly",
+            Payload=json.dumps({"query": sparql_query, "graphRestriction": graph_restriction}),
+        )
+        result = json.loads(response["Payload"].read())
+        if not result.get("success"):
+            raise Exception(f"SPARQL query failed: {result.get('error')}")
+        return result["results"]
+
+    return _query
+
+
 @pytest.fixture(scope="session")
 def hpo_update_execution(cloudformation_stack):
     """
@@ -350,59 +433,47 @@ def hpo_update_execution(cloudformation_stack):
     This ensures HPO source data exists in DynamoDB and ontology hierarchy
     is available in Iceberg tables for tests that depend on it.
     """
-    cf_client = get_client("cloudformation")
+    return _run_ontology_update(cloudformation_stack, "UpdateHPOSFNArn", "HPO")
 
-    # Get UpdateHPOSFNArn from stack outputs
-    response = cf_client.describe_stacks(StackName=cloudformation_stack)
-    outputs = response['Stacks'][0]['Outputs']
 
-    hpo_sfn_arn = None
-    for output in outputs:
-        if output['OutputKey'] == 'UpdateHPOSFNArn':
-            hpo_sfn_arn = output['OutputValue']
-            break
+@pytest.fixture
+def ensure_hpo_installed(cloudformation_stack):
+    """
+    Function-scoped: reinstall HPO if the stack currently has none.
 
-    if not hpo_sfn_arn:
-        print("[HPO UPDATE] UpdateHPOSFNArn not found - skipping HPO update")
-        return None
+    For tests that run after something erased the ontologies (the reset tests
+    wipe them) but still need the hierarchy table and term labels. The
+    session-scoped hpo_update_execution fixture cannot help there, since it
+    has already run.
+    """
+    version = _installed_source_version(cloudformation_stack, "hpo")
+    if version:
+        return version
+    if _run_ontology_update(cloudformation_stack, "UpdateHPOSFNArn", "HPO") is None:
+        pytest.skip("HPO is not installed and the update could not be run")
+    version = _installed_source_version(cloudformation_stack, "hpo")
+    assert version, "HPO update succeeded but no installed version was recorded"
+    return version
 
-    sfn_client = get_client("stepfunctions")
 
-    # Start execution
-    execution_name = f"test-session-hpo-update-{int(time.time())}"
-    print(f"\n[HPO UPDATE] Starting session-level HPO update: {execution_name}")
+@pytest.fixture(scope="session")
+def mondo_installed(cloudformation_stack):
+    """
+    Make sure a MONDO version is installed, running the update only if none is.
 
-    response = sfn_client.start_execution(
-        stateMachineArn=hpo_sfn_arn,
-        name=execution_name,
-        input=json.dumps({"test": True})
-    )
-
-    execution_arn = response['executionArn']
-    print(f"[HPO UPDATE] Execution ARN: {execution_arn}")
-
-    # Wait for completion
-    print("[HPO UPDATE] Waiting for execution to complete (may take 15-45 minutes)...")
-    start_time = time.time()
-
-    while True:
-        execution = sfn_client.describe_execution(executionArn=execution_arn)
-        status = execution['status']
-
-        elapsed = int(time.time() - start_time)
-        if elapsed % 60 == 0:  # Print every minute
-            print(f"[HPO UPDATE] Status: {status} (elapsed: {elapsed//60}m)")
-
-        if status == 'SUCCEEDED':
-            duration = time.time() - start_time
-            print(f"[HPO UPDATE] Completed successfully in {duration//60:.0f}m {duration%60:.0f}s")
-            return execution_arn
-        elif status in ['FAILED', 'TIMED_OUT', 'ABORTED']:
-            error = execution.get('cause', 'Unknown error')
-            print(f"[HPO UPDATE] Execution {status}: {error}")
-            return None
-
-        time.sleep(30)
+    A freshly deployed stack has no MONDO until test_update_mondo_sfn runs, which
+    sorts after the modules that read the MONDO version (phenopacket metadata).
+    Returns the installed version string.
+    """
+    version = _installed_source_version(cloudformation_stack, "mondo")
+    if version:
+        print(f"\n[MONDO] Already installed: {version}")
+        return version
+    if _run_ontology_update(cloudformation_stack, "UpdateMondoSFNArn", "MONDO") is None:
+        pytest.skip("MONDO is not installed and the update could not be run")
+    version = _installed_source_version(cloudformation_stack, "mondo")
+    assert version, "MONDO update succeeded but no installed version was recorded"
+    return version
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -757,11 +828,49 @@ def api_base_url(physical_resources):
     Returns:
         str: Base URL for API Gateway (e.g., https://abc123.execute-api.us-east-1.amazonaws.com/prod)
     """
-    api_url = physical_resources.get("ApiGatewayUrl") or physical_resources.get("HttpApiUrl")
+    # For a private API the endpoint-specific URL works whether or not the
+    # endpoint has private DNS, so prefer it when the stack exported one.
+    api_url = (
+        physical_resources.get("ApiGatewayVpceUrl")
+        or physical_resources.get("ApiGatewayUrl")
+        or physical_resources.get("HttpApiUrl")
+    )
     if not api_url:
         pytest.skip("ApiGatewayUrl/HttpApiUrl not found in physical_resources - API Gateway may not be deployed")
+    api_url = api_url.rstrip("/")
 
-    return api_url.rstrip("/")
+    # A PRIVATE API resolves and connects only from inside the VPC. Probe once
+    # with a short timeout so an outside runner skips the API tests in seconds
+    # instead of hanging on every request. Any HTTP status means reachable.
+    endpoint_type = physical_resources.get("ApiEndpointType", "unknown")
+    try:
+        probe = requests.get(api_url, timeout=5)
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+        pytest.skip(
+            f"API at {api_url} is not reachable from this runner "
+            f"(ApiEndpointType={endpoint_type}): {type(e).__name__}. "
+            "Run the api tests from inside the VPC."
+        )
+
+    # From outside the VPC a private API's hostname normally does not resolve
+    # at all (API Gateway withdraws the public DNS record), which the except
+    # clause above handles. Where it does resolve, for example through a hub
+    # endpoint the runner is not allowed to use, requests that did not arrive
+    # through the designated VPC endpoint get a bare 403 "Forbidden". An
+    # unauthenticated probe that did get through says "Missing Authentication
+    # Token" instead.
+    if endpoint_type == "PRIVATE" and probe.status_code == 403:
+        try:
+            message = probe.json().get("message")
+        except ValueError:
+            message = None
+        if message == "Forbidden":
+            pytest.skip(
+                f"API at {api_url} is PRIVATE and this runner is not behind its VPC endpoint. "
+                "Run the api tests from inside the VPC."
+            )
+
+    return api_url
 
 
 @pytest.fixture(scope="session")

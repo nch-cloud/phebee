@@ -13,6 +13,7 @@ PheBee leverages ontologies like HPO (Human Phenotype Ontology), MONDO (Monarch 
 - Graph-based data storage in AWS Neptune
 - RESTful API with OpenAPI spec and AWS Signature V4 authentication
 - Serverless architecture powered by AWS SAM and Lambda
+- Runs entirely inside your VPC, with an optional private API, for environments where identifiers must not leave the network
 - Iceberg tables registered in AWS Glue Data Catalog, enabling integration with Lake Formation and other analytics tools
 - Scripted deployment (AWS SAM) and a pytest integration suite that can deploy and tear down a test stack
 
@@ -50,7 +51,11 @@ PheBee uses a hybrid architecture combining knowledge graphs with data lake tech
 4. **Query Path**:
    - API Gateway → Lambda → Athena queries over the Iceberg subject-term and evidence tables
    - Descendant expansion reads the Iceberg ontology hierarchy table, cached per term and ontology version in DynamoDB
-   - The HTTP API read operations do not query Neptune; the graph is written during ingestion and can be queried with SPARQL through the read-only SPARQL function (direct Lambda invocation only, not exposed through the HTTP API)
+   - The API read operations do not query Neptune; the graph is written during ingestion and can be queried with SPARQL through the read-only SPARQL function (direct Lambda invocation only, not exposed through the API)
+
+### Network Model
+
+Every PheBee component that stores or moves subject, encounter or note identifiers runs inside the VPC you supply: all Lambda functions, the EMR Serverless application, and the Neptune cluster. Only the functions that call Neptune carry the security group that can reach it. The API is a REST API with AWS Signature V4 authentication, public by default and optionally reachable only through a VPC endpoint, so request and response bodies never leave the network. The stack never creates VPC endpoints, NAT gateways or routes. See [docs/networking.md](docs/networking.md) for what the subnets must provide, which parameters fit which environment, and how the private API is addressed.
 
 ### Why This Architecture?
 
@@ -91,6 +96,14 @@ prod:                                  # The environment name
                                 # Learn more: https://docs.aws.amazon.com/vpc/latest/userguide/VPC_Subnets.html
         - SubnetId2=                   # The second subnet ID, usually in a different availability zone for high availability and fault tolerance
                                 # Learn more: https://docs.aws.amazon.com/vpc/latest/userguide/VPC_Subnets.html
+        - SubnetId3=""                 # Optional third subnet in a third availability zone; leave empty where only two zones exist
+        - ServiceEgressCidr=0.0.0.0/0  # Destination for HTTPS egress from Lambda to AWS services. Keep 0.0.0.0/0 with S3/DynamoDB gateway endpoints or NAT;
+                                # narrow to a private range (e.g. 10.0.0.0/8) only if every AWS service is reached via interface endpoints there
+        - OntologyDownloadInVpc=false  # The GitHub ontology downloader needs internet access and handles no subject data, so it runs
+                                # outside the VPC by default. Set true only if policy requires it and the subnets have NAT or a proxy
+        - ApiEndpointType=REGIONAL     # REGIONAL: public hostname with IAM auth. PRIVATE: reachable only through an execute-api VPC endpoint
+        - ExecuteApiVpcEndpointId=""   # Existing execute-api VPC endpoint, required for a PRIVATE API (the stack never creates one)
+        - AssociateApiVpcEndpoint=true # Set false when that endpoint is owned by another account
       tags:
         - app=phebee                   # Tags applied to the stack for resource tracking or cost management
 ```
@@ -104,6 +117,10 @@ sam deploy --config-env prod
 This command will use the parameters defined in your `samconfig.yaml` without needing to specify them manually each time.
 
 The integration test suite reads the same file, so fill in the `integration-test` environment before running it. See [Running Integration Tests](#running-integration-tests).
+
+#### Network requirements
+
+The subnets must reach S3, DynamoDB, Athena, Glue, EventBridge, STS and the RDS control plane, through a NAT gateway or VPC endpoints. The simplest setup is two private subnets behind a NAT gateway, which the VPC console's "VPC and more" wizard builds; with it, every default works, including the GitHub ontology downloads and the Monarch expansion. Organisations that provide endpoints centrally narrow `ServiceEgressCidr` and, for a private API, pass their execute-api endpoint in `ExecuteApiVpcEndpointId`. [docs/networking.md](docs/networking.md) has the full matrix, the endpoint checklist for a VPC without NAT, the security group rules, and how a private API is addressed and verified.
 
 ### Prerequisites
 
@@ -168,6 +185,16 @@ The bulk import and rebuild state machines run their Spark jobs from `s3://<PheB
 ```bash
 ./utilities/deploy-scripts.sh <your-stack-name>
 ```
+
+### Neptune audit and slow-query logs
+
+The cluster writes an audit log (every query, with its full text) and a slow-query log to CloudWatch, in log groups the stack creates with `NeptuneLogRetentionDays` retention (default 365). Audit logging is a static cluster parameter, so a cluster that existed before this setting was added starts recording only after its instance is rebooted once:
+
+```bash
+aws neptune reboot-db-instance --db-instance-identifier <instance id from the Neptune console>
+```
+
+A new deployment needs no reboot. Audit records include subject IRIs, so grant read access to these log groups as carefully as to the data itself.
 
 ### 4. Clean Up Resources
 

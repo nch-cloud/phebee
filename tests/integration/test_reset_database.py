@@ -126,7 +126,7 @@ def test_reset_database_with_no_payload(app_name):
     assert result["success"] is True
 
 
-def test_reset_database_clears_iceberg_tables(app_name, test_project_id, query_athena, standard_hpo_terms):
+def test_reset_database_clears_iceberg_tables(app_name, test_project_id, query_athena, standard_hpo_terms, ensure_hpo_installed):
     """Test that reset_database actually deletes all data from Iceberg tables.
 
     Verifies that reset_database clears all four Iceberg tables:
@@ -135,9 +135,9 @@ def test_reset_database_clears_iceberg_tables(app_name, test_project_id, query_a
     - phebee.subject_terms_by_project_term
     - phebee.ontology_hierarchy
 
-    The ontology hierarchy assertions require HPO to be installed in the
-    target stack before this test runs, which the standard_hpo_terms fixture
-    already assumes.
+    The ontology hierarchy assertions require HPO to be installed when this
+    test starts. The earlier tests in this module have just erased it, so
+    ensure_hpo_installed reinstalls it first.
 
     This test leaves the stack with no ontology: the hierarchy table is empty
     and the Neptune reset removed the hpo~<version> graph. Reinstall via

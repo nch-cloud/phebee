@@ -16,7 +16,14 @@ integration-test:
         - VpcId=
         - SubnetId1=
         - SubnetId2=
-        - S3AccessLogBucketName=
+        - SubnetId3=""
+        - ServiceEgressCidr=0.0.0.0/0
+        - OntologyDownloadInVpc=false
+        - NeptuneLogRetentionDays=365
+        - ApiEndpointType=REGIONAL
+        - ExecuteApiVpcEndpointId=""
+        - AssociateApiVpcEndpoint=true
+        - S3AccessLogBucketName=""
         - RunOntologyUpdatesOnSchedule=false
       tags:
         - app=phebee
@@ -33,7 +40,14 @@ dev:
         - VpcId=
         - SubnetId1=
         - SubnetId2=
-        - S3AccessLogBucketName=
+        - SubnetId3=""
+        - ServiceEgressCidr=0.0.0.0/0
+        - OntologyDownloadInVpc=false
+        - NeptuneLogRetentionDays=365
+        - ApiEndpointType=REGIONAL
+        - ExecuteApiVpcEndpointId=""
+        - AssociateApiVpcEndpoint=true
+        - S3AccessLogBucketName=""
         - RunOntologyUpdatesOnSchedule=false
       tags:
         - app=phebee
@@ -50,7 +64,14 @@ staging:
         - VpcId=
         - SubnetId1=
         - SubnetId2=
-        - S3AccessLogBucketName=
+        - SubnetId3=""
+        - ServiceEgressCidr=0.0.0.0/0
+        - OntologyDownloadInVpc=false
+        - NeptuneLogRetentionDays=365
+        - ApiEndpointType=REGIONAL
+        - ExecuteApiVpcEndpointId=""
+        - AssociateApiVpcEndpoint=true
+        - S3AccessLogBucketName=""
         - RunOntologyUpdatesOnSchedule=true
       tags:
         - app=phebee
@@ -67,7 +88,14 @@ prod:
         - VpcId=
         - SubnetId1=
         - SubnetId2=
-        - S3AccessLogBucketName=
+        - SubnetId3=""
+        - ServiceEgressCidr=0.0.0.0/0
+        - OntologyDownloadInVpc=false
+        - NeptuneLogRetentionDays=365
+        - ApiEndpointType=REGIONAL
+        - ExecuteApiVpcEndpointId=""
+        - AssociateApiVpcEndpoint=true
+        - S3AccessLogBucketName=""
         - RunOntologyUpdatesOnSchedule=true
       tags:
         - app=phebee

@@ -6,7 +6,7 @@ from phebee.utils.iceberg import query_subjects_by_project
 from phebee.utils.aws import parse_s3_path, get_client, extract_body
 from phebee.utils.dynamodb import get_current_term_source_version
 from phebee.utils.phenopackets import subjects_to_phenopackets, zip_phenopackets
-from phebee.utils.monarch import get_associated_terms
+from phebee.utils.monarch import get_associated_terms, MonarchUnavailableError
 from phebee.constants import PHEBEE
 
 logger = Logger()
@@ -22,7 +22,29 @@ DEFAULT_LIMIT = 100
 MAX_LIMIT = 200
 
 
+class InvalidRequest(ValueError):
+    """The caller's parameters are wrong. Reported as HTTP 400 with the message."""
+
+
 def lambda_handler(event, context):
+    """Entry point: turn caller mistakes into a 400 instead of a function error.
+
+    An unhandled exception reaches an API caller as an opaque 502 from the
+    REST API (500 from the old HTTP API) with no message, and reaches a direct
+    invoker as a FunctionError. Everything else propagates unchanged.
+    """
+    try:
+        return _query_subjects(event, context)
+    except InvalidRequest as e:
+        logger.warning(f"Rejected request: {e}")
+        return {
+            "statusCode": 400,
+            "body": json.dumps({"error": "invalid_request", "message": str(e)}),
+            "headers": {"Content-Type": "application/json"},
+        }
+
+
+def _query_subjects(event, context):
     """
     Query subjects in a project with their phenotypes.
 
@@ -41,7 +63,7 @@ def lambda_handler(event, context):
 
     project_id = body.get("project_id")
     if not project_id:
-        raise ValueError("Missing required parameter 'project_id'.")
+        raise InvalidRequest("Missing required parameter 'project_id'.")
 
     project_iri = f"{PHEBEE}/projects/{project_id}"
 
@@ -86,14 +108,14 @@ def lambda_handler(event, context):
     }
 
     if term_iri and include_child_terms and term_iri in ROOT_TERMS:
-        raise ValueError(
+        raise InvalidRequest(
             f"Query term '{term_iri}' with include_child_terms=true would match all subjects. "
             f"Use an unfiltered query (omit term_iri) or set include_child_terms=false instead."
         )
 
     # Validate mutual exclusivity of term_iri and term_association_source_entity
     if term_iri and term_association_source_entity:
-        raise ValueError(
+        raise InvalidRequest(
             "Parameters 'term_iri' and 'term_association_source_entity' are mutually exclusive. "
             "Provide only one of these parameters."
         )
@@ -102,7 +124,7 @@ def lambda_handler(event, context):
     # Monarch associations are already semantically meaningful at their given specificity level.
     # Expanding to descendants would include unrelated "cousin" terms that don't apply to the entity.
     if term_association_source_entity and include_child_terms:
-        raise ValueError(
+        raise InvalidRequest(
             "Parameter 'include_child_terms' must be false when using 'term_association_source_entity'. "
             "Monarch associations are already provided at appropriate hierarchical levels. "
             "Expanding terms to include descendants would incorrectly match subjects with unrelated phenotypes."
@@ -114,9 +136,9 @@ def lambda_handler(event, context):
     try:
         limit = int(body.get("limit", DEFAULT_LIMIT))
     except (TypeError, ValueError):
-        raise ValueError("Parameter 'limit' must be a positive integer.")
+        raise InvalidRequest("Parameter 'limit' must be a positive integer.")
     if limit < 1:
-        raise ValueError("Parameter 'limit' must be a positive integer.")
+        raise InvalidRequest("Parameter 'limit' must be a positive integer.")
     limit = min(limit, MAX_LIMIT)
     cursor = body.get("cursor")
 
@@ -182,11 +204,27 @@ def lambda_handler(event, context):
                     })
                 }
 
+        except MonarchUnavailableError as e:
+            # Deployment has no route to the public internet. Report it as a
+            # service limitation of this deployment, not a client error.
+            logger.error(str(e))
+            return {
+                "statusCode": 503,
+                "body": json.dumps({
+                    "error": "monarch_unavailable",
+                    "message": str(e),
+                })
+            }
         except Exception as e:
             logger.error(f"Error fetching associated terms from Monarch: {e}")
             raise ValueError(f"Failed to fetch associated terms from Monarch for entity {term_association_source_entity}: {str(e)}")
 
-    offset = int(cursor) if cursor else 0
+    try:
+        offset = int(cursor) if cursor else 0
+    except (TypeError, ValueError):
+        raise InvalidRequest("Parameter 'cursor' must be a next_cursor value from a previous response.")
+    if offset < 0:
+        raise InvalidRequest("Parameter 'cursor' must be a next_cursor value from a previous response.")
     result = query_subjects_by_project(
         project_id=project_id,
         term_ids=term_ids,  # Changed from term_id (single) to term_ids (list)

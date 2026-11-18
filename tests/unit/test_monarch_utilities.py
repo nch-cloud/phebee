@@ -4,7 +4,7 @@ Unit tests for Monarch Knowledge Graph API integration.
 import pytest
 from unittest.mock import patch, Mock
 import json
-from phebee.utils.monarch import get_associated_terms
+from phebee.utils.monarch import get_associated_terms, MonarchUnavailableError
 
 
 class TestGetAssociatedTerms:
@@ -34,7 +34,7 @@ class TestGetAssociatedTerms:
         call_args = mock_get.call_args
         assert call_args[1]['params']['entity'] == "MONDO:0007947"
         assert call_args[1]['params']['object_namespace'] == ["HP", "MONDO"]
-        assert call_args[1]['timeout'] == 30
+        assert call_args[1]['timeout'] == (5, 30)  # (connect, read)
 
     @patch('phebee.utils.monarch.requests.get')
     def test_success_multiple_pages(self, mock_get):
@@ -159,8 +159,10 @@ class TestGetAssociatedTerms:
         from requests.exceptions import Timeout
         mock_get.side_effect = Timeout("Connection timeout")
 
-        with pytest.raises(Exception, match="Monarch API request timed out"):
+        with pytest.raises(MonarchUnavailableError, match="could not be reached") as exc:
             get_associated_terms("MONDO:0007947")
+        assert "request timed out" in str(exc.value)
+        assert "term_association_source_entity" in str(exc.value)
 
     @patch('phebee.utils.monarch.requests.get')
     def test_network_error(self, mock_get):
@@ -168,8 +170,10 @@ class TestGetAssociatedTerms:
         from requests.exceptions import ConnectionError
         mock_get.side_effect = ConnectionError("Network unreachable")
 
-        with pytest.raises(ConnectionError, match="Network unreachable"):
+        with pytest.raises(MonarchUnavailableError, match="could not be reached") as exc:
             get_associated_terms("MONDO:0007947")
+        assert "connection failed" in str(exc.value)
+        assert exc.value.__cause__ is mock_get.side_effect
 
     @patch('phebee.utils.monarch.requests.get')
     def test_json_decode_error(self, mock_get):

@@ -146,7 +146,20 @@ def test_remove_evidence_with_remaining_evidence(
         f"Expected evidence_count=2, got {subject_terms['evidence_count']}"
 
 
+def termlink_exists_in_neptune(query_neptune, subject_uuid, termlink_id):
+    termlink_iri = (
+        f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_uuid}"
+        f"/term-link/{termlink_id}"
+    )
+    results = query_neptune(
+        f"ASK {{ GRAPH <http://ods.nationwidechildrens.org/phebee/subjects> "
+        f"{{ <{termlink_iri}> ?p ?o }} }}"
+    )
+    return bool(results.get("boolean"))
+
+
 def test_remove_evidence_last_evidence_cascade(
+    query_neptune,
     test_subject,
     create_evidence_helper,
     invoke_remove_evidence,
@@ -174,6 +187,9 @@ def test_remove_evidence_last_evidence_cascade(
     initial_count = count_evidence_for_termlink(query_athena, termlink_id)
     assert initial_count == 1, f"Expected 1 evidence record, found {initial_count}"
 
+    assert termlink_exists_in_neptune(query_neptune, subject_uuid, termlink_id), \
+        "Term link should exist in Neptune before the last evidence is removed"
+
     # Delete the evidence
     result = invoke_remove_evidence(evidence_id)
 
@@ -193,8 +209,11 @@ def test_remove_evidence_last_evidence_cascade(
     subject_terms = get_subject_terms_by_termlink(query_athena, subject_uuid, termlink_id)
     assert subject_terms is None, "Subject terms row should be deleted when evidence_count reaches 0"
 
-    # Note: We cannot directly verify Neptune term link deletion in Neptune-free environment
-    # The lambda logs would show "Term link deleted: {termlink_iri}" if successful
+    # Verify the term link was removed from Neptune. RemoveEvidence swallows
+    # Neptune errors, so a function with no route to the cluster still returns
+    # 200 and leaves the term link orphaned; this is the check that catches it.
+    assert not termlink_exists_in_neptune(query_neptune, subject_uuid, termlink_id), \
+        "Term link should be deleted from Neptune when its last evidence is removed"
 
 
 def test_remove_evidence_not_found(invoke_remove_evidence, query_athena):
