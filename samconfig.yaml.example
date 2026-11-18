@@ -20,8 +20,6 @@ integration-test:
         - ServiceEgressCidr=0.0.0.0/0
         - OntologyDownloadInVpc=false
         - NeptuneLogRetentionDays=365
-        - CreateVpcEndpoints=false
-        - RouteTableIds=""
         - ApiEndpointType=REGIONAL
         - ExecuteApiVpcEndpointId=""
         - AssociateApiVpcEndpoint=true
@@ -46,8 +44,6 @@ dev:
         - ServiceEgressCidr=0.0.0.0/0
         - OntologyDownloadInVpc=false
         - NeptuneLogRetentionDays=365
-        - CreateVpcEndpoints=false
-        - RouteTableIds=""
         - ApiEndpointType=REGIONAL
         - ExecuteApiVpcEndpointId=""
         - AssociateApiVpcEndpoint=true
@@ -72,8 +68,6 @@ staging:
         - ServiceEgressCidr=0.0.0.0/0
         - OntologyDownloadInVpc=false
         - NeptuneLogRetentionDays=365
-        - CreateVpcEndpoints=false
-        - RouteTableIds=""
         - ApiEndpointType=REGIONAL
         - ExecuteApiVpcEndpointId=""
         - AssociateApiVpcEndpoint=true
@@ -98,8 +92,6 @@ prod:
         - ServiceEgressCidr=0.0.0.0/0
         - OntologyDownloadInVpc=false
         - NeptuneLogRetentionDays=365
-        - CreateVpcEndpoints=false
-        - RouteTableIds=""
         - ApiEndpointType=REGIONAL
         - ExecuteApiVpcEndpointId=""
         - AssociateApiVpcEndpoint=true

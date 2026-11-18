@@ -55,9 +55,7 @@ PheBee uses a hybrid architecture combining knowledge graphs with data lake tech
 
 ### Network Model
 
-Every PheBee component that stores or moves subject, encounter or note identifiers runs inside the VPC you supply: all Lambda functions, the EMR Serverless application that runs the bulk import and rebuild jobs, and the Neptune cluster. The subnets reach S3, DynamoDB, Athena, Glue and EventBridge through VPC endpoints or NAT, and the stack can create those endpoints for you (`CreateVpcEndpoints=true`). Only the functions that call Neptune carry the security group that can reach it.
-
-The API is a REST API authenticated with AWS Signature V4. It is public by default (`ApiEndpointType=REGIONAL`) and can be made reachable only through an execute-api VPC endpoint (`ApiEndpointType=PRIVATE`), so request and response bodies never leave the VPC. Two features need the public internet: ontology downloads from GitHub, which run outside the VPC by default, and the Monarch disease-to-phenotype expansion, which returns a clear 503 where no egress exists. See [Network requirements](#network-requirements) for the parameters.
+Every PheBee component that stores or moves subject, encounter or note identifiers runs inside the VPC you supply: all Lambda functions, the EMR Serverless application, and the Neptune cluster. Only the functions that call Neptune carry the security group that can reach it. The API is a REST API with AWS Signature V4 authentication, public by default and optionally reachable only through a VPC endpoint, so request and response bodies never leave the network. The stack never creates VPC endpoints, NAT gateways or routes. See [docs/networking.md](docs/networking.md) for what the subnets must provide, which parameters fit which environment, and how the private API is addressed.
 
 ### Why This Architecture?
 
@@ -103,11 +101,8 @@ prod:                                  # The environment name
                                 # narrow to a private range (e.g. 10.0.0.0/8) only if every AWS service is reached via interface endpoints there
         - OntologyDownloadInVpc=false  # The GitHub ontology downloader needs internet access and handles no subject data, so it runs
                                 # outside the VPC by default. Set true only if policy requires it and the subnets have NAT or a proxy
-        - CreateVpcEndpoints=false     # true: the stack creates every VPC endpoint PheBee needs (see Network requirements). Leave false if
-                                # the VPC already has them or uses NAT; only one private-DNS endpoint per service fits in a VPC
-        - RouteTableIds=""             # Route tables of the two subnets, for S3/DynamoDB gateway endpoints. Leave empty if the VPC already has them
         - ApiEndpointType=REGIONAL     # REGIONAL: public hostname with IAM auth. PRIVATE: reachable only through an execute-api VPC endpoint
-        - ExecuteApiVpcEndpointId=""   # Existing execute-api endpoint for a PRIVATE API; not needed when CreateVpcEndpoints=true
+        - ExecuteApiVpcEndpointId=""   # Existing execute-api VPC endpoint, required for a PRIVATE API (the stack never creates one)
         - AssociateApiVpcEndpoint=true # Set false when that endpoint is owned by another account
       tags:
         - app=phebee                   # Tags applied to the stack for resource tracking or cost management
@@ -125,20 +120,7 @@ The integration test suite reads the same file, so fill in the `integration-test
 
 #### Network requirements
 
-PheBee is bring-your-own-VPC: every Lambda function, the EMR Serverless application and the Neptune cluster run in the two or three private subnets you supply, one per availability zone. Those subnets never need a public IP or an internet gateway, but they must be able to reach the AWS services PheBee uses: S3, DynamoDB, Athena, Glue, EventBridge, STS, the RDS control plane (for Neptune status), and Lake Formation when a cross-account catalog is configured. Pick whichever of these fits your account:
-
-| Situation | What to set |
-|---|---|
-| A VPC with private subnets and nothing else | `CreateVpcEndpoints=true` and `RouteTableIds=<route tables of the two subnets>`. The stack creates gateway endpoints for S3 and DynamoDB and interface endpoints for the rest. If the VPC already has the two gateway endpoints, which most do, leave `RouteTableIds` empty and only the interface endpoints are created. The VPC must have DNS support and DNS hostnames enabled (both are on by default). Interface endpoints are billed hourly, roughly USD 7 per endpoint per availability zone per month. |
-| Subnets with a NAT gateway | Nothing. Leave `CreateVpcEndpoints=false`. |
-| An organisation that manages endpoints centrally, for example in a hub VPC | Leave `CreateVpcEndpoints=false`, set `ServiceEgressCidr` to the private range that reaches the hub (for example `10.0.0.0/8`), and make sure the hub's private hosted zones are associated with the PheBee VPC. Gateway endpoints for S3 and DynamoDB route to public prefix lists, so a narrowed CIDR needs interface endpoints for both. |
-
-**Private API.** By default the API is a REST API on a public hostname, accepting only SigV4-signed requests from IAM principals in the deploying account. Set `ApiEndpointType=PRIVATE` to make it reachable only through an execute-api VPC endpoint, so request and response bodies never leave the VPC. Either let the stack create that endpoint (`CreateVpcEndpoints=true`, with `ApiClientCidr` controlling who may reach it) or pass an existing one in `ExecuteApiVpcEndpointId`. If that existing endpoint belongs to another account, such as a shared networking account, set `AssociateApiVpcEndpoint=false`: the API still admits only that endpoint, but skips the association API Gateway could not complete, and clients reach it through the endpoint's DNS name with the API hostname in the `Host` header, or through a custom domain. The stack outputs two URLs for a private API: `ApiGatewayUrl`, which works where the endpoint has private DNS enabled, and `ApiGatewayVpceUrl`, which works regardless. Private DNS on an execute-api endpoint applies to every API Gateway hostname in that VPC, so a VPC that also calls public API Gateway APIs should use the endpoint-specific URL instead. The API URL always ends in the stage name (`/v1` by default).
-
-Only functions that talk to Neptune are attached to the Neptune client security group, so nothing else in the VPC can reach port 8182. Two features need the public internet and degrade clearly without it:
-
-- **Ontology updates** download releases from GitHub. That function runs outside the VPC by default (`OntologyDownloadInVpc=false`).
-- **Monarch expansion** (`term_association_source_entity` on the subjects query) calls `api-v3.monarchinitiative.org` from inside the VPC. Without an egress path the query returns HTTP 503 with an explanatory message; every other query path is unaffected.
+The subnets must reach S3, DynamoDB, Athena, Glue, EventBridge, STS and the RDS control plane, through a NAT gateway or VPC endpoints. The simplest setup is two private subnets behind a NAT gateway, which the VPC console's "VPC and more" wizard builds; with it, every default works, including the GitHub ontology downloads and the Monarch expansion. Organisations that provide endpoints centrally narrow `ServiceEgressCidr` and, for a private API, pass their execute-api endpoint in `ExecuteApiVpcEndpointId`. [docs/networking.md](docs/networking.md) has the full matrix, the endpoint checklist for a VPC without NAT, the security group rules, and how a private API is addressed and verified.
 
 ### Prerequisites
 

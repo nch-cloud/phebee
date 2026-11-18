@@ -645,10 +645,7 @@ x-amazon-apigateway-policy:
           - PrivateApi
           - StringEquals:
               aws:SourceVpce:
-                Fn::If:
-                  - ShouldCreateExecuteApiEndpoint
-                  - Ref: PheBeeExecuteApiEndpoint
-                  - Ref: ExecuteApiVpcEndpointId
+                Ref: ExecuteApiVpcEndpointId
           - StringEquals:
               aws:PrincipalAccount:
                 Ref: AWS::AccountId
