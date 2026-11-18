@@ -42,25 +42,6 @@ def get_subject(subject_id: str = None, project_subject_iri: str = None, physica
     return result
 
 
-def query_neptune(sparql_query: str, app_name: str):
-    """Helper to query Neptune via ExecuteSparqlReadonly Lambda."""
-    lambda_client = boto3.client('lambda', region_name='us-east-2')
-
-    response = lambda_client.invoke(
-        FunctionName=f"{app_name}-ExecuteSparqlReadonly",
-        Payload=json.dumps({
-            'query': sparql_query,
-            'graphRestriction': 'subjects'
-        })
-    )
-
-    result = json.loads(response['Payload'].read())
-    if not result.get('success'):
-        raise Exception(f"SPARQL query failed: {result.get('error')}")
-
-    return result['results']
-
-
 # ============================================================================
 # Test Cases
 # ============================================================================
@@ -265,7 +246,7 @@ def test_neptune_has_separate_termlinks_for_qualifiers(
     create_evidence_helper,
     standard_hpo_terms,
     query_athena,
-    app_name
+    query_neptune,
 ):
     """
     Test: Neptune graph has separate termlink nodes for different qualifiers.
@@ -310,7 +291,7 @@ def test_neptune_has_separate_termlinks_for_qualifiers(
     """
 
     try:
-        results = query_neptune(sparql_query, app_name)
+        results = query_neptune(sparql_query)
 
         # Extract unique termlinks
         termlinks = {}

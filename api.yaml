@@ -628,6 +628,13 @@ paths:
           Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppName}-RemoveEvidenceFunction/invocations
         timeoutInMillis: 29000
 
+# /subjects/query returns a gzip body as base64 with isBase64Encoded. A REST
+# API only decodes that when the request's Accept type is declared binary, so
+# declare everything binary (the HTTP API decoded unconditionally). Request
+# bodies then arrive base64-encoded too, which extract_body handles.
+x-amazon-apigateway-binary-media-types:
+  - "*/*"
+
 # Same-account IAM principals only, which is what an API with no resource
 # policy already meant. For a PRIVATE API, additionally only through the
 # designated execute-api VPC endpoint (a private API requires such a policy).

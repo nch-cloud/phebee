@@ -146,34 +146,20 @@ def test_remove_evidence_with_remaining_evidence(
         f"Expected evidence_count=2, got {subject_terms['evidence_count']}"
 
 
-def query_neptune(sparql_query, app_name):
-    """Run a read-only SPARQL query through the ExecuteSparqlReadonly Lambda."""
-    lambda_client = boto3.client("lambda")
-    response = lambda_client.invoke(
-        FunctionName=f"{app_name}-ExecuteSparqlReadonly",
-        Payload=json.dumps({"query": sparql_query, "graphRestriction": "subjects"}),
-    )
-    result = json.loads(response["Payload"].read())
-    if not result.get("success"):
-        raise Exception(f"SPARQL query failed: {result.get('error')}")
-    return result["results"]
-
-
-def termlink_exists_in_neptune(app_name, subject_uuid, termlink_id):
+def termlink_exists_in_neptune(query_neptune, subject_uuid, termlink_id):
     termlink_iri = (
         f"http://ods.nationwidechildrens.org/phebee/subjects/{subject_uuid}"
         f"/term-link/{termlink_id}"
     )
     results = query_neptune(
         f"ASK {{ GRAPH <http://ods.nationwidechildrens.org/phebee/subjects> "
-        f"{{ <{termlink_iri}> ?p ?o }} }}",
-        app_name,
+        f"{{ <{termlink_iri}> ?p ?o }} }}"
     )
     return bool(results.get("boolean"))
 
 
 def test_remove_evidence_last_evidence_cascade(
-    physical_resources,
+    query_neptune,
     test_subject,
     create_evidence_helper,
     invoke_remove_evidence,
@@ -201,8 +187,7 @@ def test_remove_evidence_last_evidence_cascade(
     initial_count = count_evidence_for_termlink(query_athena, termlink_id)
     assert initial_count == 1, f"Expected 1 evidence record, found {initial_count}"
 
-    app_name = physical_resources["AppName"]
-    assert termlink_exists_in_neptune(app_name, subject_uuid, termlink_id), \
+    assert termlink_exists_in_neptune(query_neptune, subject_uuid, termlink_id), \
         "Term link should exist in Neptune before the last evidence is removed"
 
     # Delete the evidence
@@ -227,7 +212,7 @@ def test_remove_evidence_last_evidence_cascade(
     # Verify the term link was removed from Neptune. RemoveEvidence swallows
     # Neptune errors, so a function with no route to the cluster still returns
     # 200 and leaves the term link orphaned; this is the check that catches it.
-    assert not termlink_exists_in_neptune(app_name, subject_uuid, termlink_id), \
+    assert not termlink_exists_in_neptune(query_neptune, subject_uuid, termlink_id), \
         "Term link should be deleted from Neptune when its last evidence is removed"
 
 

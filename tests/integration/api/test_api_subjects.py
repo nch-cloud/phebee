@@ -152,6 +152,3 @@ def test_subjects_query_monarch_requires_no_expansion(api_base_url, sigv4_auth, 
     body = response.json()
     assert body["error"] == "invalid_request"
     assert "include_child_terms" in body["message"]
-    body = response.json()
-    assert "message" in body or "error" in body, \
-        "Response should contain an error message"

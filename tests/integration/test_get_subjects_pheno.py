@@ -1087,7 +1087,6 @@ def test_monarch_mutual_exclusivity(invoke_get_subjects_pheno, test_project_id):
         term_iri="http://purl.obolibrary.org/obo/HP_0001249",
         term_association_source_entity="MONDO:0007947"
     )
-    _skip_if_monarch_unavailable(result)
 
     # Should return error status
     assert result["statusCode"] == 400
@@ -1112,7 +1111,6 @@ def test_monarch_with_include_child_terms_error(invoke_get_subjects_pheno, test_
         term_association_source_entity="MONDO:0007947",
         include_child_terms=True
     )
-    _skip_if_monarch_unavailable(result)
 
     # Should return error status
     assert result["statusCode"] == 400

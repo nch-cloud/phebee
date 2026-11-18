@@ -1,6 +1,7 @@
 import datetime
 import zipfile
 import json
+import base64
 import os
 import boto3
 import requests
@@ -25,12 +26,17 @@ def extract_body(event):
 
     A REST API (payload format 1.0) sends ``"body": null`` for a request with
     no body, where an HTTP API omitted the key; both mean "no parameters".
+    Because the API declares every media type binary (so gzip responses are
+    decoded on the way out), request bodies arrive base64-encoded with
+    ``isBase64Encoded`` set, and are decoded here.
     """
     if "body" in event:
         body = event["body"]
         if body is None:
             return {}
         if isinstance(body, str):
+            if event.get("isBase64Encoded"):
+                body = base64.b64decode(body).decode("utf-8")
             return json.loads(body)
         return body
     return event

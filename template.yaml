@@ -66,7 +66,8 @@ Parameters:
       REGIONAL publishes the API on a public hostname, protected by IAM (SigV4)
       authentication. PRIVATE makes it reachable only through an execute-api
       VPC endpoint, so request and response bodies never leave the VPC.
-      Changing this later replaces the API and changes its URL.
+      Switching between the two updates the API in place; its ID and URL do
+      not change.
 
   ExecuteApiVpcEndpointId:
     Type: String
@@ -2394,11 +2395,19 @@ Resources:
             Resource:
               - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:${InstallRDFXMLSFN.Name}:*"
           # The hierarchy insert step is a Distributed Map, which runs its
-          # iterations as child executions of this state machine.
+          # iterations as child executions of this state machine, and must be
+          # able to describe and stop them when it aborts or is redriven.
           - Effect: Allow
             Action: states:StartExecution
             Resource:
               - !Sub arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:UpdateHPOSFN-${AppName}
+          - Effect: Allow
+            Action:
+              - states:DescribeExecution
+              - states:StopExecution
+            Resource:
+              - !Sub arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:execution:UpdateHPOSFN-${AppName}:*
+              - !Sub arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:execution:UpdateHPOSFN-${AppName}/*
 
   UpdateMondoSFN:
     Type: AWS::Serverless::StateMachine
@@ -2461,11 +2470,19 @@ Resources:
             Resource:
               - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:${InstallRDFXMLSFN.Name}:*"
           # The hierarchy insert step is a Distributed Map, which runs its
-          # iterations as child executions of this state machine.
+          # iterations as child executions of this state machine, and must be
+          # able to describe and stop them when it aborts or is redriven.
           - Effect: Allow
             Action: states:StartExecution
             Resource:
               - !Sub arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:UpdateMondoSFN-${AppName}
+          - Effect: Allow
+            Action:
+              - states:DescribeExecution
+              - states:StopExecution
+            Resource:
+              - !Sub arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:execution:UpdateMondoSFN-${AppName}:*
+              - !Sub arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:execution:UpdateMondoSFN-${AppName}/*
 
   UpdateECOSFN:
     Type: AWS::Serverless::StateMachine
@@ -2682,6 +2699,9 @@ Resources:
       Name: !Sub phebee-${AppName}
       StageName: !Ref ApiStageName
       OpenApiVersion: "3.0.1"
+      # Binary media types are declared in api.yaml
+      # (x-amazon-apigateway-binary-media-types); SAM cannot inject them into
+      # an included definition.
       # The definition is an included file, so SAM's change hash cannot see
       # edits to api.yaml; without this, a changed route would never reach the stage.
       AlwaysDeploy: true

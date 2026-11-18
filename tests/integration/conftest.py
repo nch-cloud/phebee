@@ -408,6 +408,24 @@ def _installed_source_version(cloudformation_stack, source_name):
 
 
 @pytest.fixture(scope="session")
+def query_neptune(app_name):
+    """Run a read-only SPARQL query through the ExecuteSparqlReadonly Lambda and return its results."""
+    lambda_client = get_client("lambda")
+
+    def _query(sparql_query, graph_restriction="subjects"):
+        response = lambda_client.invoke(
+            FunctionName=f"{app_name}-ExecuteSparqlReadonly",
+            Payload=json.dumps({"query": sparql_query, "graphRestriction": graph_restriction}),
+        )
+        result = json.loads(response["Payload"].read())
+        if not result.get("success"):
+            raise Exception(f"SPARQL query failed: {result.get('error')}")
+        return result["results"]
+
+    return _query
+
+
+@pytest.fixture(scope="session")
 def hpo_update_execution(cloudformation_stack):
     """
     Run HPO update once per test session to seed ontology data.

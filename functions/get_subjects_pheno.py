@@ -219,7 +219,12 @@ def _query_subjects(event, context):
             logger.error(f"Error fetching associated terms from Monarch: {e}")
             raise ValueError(f"Failed to fetch associated terms from Monarch for entity {term_association_source_entity}: {str(e)}")
 
-    offset = int(cursor) if cursor else 0
+    try:
+        offset = int(cursor) if cursor else 0
+    except (TypeError, ValueError):
+        raise InvalidRequest("Parameter 'cursor' must be a next_cursor value from a previous response.")
+    if offset < 0:
+        raise InvalidRequest("Parameter 'cursor' must be a next_cursor value from a previous response.")
     result = query_subjects_by_project(
         project_id=project_id,
         term_ids=term_ids,  # Changed from term_id (single) to term_ids (list)
