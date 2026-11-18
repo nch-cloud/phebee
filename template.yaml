@@ -2106,17 +2106,6 @@ Resources:
             Principal:
               Service: lambda.amazonaws.com
             Action: sts:AssumeRole
-          - Effect: Allow
-            Principal:
-              Service: lakeformation.amazonaws.com
-            Action:
-              - sts:AssumeRole
-              - sts:TagSession
-              - sts:SetContext
-              - sts:SetSourceIdentity
-            Condition:
-              StringEquals:
-                aws:SourceAccount: !Ref AWS::AccountId
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
         - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
