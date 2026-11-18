@@ -1037,11 +1037,6 @@ Resources:
         - !Ref PheBeeDynamoDBWritePolicy
         - !Ref PheBeeDynamoDBReadPolicy
         - !Ref PheBeeS3WritePolicy
-        - Statement:
-          - Effect: Allow
-            Action: states:StartExecution
-            Resource:
-              - !Sub arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:InstallRDFXMLSFN
 
 
   UpdateInstallTimestampFunction:
@@ -2572,17 +2567,15 @@ Resources:
             Resource:
               - !GetAtt PheBeeBucket.Arn
               - !Sub "${PheBeeBucket.Arn}/*"
-          - Effect: Allow
-            Action:
-              - states:StartExecution
-            Resource:
-              - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*"
+          # The nested InstallRDFXMLSFN run (startExecution.sync) is tracked through
+          # the EventBridge managed rule in PheBeeStepFunctionPolicy; Describe and
+          # Stop are needed only for that child's executions.
           - Effect: Allow
             Action:
               - states:DescribeExecution
               - states:StopExecution
             Resource:
-              - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:*:*"
+              - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:${InstallRDFXMLSFN.Name}:*"
 
   UpdateMondoSFN:
     Type: AWS::Serverless::StateMachine
@@ -2632,17 +2625,15 @@ Resources:
             Resource:
               - !GetAtt PheBeeBucket.Arn
               - !Sub "${PheBeeBucket.Arn}/*"
-          - Effect: Allow
-            Action:
-              - states:StartExecution
-            Resource:
-              - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*"
+          # The nested InstallRDFXMLSFN run (startExecution.sync) is tracked through
+          # the EventBridge managed rule in PheBeeStepFunctionPolicy; Describe and
+          # Stop are needed only for that child's executions.
           - Effect: Allow
             Action:
               - states:DescribeExecution
               - states:StopExecution
             Resource:
-              - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:*:*"
+              - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:${InstallRDFXMLSFN.Name}:*"
 
   UpdateECOSFN:
     Type: AWS::Serverless::StateMachine
@@ -2673,6 +2664,15 @@ Resources:
             Action: states:StartExecution
             Resource:
               - !GetAtt InstallRDFXMLSFN.Arn
+          # The nested InstallRDFXMLSFN run (startExecution.sync) is tracked through
+          # the EventBridge managed rule in PheBeeStepFunctionPolicy; Describe and
+          # Stop are needed only for that child's executions.
+          - Effect: Allow
+            Action:
+              - states:DescribeExecution
+              - states:StopExecution
+            Resource:
+              - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:${InstallRDFXMLSFN.Name}:*"
 
 
   ImportPhenopacketsSFN:
