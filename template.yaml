@@ -2336,6 +2336,9 @@ Resources:
   UpdateHPOSFN:
     Type: AWS::Serverless::StateMachine
     Properties:
+      # Named explicitly so the role below can grant StartExecution on this
+      # machine without a circular reference (see ImportPhenopacketsSFN).
+      Name: !Sub UpdateHPOSFN-${AppName}
       DefinitionUri: statemachine/update_hpo.asl.json
       Logging:
         Destinations:
@@ -2390,10 +2393,19 @@ Resources:
               - states:StopExecution
             Resource:
               - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:${InstallRDFXMLSFN.Name}:*"
+          # The hierarchy insert step is a Distributed Map, which runs its
+          # iterations as child executions of this state machine.
+          - Effect: Allow
+            Action: states:StartExecution
+            Resource:
+              - !Sub arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:UpdateHPOSFN-${AppName}
 
   UpdateMondoSFN:
     Type: AWS::Serverless::StateMachine
     Properties:
+      # Named explicitly so the role below can grant StartExecution on this
+      # machine without a circular reference (see ImportPhenopacketsSFN).
+      Name: !Sub UpdateMondoSFN-${AppName}
       DefinitionUri: statemachine/update_mondo.asl.json
       Logging:
         Destinations:
@@ -2448,6 +2460,12 @@ Resources:
               - states:StopExecution
             Resource:
               - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:${InstallRDFXMLSFN.Name}:*"
+          # The hierarchy insert step is a Distributed Map, which runs its
+          # iterations as child executions of this state machine.
+          - Effect: Allow
+            Action: states:StartExecution
+            Resource:
+              - !Sub arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:UpdateMondoSFN-${AppName}
 
   UpdateECOSFN:
     Type: AWS::Serverless::StateMachine
