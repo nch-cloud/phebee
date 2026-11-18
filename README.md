@@ -204,6 +204,16 @@ The bulk import and rebuild state machines run their Spark jobs from `s3://<PheB
 ./utilities/deploy-scripts.sh <your-stack-name>
 ```
 
+### Neptune audit and slow-query logs
+
+The cluster writes an audit log (every query, with its full text) and a slow-query log to CloudWatch, in log groups the stack creates with `NeptuneLogRetentionDays` retention (default 365). Audit logging is a static cluster parameter, so a cluster that existed before this setting was added starts recording only after its instance is rebooted once:
+
+```bash
+aws neptune reboot-db-instance --db-instance-identifier <instance id from the Neptune console>
+```
+
+A new deployment needs no reboot. Audit records include subject IRIs, so grant read access to these log groups as carefully as to the data itself.
+
 ### 4. Clean Up Resources
 
 ```bash

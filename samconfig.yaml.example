@@ -19,6 +19,7 @@ integration-test:
         - SubnetId3=""
         - ServiceEgressCidr=0.0.0.0/0
         - OntologyDownloadInVpc=false
+        - NeptuneLogRetentionDays=365
         - CreateVpcEndpoints=false
         - RouteTableIds=""
         - ApiEndpointType=REGIONAL
@@ -44,6 +45,7 @@ dev:
         - SubnetId3=""
         - ServiceEgressCidr=0.0.0.0/0
         - OntologyDownloadInVpc=false
+        - NeptuneLogRetentionDays=365
         - CreateVpcEndpoints=false
         - RouteTableIds=""
         - ApiEndpointType=REGIONAL
@@ -69,6 +71,7 @@ staging:
         - SubnetId3=""
         - ServiceEgressCidr=0.0.0.0/0
         - OntologyDownloadInVpc=false
+        - NeptuneLogRetentionDays=365
         - CreateVpcEndpoints=false
         - RouteTableIds=""
         - ApiEndpointType=REGIONAL
@@ -94,6 +97,7 @@ prod:
         - SubnetId3=""
         - ServiceEgressCidr=0.0.0.0/0
         - OntologyDownloadInVpc=false
+        - NeptuneLogRetentionDays=365
         - CreateVpcEndpoints=false
         - RouteTableIds=""
         - ApiEndpointType=REGIONAL

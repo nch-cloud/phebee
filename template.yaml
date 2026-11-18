@@ -130,6 +130,15 @@ Parameters:
     AllowedPattern: "^[a-zA-Z0-9_-]+$"
     Description: Stage name, which becomes the first path segment of the API URL.
 
+  NeptuneLogRetentionDays:
+    Type: Number
+    Default: 365
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653]
+    Description: >-
+      CloudWatch retention for the Neptune audit and slow-query log groups.
+      Audit records contain full SPARQL text, including subject IRIs, so
+      restrict read access to these groups as you would to the data.
+
   OntologyDownloadInVpc:
     Type: String
     Default: "false"
@@ -752,12 +761,36 @@ Resources:
       Family: neptune1.4
       Parameters:
         neptune_query_timeout: 300000  # 5 minutes in milliseconds (default is 120000)
+        # Without these two the audit and slowquery CloudWatch exports below ship
+        # nothing. neptune_enable_audit_log is static: an existing cluster needs
+        # an instance reboot after deploying this; a new cluster starts with it on.
+        neptune_enable_audit_log: 1
+        neptune_enable_slow_query_log: info
       Tags:
         - Key: Name
           Value: !Sub ${AppName}-neptune-parameters
 
+  # Defined here so they carry a retention period. Neptune creates them itself,
+  # with no expiry, if they do not exist when the first log is delivered, hence
+  # the DependsOn from the cluster. A deployment where Neptune already created
+  # a group of this name must delete or import it before deploying this.
+  PheBeeNeptuneAuditLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/neptune/${AppName}-neptune-cluster/audit
+      RetentionInDays: !Ref NeptuneLogRetentionDays
+
+  PheBeeNeptuneSlowQueryLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/neptune/${AppName}-neptune-cluster/slowquery
+      RetentionInDays: !Ref NeptuneLogRetentionDays
+
   PheBeeNeptuneCluster:
     Type: AWS::Neptune::DBCluster
+    DependsOn:
+      - PheBeeNeptuneAuditLogGroup
+      - PheBeeNeptuneSlowQueryLogGroup
     Properties:
       DBClusterIdentifier: !Sub ${AppName}-neptune-cluster
       StorageEncrypted: true
