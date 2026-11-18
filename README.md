@@ -98,6 +98,7 @@ prod:                                  # The environment name
                                 # Learn more: https://docs.aws.amazon.com/vpc/latest/userguide/VPC_Subnets.html
         - SubnetId2=                   # The second subnet ID, usually in a different availability zone for high availability and fault tolerance
                                 # Learn more: https://docs.aws.amazon.com/vpc/latest/userguide/VPC_Subnets.html
+        - SubnetId3=""                 # Optional third subnet in a third availability zone; leave empty where only two zones exist
         - ServiceEgressCidr=0.0.0.0/0  # Destination for HTTPS egress from Lambda to AWS services. Keep 0.0.0.0/0 with S3/DynamoDB gateway endpoints or NAT;
                                 # narrow to a private range (e.g. 10.0.0.0/8) only if every AWS service is reached via interface endpoints there
         - OntologyDownloadInVpc=false  # The GitHub ontology downloader needs internet access and handles no subject data, so it runs
@@ -124,7 +125,7 @@ The integration test suite reads the same file, so fill in the `integration-test
 
 #### Network requirements
 
-PheBee is bring-your-own-VPC: every Lambda function, the EMR Serverless application and the Neptune cluster run in the two subnets you supply. Those subnets never need a public IP or an internet gateway, but they must be able to reach the AWS services PheBee uses: S3, DynamoDB, Athena, Glue, EventBridge, STS, the RDS control plane (for Neptune status), and Lake Formation when a cross-account catalog is configured. Pick whichever of these fits your account:
+PheBee is bring-your-own-VPC: every Lambda function, the EMR Serverless application and the Neptune cluster run in the two or three private subnets you supply, one per availability zone. Those subnets never need a public IP or an internet gateway, but they must be able to reach the AWS services PheBee uses: S3, DynamoDB, Athena, Glue, EventBridge, STS, the RDS control plane (for Neptune status), and Lake Formation when a cross-account catalog is configured. Pick whichever of these fits your account:
 
 | Situation | What to set |
 |---|---|

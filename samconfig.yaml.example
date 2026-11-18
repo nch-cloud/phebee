@@ -16,6 +16,7 @@ integration-test:
         - VpcId=
         - SubnetId1=
         - SubnetId2=
+        - SubnetId3=""
         - ServiceEgressCidr=0.0.0.0/0
         - OntologyDownloadInVpc=false
         - CreateVpcEndpoints=false
@@ -40,6 +41,7 @@ dev:
         - VpcId=
         - SubnetId1=
         - SubnetId2=
+        - SubnetId3=""
         - ServiceEgressCidr=0.0.0.0/0
         - OntologyDownloadInVpc=false
         - CreateVpcEndpoints=false
@@ -64,6 +66,7 @@ staging:
         - VpcId=
         - SubnetId1=
         - SubnetId2=
+        - SubnetId3=""
         - ServiceEgressCidr=0.0.0.0/0
         - OntologyDownloadInVpc=false
         - CreateVpcEndpoints=false
@@ -88,6 +91,7 @@ prod:
         - VpcId=
         - SubnetId1=
         - SubnetId2=
+        - SubnetId3=""
         - ServiceEgressCidr=0.0.0.0/0
         - OntologyDownloadInVpc=false
         - CreateVpcEndpoints=false
